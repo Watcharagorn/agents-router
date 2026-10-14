@@ -5,7 +5,7 @@ description: Delegate a bounded coding, review or research task to a subagent th
 
 # CLI Subagents
 
-The `subagent_*` tools start a separate agent CLI process (Claude Code today) on one of the user's accounts. Every account has the same MCP servers, plugins, skills and settings as the main setup, so a subagent can do anything this session could. You stay responsible for the plan, for checking the work and for the final answer.
+The `subagent_*` tools start a separate agent CLI process (Claude Code or Codex) on one of the user's accounts. Every account has the same MCP servers, plugins, skills and settings as the main setup, so a subagent can do anything this session could. You stay responsible for the plan, for checking the work and for the final answer.
 
 ## When to delegate
 
@@ -23,7 +23,8 @@ Call `subagent_start` with:
 - `prompt`: a complete, self-contained task. The subagent can't see this conversation. State the goal, the files or folders involved, what it must not touch, facts it shouldn't re-check, how to verify the result, and what to report back.
 - `cwd`: the absolute path of the project. Never a drive root, home folder or config folder.
 - `access`: `read` for analysis and review (no edits), `edit` for changes (the CLI's own auto-mode safety checks stay on). Use `full` only when the user explicitly asked to skip all permission checks.
-- Optional: `model` (`haiku`, `sonnet`, `opus` or a full ID), `effort`, `max_turns`, `timeout_seconds` (default 1800), `account` to pin one account, `add_dirs` for extra folders.
+- `runtime`: `claude` (default) or `codex`, when the user wants a specific agent or a second opinion from another vendor.
+- Optional: `model` (`haiku`, `sonnet`, `opus` or a full ID for Claude; a Codex model ID for Codex), `effort`, `max_turns`, `timeout_seconds` (default 1800), `account` to pin one account, `add_dirs` for extra folders.
 - `wait_seconds`: up to 600. With a value, short jobs return their result directly.
 
 `subagent_start` returns a `job_id` right away. Start several jobs before waiting on any of them if the work is independent.

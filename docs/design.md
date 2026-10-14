@@ -1,6 +1,6 @@
 # Design and build plan
 
-Updated 2026-10-14. Based on the research in [docs/research/](research/). The Claude Code part (core, account pool, shared setup, failover, plugin) is implemented in v0.1 and was tested live on Windows; Codex is next. Items marked "Verified" were checked against a real `claude` 2.1.295.
+Updated 2026-10-14. Based on the research in [docs/research/](research/). The Claude Code part (core, account pool, shared setup, failover, plugin) and the Codex adapter are implemented in v0.1 and were tested live on Windows; CI runs the suite on Windows, macOS and Linux. Items marked "Verified" were checked against a real `claude` 2.1.295.
 
 ## Goals
 
@@ -174,7 +174,7 @@ Each is a short experiment with real CLIs, recorded in `docs/research/` with the
 2. Verified: with `CLAUDE_CONFIG_DIR` set, the state file is `<dir>/.claude.json`; without it, `~/.claude.json`.
 3. Partly verified: every run emits `rate_limit_event` with `status`, `utilization`, `resetsAt`, `rateLimitType` and `unifiedWindows.five_hour` / `seven_day`. The exact output at a real limit is still unobserved; detection uses `status: rejected`, HTTP 429 and the "hit your ... limit" text.
 4. Open: resuming a transcript under another account. Failover starts a new session with a handoff note instead.
-5. Open: Codex and junctions.
+5. Partly open: `skills/` and `plugins/` entries are linked into Codex account homes, but whether the real Codex follows junctions is not verified yet. `config.toml` is written as a file, not linked, because Codex may rewrite it.
 6. Open: `agy` stream-json without ConPTY.
 
 Two findings from the live tests changed the design:
@@ -190,7 +190,7 @@ Two findings from the live tests changed the design:
 | 1 | Core job API and store, Claude adapter, Claude account profiles with the shared setup, `doctor` | Done; identical setup verified live on two account folders |
 | 2 | Claude Code plugin and marketplace, usage skill | Done; the plugin loads its MCP server, skill and command in a live session |
 | 3 | Failover (opt-in), cooldowns, `subagent_accounts` | Done; tested with a fake CLI, a real limit not yet observed |
-| 4 | Codex adapter and Codex account profiles | Same checks as phase 1 for Codex |
+| 4 | Codex adapter and Codex account profiles | Done; live job on the primary Codex login, account sync and failover tested with a fake CLI |
 | 5 | Move the Antigravity adapter onto the core, keep its reviewer for Windows | Old tool names kept as aliases for one release |
 | 6 | Cursor and further runtimes, compatibility matrix, CI | Each runtime has a recorded live test |
 
@@ -198,7 +198,7 @@ Two findings from the live tests changed the design:
 
 ```text
 src/cli_subagents/            config, accounts (pool), jobs, runner, tools, mcp_server, cli
-src/cli_subagents/runtimes/   base.py (shared types, env cleaning), claude.py, codex.py next
+src/cli_subagents/runtimes/   base.py (shared types, env cleaning), claude.py, codex.py
 .claude-plugin/               plugin.json and marketplace.json (the repository is the plugin)
 skills/cli-subagents/         usage skill
 commands/                     /cli-subagents:delegate

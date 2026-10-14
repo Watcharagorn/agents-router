@@ -5,7 +5,7 @@ from __future__ import annotations
 from cli_subagents.runtimes.base import Runtime
 
 # Runtimes with a working adapter. Others are accepted in the config but not yet runnable.
-AVAILABLE = ("claude",)
+AVAILABLE = ("claude", "codex")
 
 
 def get_runtime(name: str) -> Runtime:

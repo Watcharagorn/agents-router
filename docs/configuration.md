@@ -23,7 +23,17 @@ cooldown_minutes = 60        # cooldown when a limit is hit without a reset time
 name = "max-2"
 home = "~/.cli-subagents/homes/claude/max-2"
 enabled = true
+
+[codex]
+primary = "~/.codex"        # default: CODEX_HOME or ~/.codex
+failover = "off"
+
+[[codex.accounts]]
+name = "plus-2"
+home = "~/.cli-subagents/homes/codex/plus-2"
 ```
+
+The `[codex]` section takes the same keys as `[claude]`; `connectors` and `edit_permission_mode` only apply to Claude.
 
 When no extra accounts are configured, workers run on the primary account. That is still useful from another host (for example Codex delegating to Claude Code), and with `include_primary = true` the primary account joins the pool.
 
@@ -49,5 +59,6 @@ Job records and generated files contain your prompts, results and MCP server set
 | `CLI_SUBAGENTS_HOME` | Use a different root folder |
 | `CLI_SUBAGENTS_DEPTH` | Set by CLI Subagents in workers; used to refuse nested delegation |
 | `CLAUDE_CONFIG_DIR` | Default for `[claude] primary` when the config doesn't set it |
+| `CODEX_HOME` | Default for `[codex] primary` when the config doesn't set it |
 
 Workers start from a cleaned environment. Variables that identify or authenticate the host session (`ANTHROPIC_*`, `CLAUDE*`, `CODEX_COMPANION_*` and similar) are removed, so a worker can only use its own account's login. Put environment settings you want workers to have into the `env` block of your primary `settings.json`; it is passed on, minus login-related keys.

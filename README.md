@@ -7,18 +7,18 @@ Let your coding agent hand work to the other agent CLIs you already have, each r
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 
-CLI Subagents is a Claude Code plugin and MCP server. Your main session starts subagents as separate `claude -p` processes, each on one of your accounts. The main session hands over a task and keeps working, and the subagent's result comes back when it's done.
+CLI Subagents is a Claude Code plugin and MCP server. Your main session starts subagents as separate `claude -p` or `codex exec` processes, each on one of your accounts. The main session hands over a task and keeps working, and the subagent's result comes back when it's done.
 
 Nothing in between translates one vendor's API into another's, and the tool never reads or forwards login tokens. Every model call comes from the vendor's own unmodified CLI, the same as if you had opened a terminal and typed the task yourself.
 
 ```mermaid
 flowchart LR
-    host["Main session<br/>Claude Code"]
+    host["Main session<br/>Claude Code · any MCP host"]
     core["CLI Subagents<br/>jobs · account pool · shared setup"]
     shared[("Primary setup<br/>MCP servers · plugins<br/>skills · settings")]
     w1["claude -p<br/>account 2"]
     w2["claude -p<br/>account 3"]
-    w3["claude -p<br/>account 4"]
+    w3["codex exec<br/>account 1"]
 
     host -- "subagent_start" --> core
     core --> w1 & w2 & w3
@@ -40,7 +40,7 @@ flowchart LR
 | Runtime | State | Notes |
 |---|---|---|
 | Claude Code (`claude -p`) | Works, v0.1 | Account pool, shared setup, failover, plugin. Tested on Windows |
-| Codex (`codex exec`) | In progress | Same account model through `CODEX_HOME` |
+| Codex (`codex exec`) | Works, v0.1 | Same account model through `CODEX_HOME`; see the [Codex guide](docs/codex.md) |
 | Antigravity CLI (`agy`) | Works on Windows, separate | Standalone [adapter](adapters/antigravity/) with its own command reviewer; joins the core next |
 | Cursor, Gemini CLI, Copilot, OpenCode, others | Researched | See the [CLI comparison](docs/research/cli-permissions-and-headless.md) |
 
@@ -96,6 +96,7 @@ Running the vendor's own CLI keeps authentication where the vendor put it, but e
 ```text
 src/cli_subagents/      Core: jobs, account pool, shared setup, MCP server, csa CLI
   runtimes/claude.py    Claude Code adapter
+  runtimes/codex.py     Codex adapter
 .claude-plugin/         Plugin manifest and marketplace entry
 skills/cli-subagents/   Usage skill for the host agent
 commands/               /cli-subagents:delegate
@@ -109,6 +110,7 @@ docs/                   Guides, design and research
 | Document | Contents |
 |---|---|
 | [Claude Code guide](docs/claude-code.md) | Install, accounts, what is shared, failover, troubleshooting |
+| [Codex guide](docs/codex.md) | Codex accounts, what is shared, access levels |
 | [Configuration](docs/configuration.md) | `config.toml`, files, environment |
 | [Design](docs/design.md) | Architecture, decisions and what was verified |
 | [CLI comparison](docs/research/cli-permissions-and-headless.md) | Which CLIs have built-in auto-review, hooks and headless output |

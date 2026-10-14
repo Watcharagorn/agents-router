@@ -11,7 +11,7 @@ from bootstrap_local import prepare
 class BootstrapLocalTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.bridge = self.root / "repo" / "adapters" / "antigravity"
         self.bridge.mkdir(parents=True)
         (self.bridge / "reviewed_exec.cmd").write_text("@echo off\n")
