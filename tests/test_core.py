@@ -259,7 +259,7 @@ class JobTests(TempHome):
         self.assertEqual(Path(record["env"]["CLAUDE_CONFIG_DIR"]), self.root / "homes" / "a1")
         self.assertEqual(record["env"]["CLI_SUBAGENTS_DEPTH"], "1")
         argv = record["argv"]
-        self.assertEqual(argv[argv.index("--permission-mode") + 1], "plan")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(argv[argv.index("--model") + 1], "haiku")
         self.assertIn("--disallowedTools", argv)
 

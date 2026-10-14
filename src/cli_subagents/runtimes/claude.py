@@ -93,7 +93,15 @@ def is_auth_env(key: str) -> bool:
         return upper not in SHARED_ANTHROPIC_ENV
     return upper in AUTH_ENV_EXACT or upper.startswith(AUTH_ENV_PREFIXES)
 
-PERMISSION_MODES = {"read": "plan", "full": "bypassPermissions"}
+# Read-only jobs use dontAsk with an allowlist instead of plan mode: plan mode
+# blocks every MCP call (verified with 2.1.295), including the parent channel.
+PERMISSION_MODES = {"read": "dontAsk", "full": "bypassPermissions"}
+READ_ONLY_TOOLS = (
+    "Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite", "Task", "Agent",
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)",
+    "Bash(ls:*)", "Bash(wc:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(rg:*)",
+    "PowerShell(Get-ChildItem:*)", "PowerShell(Get-Content:*)", "PowerShell(Measure-Object:*)",
+)
 
 # Tools of this server inside a worker, denied so workers can't fan out further.
 SELF_TOOLS = "mcp__cli-subagents,mcp__cli_subagents,mcp__plugin_cli-subagents_cli-subagents"
@@ -508,7 +516,7 @@ class ClaudeRuntime:
             argv += ["--add-dir", directory]
         argv += [
             "--disallowedTools", SELF_TOOLS,
-            "--allowedTools", f"mcp__{PARENT_SERVER}",
+            "--allowedTools", ",".join([f"mcp__{PARENT_SERVER}", *(READ_ONLY_TOOLS if spec.access == "read" else ())]),
             "--append-system-prompt", WORKER_NOTE + WORKER_TOOLS_NOTE,
         ]
         if spec.resume_session:
