@@ -58,5 +58,6 @@ Pass `runtime: "codex"` to `subagent_start`, or `--runtime codex` to `csa run` a
 
 ## Notes
 
+- Windows: when `codex doctor` reports `sandbox backend: disabled`, Codex has no sandbox to run commands in. It then treats the session as read-only and refuses every command, even reading a file, so `read` and `edit` jobs can't do anything useful (OpenAI's own Codex plugin for Claude Code hits the same wall, since it always runs Codex sandboxed). In Codex 0.162.1, "disabled" means the Windows sandbox isn't configured: the old `experimental_windows_sandbox` and `elevated_windows_sandbox` flags were replaced in 0.100.0 by `[windows] sandbox = "elevated"` or `"unelevated"` in `~/.codex/config.toml`, and a newer `"mxc"` backend needs a recent Windows build. Setting one of these is the likely fix (not yet tested here); details, dates and sources in [the research note](research/codex-windows-sandbox.md). Until then only `full` (no sandbox) works, with your normal user rights and no checks; use it only for tightly scoped tasks in a folder you can review with `git diff`.
 - On Windows the npm `codex` command is a `.cmd` shim. CLI Subagents runs its `codex.js` launcher with Node directly, which avoids `cmd.exe` quoting problems.
 - Codex prints nothing to stdout except the JSON events, and the final answer is the last `agent_message`.

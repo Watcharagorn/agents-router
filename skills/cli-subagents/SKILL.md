@@ -1,13 +1,23 @@
 ---
 name: cli-subagents
-description: How to run subagents through CLI Subagents (subagent_start, subagent_wait, subagent_result, subagent_message). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity). Skip it for trivial answers and tiny edits.
+description: How to run subagents through CLI Subagents (the cli-subagents-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity). Skip it for trivial answers and tiny edits.
 ---
 
 # CLI Subagents
 
 These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex or Antigravity) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them.
 
-## The loop
+## In Claude Code: use the agents
+
+With the plugin installed, Claude Code also has three agent types: `cli-subagents:cli-subagents-claude`, `cli-subagents:cli-subagents-codex` and `cli-subagents:cli-subagents-antigravity`. Start one with your Agent tool, in the background, like any other subagent. It shows up in the user's agent list with its own color, the user can open it and watch every step the worker takes (commands, edits, messages, reasoning), and you get the usual notice when it finishes. Prefer them over `subagent_start` in Claude Code.
+
+- Description: `<model> · <access> · <task in a few words>`, for example `Opus 5.5 · edit · fix the login test`. The user reads it to see what runs where.
+- Prompt: optional option lines first (`model=opus`, `access=read`, `account=NAME`, `effort=high`, `cwd=PATH`, `timeout=SECONDS`), then the complete task written as below. `access` defaults to `edit`.
+- Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. SendMessage "cancel" stops the job; anything else goes to the worker as a follow-up.
+
+The MCP tools below still work everywhere, and they are the only option in Codex and Antigravity.
+
+## The loop with the MCP tools
 
 1. Start: `subagent_start` with a complete task (`prompt`), the project folder (`cwd`, absolute) and `access` (`read` for analysis and review, `edit` for changes). Claude workers on `read` can use read-only tools and shell commands only. Start several jobs before waiting if the work is independent.
 2. Wait: `subagent_wait` with the job IDs. It returns when a job finishes or a subagent sends a message or question. Call it again for the jobs still running.

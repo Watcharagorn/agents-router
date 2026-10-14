@@ -1,0 +1,391 @@
+import contextlib
+import io
+import json
+import os
+import re
+import sys
+import time
+import unittest
+from unittest.mock import patch
+
+from helpers import TempHome
+
+from cli_subagents import cli, hooks, jobs, messages
+from cli_subagents.follow import (
+    AntigravityDescriber,
+    ClaudeDescriber,
+    CodexDescriber,
+    follow,
+    read_lines,
+)
+
+FOLLOW_RE = re.compile(r"^csa follow (\S+) --from (\d+)$", re.MULTILINE)
+
+
+def describe(describer, *events):
+    lines = []
+    for event in events:
+        lines += describer.describe(event)
+    return lines + describer.flush()
+
+
+class ClaudeDescribeTests(unittest.TestCase):
+    def test_lines(self):
+        lines = describe(
+            ClaudeDescriber(),
+            {"type": "system", "subtype": "init", "model": "claude-opus-5-5", "claude_code_version": "2.1.293",
+             "mcp_servers": [{"name": "a"}, {"name": "b"}], "permissionMode": "auto"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "thinking", "thinking": "Look at the tests first.\nThen fix."},
+                {"type": "text", "text": "I'll run them."},
+                {"type": "tool_use", "name": "Bash", "input": {"command": "python -m unittest\n  -v"}},
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "C:/x/a.py"}},
+                {"type": "tool_use", "name": "Grep", "input": {"pattern": "def main", "path": "src"}},
+                {"type": "tool_use", "name": "WebFetch", "input": {"url": "https://example.com"}},
+                {"type": "tool_use", "name": "mcp__docs__search", "input": {"query": "follow"}},
+                {"type": "tool_use", "name": "Write", "input": {"file_path": "b" * 400}},
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "is_error": True, "content": [{"type": "text", "text": "\nExit code 1\nmore"}]},
+                {"type": "tool_result", "content": "fine"},
+            ]}},
+            {"type": "system", "subtype": "api_retry", "attempt": 2, "error": "overloaded"},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}},
+            {"type": "result", "subtype": "success", "result": "done"},
+            {"type": "something_new"},
+        )
+        self.assertEqual(lines[:9], [
+            "started: Claude Code 2.1.293 · claude-opus-5-5 · 2 MCP servers · auto",
+            "thinking: Look at the tests first.",
+            "  Then fix.",
+            "says: I'll run them.",
+            "tool: Bash · python -m unittest -v",
+            "tool: Read · C:/x/a.py",
+            "tool: Grep · def main in src",
+            "tool: WebFetch · https://example.com",
+            "tool: mcp__docs__search · follow",
+        ])
+        self.assertTrue(lines[9].startswith("tool: Write · bbb") and lines[9].endswith("..."))
+        self.assertLessEqual(len(lines[9]), len("tool: Write · ") + 200)
+        self.assertEqual(lines[10:], [
+            "tool error: Exit code 1",
+            "retrying the API call (attempt 2, overloaded)",
+            "usage limit reached on this account",
+        ])
+
+    def test_tool_count_and_attempt_start(self):
+        describer = ClaudeDescriber()
+        describer.describe({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "X"}] * 3}})
+        self.assertEqual(describer.tool_calls, 3)
+        self.assertTrue(describer.starts_attempt({"type": "system", "subtype": "init"}))
+        self.assertFalse(describer.starts_attempt({"type": "system", "subtype": "api_retry"}))
+
+
+class CodexDescribeTests(unittest.TestCase):
+    def test_lines(self):
+        describer = CodexDescriber()
+        lines = describe(
+            describer,
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.started", "item": {"type": "command_execution", "command": "pytest -q"}},
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "pytest -q", "exit_code": 1}},
+            {"type": "item.started", "item": {"type": "command_execution", "command": "ls"}},
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "ls", "exit_code": 0}},
+            {"type": "item.completed", "item": {"type": "reasoning", "text": "**Checking** the failure"}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Fixed it.\nAll green."}},
+            {"type": "item.completed", "item": {"type": "file_change", "changes": [
+                {"path": "a.py", "kind": "update"}, {"path": "b.py", "kind": "add"}]}},
+            {"type": "item.started", "item": {"type": "mcp_tool_call", "server": "docs", "tool": "search"}},
+            {"type": "item.completed", "item": {"type": "web_search", "query": "codex json events"}},
+            {"type": "item.started", "item": {"type": "todo_list", "items": [
+                {"text": "read", "completed": True}, {"text": "fix", "completed": False}]}},
+            {"type": "item.completed", "item": {"type": "error", "message": "tool hiccup"}},
+            {"type": "turn.failed", "error": {"message": "usage limit"}},
+            {"type": "unknown.thing"},
+        )
+        self.assertEqual(lines, [
+            "started: Codex thread",
+            "$ pytest -q",
+            "  exit 1",
+            "$ ls",
+            "thinking: **Checking** the failure",
+            "says: Fixed it.",
+            "  All green.",
+            "edited: a.py, b.py (new)",
+            "tool: docs/search",
+            "search: codex json events",
+            "plan: [x] read",
+            "  [ ] fix",
+            "warning: tool hiccup",
+            "turn failed: usage limit",
+        ])
+        self.assertEqual(describer.tool_calls, 3)
+
+
+class AntigravityDescribeTests(unittest.TestCase):
+    def test_text_is_buffered_per_step(self):
+        describer = AntigravityDescriber()
+        events = [
+            {"event": "init", "init": {"model": "gemini-test"}},
+            {"event": "step_update", "step_update": {"step_index": 0, "step_type": "user_input"}},
+            {"event": "step_update", "step_update": {"step_index": 1, "step_type": "tool_call", "state": "ACTIVE", "command": "dir"}},
+            {"event": "step_update", "step_update": {"step_index": 1, "step_type": "tool_call", "state": "DONE"}},
+            {"event": "step_update", "step_update": {"step_index": 2, "step_type": "agent_response", "text_delta": "gemini "}},
+            {"event": "step_update", "step_update": {"step_index": 2, "step_type": "agent_response", "text_delta": "done"}},
+            {"event": "step_update", "step_update": {"step_index": 3, "step_type": "agent_response", "text_delta": "second"}},
+        ]
+        lines = []
+        for offset, event in enumerate(events):
+            lines += describer.describe(event, offset * 10)
+        self.assertEqual(lines, ["started: Antigravity · gemini-test", "step: tool_call · dir", "says: gemini done"])
+        self.assertEqual(describer.pending_offset, 60)
+        self.assertEqual(describer.describe({"event": "result", "result": {}}), ["says: second"])
+        self.assertIsNone(describer.pending_offset)
+        self.assertEqual(describer.tool_calls, 1)
+
+
+class ReadLinesTests(unittest.TestCase):
+    def test_partial_last_line_waits(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "events.jsonl"
+            path.write_bytes(b'{"a": 1}\n{"b": 2}\n{"c"')
+            lines, end = read_lines(path, 0)
+            self.assertEqual([offset for offset, _ in lines], [0, 9])
+            self.assertEqual(end, 18)
+            self.assertEqual(read_lines(path, end), ([], 18))
+            lines, end = read_lines(path, 18, final=True)
+            self.assertEqual((lines, end), ([(18, b'{"c"')], 22))
+            self.assertEqual(read_lines(Path(folder) / "missing", 5), ([], 5))
+
+
+class FollowTests(TempHome):
+    def csa(self, *argv, stdin=None):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), patch("sys.stdin", io.StringIO(stdin or "")):
+            code = cli.main(list(argv))
+        return code, out.getvalue()
+
+    def start(self, prompt="task", **kwargs):
+        return jobs.create_job(runtime="claude", prompt=prompt, cwd=str(self.project), **kwargs)["job_id"]
+
+    def body(self, text):
+        """Event and account lines: everything but the header and the end marker."""
+
+        lines = text.splitlines()
+        self.assertTrue(lines[0].startswith("[csa] CLI Subagents · Claude Code"), lines)
+        end = next(index for index, line in enumerate(lines) if re.match(r"\[csa\] (DONE|FAILED|STILL|QUESTION)", line))
+        return lines[1:end]
+
+    def test_run_follow_ends_with_done_and_the_result(self):
+        self.write_config(accounts=("a1",))
+        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "--model", "haiku", "do the task")
+        self.assertEqual(code, 0, text)
+        lines = text.splitlines()
+        self.assertRegex(lines[0], r"^\[csa\] CLI Subagents · Claude Code · model haiku · access edit · (account a1 · )?job \S+$")
+        self.assertIn("tool: Read", lines)
+        self.assertIn("says: done on a1", lines)
+        self.assertTrue(any(line.startswith("started: Claude Code 9.9.9 · claude-haiku-5-5 · 1 MCP server") for line in lines))
+        self.assertRegex(lines[-3], r"^\[csa\] DONE · success · \d+s · 1 tool call · account a1$")
+        self.assertEqual(lines[-2:], ["===== RESULT =====", "done on a1"])
+        job_id = lines[0].rsplit(" ", 1)[1]
+        # The follower delivered the result: nothing is left for the wake-up or SessionStart hooks.
+        self.assertFalse(jobs.is_pending(job_id))
+        self.assertFalse(jobs.claim_delivery(job_id))
+        self.assertEqual(hooks.pending_jobs(str(self.project)), [])
+        # A plain follow of the finished job prints the whole history again.
+        code, again = self.csa("follow", job_id)
+        # The replay names the account in its header instead of in a line of its own.
+        self.assertIn(" · account a1 · ", again.splitlines()[0])
+        live = [line for line in self.body(text) if line != "[csa] running on account a1"]
+        self.assertEqual((code, self.body(again)), (0, live))
+        self.assertEqual(again.splitlines()[-2:], ["===== RESULT =====", "done on a1"])
+
+    def test_failed_job(self):
+        self.write_config(accounts=("a1",))
+        os.environ["FAKE_CLAUDE_SCENARIO"] = "auth"
+        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "x")
+        self.assertEqual(code, 1, text)
+        self.assertEqual(text.splitlines()[-1], "[csa] FAILED · auth · Invalid API key · Please run /login")
+
+    def test_failover_prints_the_account_switch(self):
+        self.write_config(accounts=("a1", "a2"))
+        os.environ["FAKE_CLAUDE_LIMITED"] = "a1"
+        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "x")
+        self.assertEqual(code, 0, text)
+        body = self.body(text)
+        limit = body.index("usage limit reached on this account")
+        switch = body.index("[csa] switched to account a2 after usage_limit on a1")
+        self.assertLess(limit, switch)
+        self.assertLess(switch, body.index("says: done on a2"))
+        self.assertEqual(sum(line.startswith("started: Claude Code") for line in body), 2)
+        self.assertIn("· account a2", text.splitlines()[-3])
+
+    def test_still_running_then_continue_without_repeats(self):
+        self.write_config(accounts=("a1",))
+        os.environ["FAKE_CLAUDE_DELAY"] = "2"
+        job_id = self.start()
+        seen, calls, offset = [], 0, None
+        while True:
+            argv = ["follow", job_id, "--max-wait", "0.3"] + (["--from", str(offset)] if offset is not None else [])
+            code, text = self.csa(*argv)
+            calls += 1
+            self.assertEqual(code, 0, text)
+            seen += self.body(text)
+            if "[csa] DONE" in text:
+                break
+            self.assertIn("[csa] STILL RUNNING after", text)
+            match = FOLLOW_RE.search(text)
+            self.assertEqual(match.group(1), job_id)
+            self.assertEqual(text.splitlines()[-1], match.group(0))
+            offset = int(match.group(2))
+            self.assertLess(calls, 100)
+        self.assertGreater(calls, 1)
+        _, full = self.csa("follow", job_id)
+        self.assertEqual(seen, self.body(full))
+        self.assertEqual(sum(line.startswith("started:") for line in seen), 1)
+
+    def test_question_stops_the_follow_and_message_answers_from_stdin(self):
+        self.write_config(accounts=("a1",))
+        os.environ["FAKE_CLAUDE_DELAY"] = "3"
+        job_id = self.start()
+        question = messages.post_from_worker(job_id, "Tabs or spaces?", kind="question")
+        messages.post_from_worker(job_id, "halfway there")
+        code, text = self.csa("follow", job_id)
+        self.assertEqual(code, 0, text)
+        lines = text.splitlines()
+        marker = lines.index(f"[csa] QUESTION from the worker (id {question['id']}):")
+        self.assertEqual(lines[marker + 1 : marker + 3], ["Tabs or spaces?", "Answer with:"])
+        self.assertIn(f"csa message {job_id} --reply-to {question['id']} -", lines)
+        self.assertEqual(lines[-2], "Then keep watching with:")
+        offset = int(FOLLOW_RE.search(text).group(2))
+        # The note after the question waits for the next follow.
+        self.assertNotIn("note for the main session: halfway there", lines)
+
+        code, reply = self.csa("message", job_id, "--reply-to", question["id"], "-", stdin="Spaces, four of them.\n")
+        self.assertEqual(code, 0, reply)
+        self.assertEqual(messages.answers(job_id)[question["id"]], "Spaces, four of them.")
+        messages.take_for_worker(job_id)  # the worker's ask_parent picks the answer up
+
+        code, text = self.csa("follow", job_id, "--from", str(offset))
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("QUESTION", text)
+        self.assertIn("note for the main session: halfway there", text.splitlines())
+        self.assertIn("[csa] DONE · success", text)
+        # Both worker messages reached the main session through the follower.
+        self.assertFalse(messages.has_new_for_host(job_id))
+
+    def test_question_seen_once_does_not_stop_again(self):
+        self.write_config(accounts=("a1",))
+        os.environ["FAKE_CLAUDE_DELAY"] = "2"
+        job_id = self.start()
+        messages.post_from_worker(job_id, "Which branch?", kind="question")
+        _, text = self.csa("follow", job_id)
+        self.assertIn("[csa] QUESTION", text)
+        offset = FOLLOW_RE.search(text).group(2)
+        # Not answered, but already handed on: keep watching instead of stopping again.
+        code, text = self.csa("follow", job_id, "--from", offset)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("QUESTION", text)
+        self.assertIn("[csa] DONE · success", text)
+        # The full history shows the question as a plain line.
+        _, full = self.csa("follow", job_id)
+        self.assertIn("asked the main session: Which branch?", full.splitlines())
+
+    def test_partial_lines_wait_and_offsets_resume(self):
+        self.write_config(accounts=("a1",))
+        job_id = jobs.create_job(runtime="claude", prompt="x", cwd=str(self.project), start=False)["job_id"]
+        events = jobs.job_dir(job_id) / "events.jsonl"
+        init = json.dumps({"type": "system", "subtype": "init", "model": "m"}) + "\n"
+        said = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hello"}]}}) + "\n"
+        events.write_bytes((init + "not json\n" + said[:10]).encode())
+        out = io.StringIO()
+        self.assertEqual(follow(job_id, None, 0, out), 0)
+        lines = out.getvalue().splitlines()
+        self.assertIn("started: Claude Code · m", lines)
+        self.assertNotIn("says: hello", lines)
+        offset = len((init + "not json\n").encode())
+        self.assertEqual(lines[-1], f"csa follow {job_id} --from {offset}")
+
+        with open(events, "ab") as handle:
+            handle.write(said[10:].encode())
+        out = io.StringIO()
+        follow(job_id, offset, 0, out)
+        lines = out.getvalue().splitlines()
+        self.assertNotIn("started: Claude Code · m", lines)
+        self.assertIn("says: hello", lines)
+        offset = int(FOLLOW_RE.search(out.getvalue()).group(2))
+        self.assertEqual(offset, events.stat().st_size)
+
+        jobs.write_text(jobs.job_dir(job_id) / "result.md", "hello")
+        jobs.mark_pending(job_id)
+        jobs.update_status(job_id, state="done", outcome="success", account="a1", attempts=[{"account": "a1"}],
+                           started_at=time.time() - 75, finished_at=time.time())
+        out = io.StringIO()
+        self.assertEqual(follow(job_id, offset, 0, out), 0)
+        lines = out.getvalue().splitlines()
+        self.assertNotIn("says: hello", lines)
+        self.assertEqual(lines[-3], "[csa] DONE · success · 1m 15s · 0 tool calls · account a1")
+        self.assertFalse(jobs.is_pending(job_id))
+
+    def test_antigravity_run(self):
+        fake = os.path.join(os.path.dirname(__file__), "fake_agy.py")
+        os.environ["CLI_SUBAGENTS_AGY_COMMAND"] = json.dumps([sys.executable, fake])
+        code, text = self.csa("run", "--follow", "--runtime", "antigravity", "--cwd", str(self.project), "--model", "gemini-test", "x")
+        self.assertEqual(code, 0, text)
+        lines = text.splitlines()
+        self.assertTrue(lines[0].startswith("[csa] CLI Subagents · Antigravity · model gemini-test · access edit"), lines)
+        self.assertEqual(
+            [line for line in lines[1:-3] if not line.startswith("[csa] running")],
+            ["started: Antigravity · gemini-test", "step: tool_call", "says: gemini done"],
+        )
+        self.assertRegex(lines[-3], r"^\[csa\] DONE · success · \d+s · 1 tool call · account primary$")
+        self.assertEqual(lines[-1], "gemini done")
+
+    def test_explicit_offset_zero_does_not_replay_messages(self):
+        self.write_config(accounts=("a1",))
+        os.environ["FAKE_CLAUDE_DELAY"] = "2"
+        job_id = self.start()
+        messages.post_from_worker(job_id, "first note")
+        _, text = self.csa("follow", job_id, "--max-wait", "0")
+        self.assertIn("note for the main session: first note", text.splitlines())
+        _, text = self.csa("follow", job_id, "--from", "0")
+        self.assertNotIn("first note", text)
+        self.assertIn("[csa] DONE", text)
+
+    def test_antigravity_text_split_across_follows(self):
+        self.write_config(accounts=("a1",))
+        job_id = jobs.create_job(runtime="claude", prompt="x", cwd=str(self.project), start=False)["job_id"]
+        spec_path = jobs.job_dir(job_id) / "spec.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec["runtime"] = "antigravity"
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        events = jobs.job_dir(job_id) / "events.jsonl"
+
+        def step(index, kind, delta=""):
+            return json.dumps({"event": "step_update", "step_update": {"step_index": index, "step_type": kind, "text_delta": delta}}) + "\n"
+
+        head = json.dumps({"event": "init", "init": {"model": "g"}}) + "\n" + step(1, "tool_call")
+        events.write_bytes((head + step(2, "agent_response", "Hel")).encode())
+        out = io.StringIO()
+        follow(job_id, None, 0, out)
+        self.assertNotIn("says:", out.getvalue())
+        offset = int(FOLLOW_RE.search(out.getvalue()).group(2))
+        self.assertEqual(offset, len(head.encode()))
+
+        with open(events, "ab") as handle:
+            handle.write((step(2, "agent_response", "lo") + json.dumps({"event": "result", "result": {}}) + "\n").encode())
+        out = io.StringIO()
+        follow(job_id, offset, 0, out)
+        lines = out.getvalue().splitlines()
+        self.assertIn("says: Hello", lines)
+        self.assertNotIn("step: tool_call", lines)
+        self.assertNotIn("started: Antigravity · g", lines)
+
+
+if __name__ == "__main__":
+    unittest.main()

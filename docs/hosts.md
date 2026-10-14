@@ -35,7 +35,7 @@ If there is no `claude` command (the Claude desktop app often doesn't put one on
 
 Claude Code installs the plugin from there on its next start. `csa setup --claude-route settings` takes this route on purpose.
 
-You get the MCP server, the `cli-subagents` skill, `/cli-subagents:delegate` and two hooks that call `csa` (so `csa` must be on PATH). The hooks wake an idle session when a subagent finishes or asks a question, and list uncollected results after a resume or compact; see [Claude Code](claude-code.md#messages-and-wake-ups). A `subagent_wait` call that runs longer than about two minutes moves to the background on its own (Claude Code 2.1.212+), and Claude gets a notification when it returns, so waiting doesn't block the session.
+You get the MCP server, three agent types that show jobs in the agent list (`cli-subagents:cli-subagents-claude`, `-codex` and `-antigravity`; see [Claude Code](claude-code.md#subagents-in-the-agent-list)), the `cli-subagents` skill, `/cli-subagents:delegate` and two hooks that call `csa` (so `csa` must be on PATH). The hooks wake an idle session when a subagent finishes or asks a question, and list uncollected results after a resume or compact; see [Claude Code](claude-code.md#messages-and-wake-ups). A `subagent_wait` call that runs longer than about two minutes moves to the background on its own (Claude Code 2.1.212+), and Claude gets a notification when it returns, so waiting doesn't block the session.
 
 ## Codex
 

@@ -67,7 +67,29 @@ csa doctor --live
 
 ## 4. Use it
 
-In Claude Code, ask for delegation in plain words ("have a subagent review the auth module on another account"), use `/cli-subagents:delegate <task>`, or let the skill decide. The tools are:
+In Claude Code, ask for delegation in plain words ("have a subagent review the auth module on another account"), use `/cli-subagents:delegate <task>`, or let the skill decide.
+
+### Subagents in the agent list
+
+The plugin adds three agent types, one per CLI:
+
+| Agent type | Runs the task in | Color |
+|---|---|---|
+| `cli-subagents:cli-subagents-claude` | Claude Code (`claude -p`) on one of your Claude accounts | orange |
+| `cli-subagents:cli-subagents-codex` | Codex (`codex exec`) on one of your ChatGPT accounts | green |
+| `cli-subagents:cli-subagents-antigravity` | Antigravity (`agy`) on your Google account | blue |
+
+Claude starts them with its Agent tool like any other subagent, so they show up in the agent list and in the desktop app's task list, and Claude gets the usual notice when one finishes. The task description reads `<model> · <access> · <task>`, for example `Opus 5.5 · edit · fix the login test`, so you can see which model works on what.
+
+Each one is a small relay on Haiku. It starts the job with `csa run --follow` and prints the worker's steps as they happen: the commands it runs, the tools it calls, the files it edits, what it says, and its reasoning when the CLI reports it. Open the agent to watch. Jobs longer than about nine minutes continue with `csa follow <job> --from <offset>`, one more relay call each time. When the worker asks a question, the relay stops and passes it to the main session; Claude answers with SendMessage and the relay sends the answer on. SendMessage "cancel" stops the job.
+
+The relay costs a few small Haiku requests per job on the main session's account, roughly a third to half a cent per job at list price, since it only copies the task in and the result out ([details](research/native-subagent-display.md#cost-of-the-relay)). It needs `csa` on PATH. In auto mode, Claude Code's safety check decides on each `csa` call; in the other modes Claude Code asks before the first one, and an allow rule such as `Bash(csa:*)` in your settings skips the prompts.
+
+You can follow any job the same way from a terminal: `csa follow <job>` prints its history and keeps going until it finishes or nine minutes pass (`--max-wait` changes that).
+
+### MCP tools
+
+The relay agents are built on the same jobs as the MCP tools, which work in every host:
 
 | Tool | Purpose |
 |---|---|
@@ -80,7 +102,7 @@ In Claude Code, ask for delegation in plain words ("have a subagent review the a
 | `subagent_list` | Recent jobs |
 | `subagent_accounts` | Accounts, logins, usage and cooldowns |
 
-From a terminal, the same jobs are available through `csa run`, `csa start`, `csa status`, `csa result`, `csa cancel`, `csa jobs`, `csa wait` and `csa message`. `csa --home <folder>` uses a different CLI Subagents folder for one command.
+From a terminal, the same jobs are available through `csa run` (add `--follow` to watch each step), `csa start`, `csa follow`, `csa status`, `csa result`, `csa cancel`, `csa jobs`, `csa wait` and `csa message`. `csa --home <folder>` uses a different CLI Subagents folder for one command.
 
 `access` controls permissions:
 

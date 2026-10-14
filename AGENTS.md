@@ -56,5 +56,7 @@ The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`,
 | `src/cli_subagents/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
 | `src/cli_subagents/runtimes/` | Claude Code, Codex and Antigravity adapters |
 | `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity |
+| `agents/` | Claude Code relay agents (`cli-subagents:cli-subagents-claude` and so on) that run `csa run --follow` |
+| `src/cli_subagents/follow.py` | `csa follow`: one readable line per worker event, with end markers for the relay agents |
 | `adapters/antigravity/` | The older standalone Antigravity server |
 | `docs/` | Guides, design notes and research |

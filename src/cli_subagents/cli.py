@@ -251,6 +251,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     status = _start(args)
+    if args.follow:
+        from cli_subagents.follow import follow
+
+        return follow(status["job_id"], None, args.max_wait)
     print(f"Started {status['job_id']}", file=sys.stderr)
     status = jobs.wait_for(status["job_id"], args.timeout + 960)
     result = jobs.read_result(status["job_id"], 1_000_000)
@@ -260,6 +264,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(result["result"])
     print(json.dumps(tools.summarize(result), indent=2, default=str), file=sys.stderr)
     return 0 if result.get("outcome") == "success" else 1
+
+
+def cmd_follow(args: argparse.Namespace) -> int:
+    from cli_subagents.follow import follow
+
+    if args.from_offset is not None and args.from_offset < 0:
+        raise ValueError("--from must be 0 or more")
+    return follow(args.job_id, args.from_offset, args.max_wait)
+
+
+def cmd_message(args: argparse.Namespace) -> int:
+    text = sys.stdin.read() if args.text == "-" else args.text
+    _print(tools.call("subagent_message", {"job_id": args.job_id, "text": text, "reply_to": args.reply_to}))
+    return 0
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -378,6 +396,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name, help_text in (("run", "Run a task and print the result."), ("start", "Start a task in the background.")):
         _job_arguments(sub.add_parser(name, help=help_text))
+    run_parser = sub.choices["run"]
+    run_parser.add_argument(
+        "--follow", action="store_true",
+        help="Print the worker's steps as they happen, then the result (see csa follow).",
+    )
+    run_parser.add_argument("--max-wait", type=float, default=540, help="With --follow: stop watching after this many seconds (default 540).")
+    follow_parser = sub.add_parser(
+        "follow", help="Print a job's steps as they happen, then its result.",
+        description="Prints one line per worker event and ends with one marker: DONE or FAILED (with the result), "
+        "STILL RUNNING (with the command to keep watching) or QUESTION (with the commands to answer and continue).",
+    )
+    follow_parser.add_argument("job_id")
+    follow_parser.add_argument("--from", dest="from_offset", type=int, metavar="OFFSET",
+                               help="Continue at this byte offset, as printed by an earlier follow (default: from the start).")
+    follow_parser.add_argument("--max-wait", type=float, default=540, help="Stop watching after this many seconds (default 540).")
 
     status = sub.add_parser("status", help="Show a job's state.")
     status.add_argument("job_id")
@@ -392,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--timeout", type=int, default=1800)
     message = sub.add_parser("message", help="Send a follow-up or an answer to a job.")
     message.add_argument("job_id")
-    message.add_argument("text")
+    message.add_argument("text", help="The message. Use '-' to read it from stdin.")
     message.add_argument("--reply-to")
     jobs_parser = sub.add_parser("jobs", help="List recent jobs.")
     jobs_parser.add_argument("--limit", type=int, default=20)
@@ -452,7 +485,8 @@ def main(argv: list[str] | None = None) -> int:
             "cancel": cmd_cancel,
             "jobs": cmd_jobs,
             "wait": lambda a: _print(tools.call("subagent_wait", {"job_ids": a.job_ids, "timeout_seconds": a.timeout})) or 0,
-            "message": lambda a: _print(tools.call("subagent_message", {"job_id": a.job_id, "text": a.text, "reply_to": a.reply_to})) or 0,
+            "message": cmd_message,
+            "follow": cmd_follow,
         }
         if args.command == "launch":
             return cmd_launch(args, extra)

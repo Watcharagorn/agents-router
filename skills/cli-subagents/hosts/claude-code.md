@@ -4,7 +4,9 @@
 
 The plugin is installed from a terminal with `csa setup`, or with `claude plugin marketplace add lunati228/CLI-Subagents` and `claude plugin install cli-subagents@cli-subagents`; no slash command is needed. It loads after a restart or `/reload-plugins`.
 
-The plugin's tools appear as `mcp__plugin_cli-subagents_cli-subagents__subagent_start` and so on (or `mcp__cli-subagents__...` if the server was added by hand). `/cli-subagents:delegate <task>` runs the whole loop.
+The plugin adds three agent types for your Agent tool: `cli-subagents:cli-subagents-claude` (orange), `cli-subagents:cli-subagents-codex` (green) and `cli-subagents:cli-subagents-antigravity` (blue). Each is a small Haiku relay that starts the job with `csa run --follow` and prints the worker's steps as they happen, so the user can open it in the agent list and watch. Start them in the background; the description `<model> · <access> · <task>` is what the user sees. They need `csa` on PATH. In auto mode, Claude Code's safety check decides on each `csa` call; in other modes the user approves `csa` Bash calls (an allow rule such as `Bash(csa:*)` saves the prompts).
+
+The plugin's MCP tools appear as `mcp__plugin_cli-subagents_cli-subagents__subagent_start` and so on (or `mcp__cli-subagents__...` if the server was added by hand). `/cli-subagents:delegate <task>` runs the whole loop.
 
 ## Waiting
 

@@ -124,6 +124,36 @@ def has_new_for_host(job_id: str) -> bool:
     return any(record.get("id") not in seen for record in _read(folder / "outbox.jsonl"))
 
 
+def outbox(job_id: str) -> list[dict[str, Any]]:
+    """Every worker message, oldest first."""
+
+    return _read(job_dir(job_id) / "outbox.jsonl")
+
+
+def answers(job_id: str) -> dict[str, str]:
+    """Answers the main session sent, by question id."""
+
+    return {
+        str(record["reply_to"]): str(record.get("text") or "")
+        for record in _read(job_dir(job_id) / "inbox.jsonl")
+        if record.get("reply_to")
+    }
+
+
+def followed(job_id: str) -> set[str]:
+    """Outbox entries a `csa follow` already printed (its own cursor, beside the host's)."""
+
+    return set(read_json(job_dir(job_id) / "outbox-followed.json", []) or [])
+
+
+def mark_followed(job_id: str, ids: set[str]) -> None:
+    """A follower printed these entries: the host has them now, so they count as delivered too."""
+
+    if ids:
+        _mark_seen(job_id, "outbox-followed.json", ids)
+        _mark_seen(job_id, "outbox-delivered.json", ids)
+
+
 def open_questions(job_id: str) -> list[dict[str, Any]]:
     folder = job_dir(job_id)
     answered = {record.get("reply_to") for record in _read(folder / "inbox.jsonl")}
