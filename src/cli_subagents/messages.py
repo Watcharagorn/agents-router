@@ -55,6 +55,14 @@ def _take_unseen(job_id: str, log: str, seen_file: str) -> list[dict[str, Any]]:
     return fresh
 
 
+def _mark_seen(job_id: str, seen_file: str, ids: set[str]) -> None:
+    seen_path = job_dir(job_id) / seen_file
+    with file_lock(seen_path.with_suffix(".lock")):
+        seen = set(read_json(seen_path, []) or [])
+        if not ids <= seen:
+            write_json(seen_path, sorted(seen | ids))
+
+
 def _record(kind: str, text: str, **extra: Any) -> dict[str, Any]:
     text = str(text or "").strip()
     if not text:
@@ -84,11 +92,14 @@ def take_for_hook(job_id: str) -> list[dict[str, Any]]:
 
 
 def wait_for_reply(job_id: str, question_id: str, timeout: float) -> dict[str, Any] | None:
+    """The answer to one question. Marks only that answer read: other inbox entries
+    stay for check_parent_messages, the inbox hook and the runner's follow-up turn."""
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for record in _read(job_dir(job_id) / "inbox.jsonl"):
             if record.get("reply_to") == question_id:
-                _take_unseen(job_id, "inbox.jsonl", "inbox-read.json")
+                _mark_seen(job_id, "inbox-read.json", {record["id"]})
                 return record
         time.sleep(1.0)
     return None

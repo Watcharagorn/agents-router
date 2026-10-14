@@ -1,8 +1,10 @@
 """Claude Code hook commands (`csa hook ...`).
 
-* `await` (PostToolUse on subagent_start, run with asyncRewake): waits for the
-  job, then exits with code 2 so Claude Code wakes the main session, even when
-  it is idle, and shows it the summary printed on stderr.
+* `await` (PostToolUse on subagent_start and subagent_message, run with
+  asyncRewake): waits for the job, then exits with code 2 so Claude Code wakes
+  the main session, even when it is idle, and shows it the summary printed on
+  stderr. It runs again after each subagent_message, so a job that woke the
+  session with a question is watched again once it is answered.
 * `pending` (SessionStart on resume and compact): names finished jobs whose
   result nobody collected yet.
 * `inbox` (PostToolUse inside a Claude worker): hands the worker follow-ups the
@@ -24,6 +26,7 @@ from typing import Any, TextIO
 
 from cli_subagents import jobs, messages
 from cli_subagents.config import jobs_dir
+from cli_subagents.fsutil import try_lock, unlock
 
 POLL_SECONDS = 2.0
 # hooks/hooks.json gives the hook 7200 s; wake the session a little before that.
@@ -31,6 +34,8 @@ AWAIT_DEADLINE_SECONDS = 7080
 RESULT_PREVIEW_CHARS = 1500
 MAX_PENDING_JOBS = 10
 WAKE = 2
+# A new watcher waits this long for a previous one that is just exiting.
+WATCH_LOCK_SECONDS = 5.0
 
 
 def read_input(stream: TextIO | None = None) -> dict[str, Any]:
@@ -42,15 +47,20 @@ def read_input(stream: TextIO | None = None) -> dict[str, Any]:
 
 
 def find_job_id(value: Any, depth: int = 0) -> str | None:
-    """The job_id inside a tool response, in whatever shape the host passes it.
+    """The job to watch inside a tool response, in whatever shape the host passes it.
 
     MCP tool results reach the hook as text content holding our JSON, possibly
-    wrapped in a content list or a {"content": [...]} object.
+    wrapped in a content list or a {"content": [...]} object. A subagent_message
+    reply for a finished job names its continuation in "new_job"; that job wins.
     """
 
     if depth > 6:
         return None
     if isinstance(value, dict):
+        if isinstance(value.get("new_job"), dict):
+            found = find_job_id(value["new_job"], depth + 1)
+            if found:
+                return found
         job_id = value.get("job_id")
         if isinstance(job_id, str) and job_id:
             return job_id
@@ -70,7 +80,8 @@ def find_job_id(value: Any, depth: int = 0) -> str | None:
         try:
             return find_job_id(json.loads(value), depth + 1)
         except ValueError:
-            match = re.search(r'"job_id"\s*:\s*"([0-9a-z-]{1,64})"', value)
+            match = re.search(r'"new_job"\s*:\s*\{[^{}]*?"job_id"\s*:\s*"([0-9a-z-]{1,64})"', value)
+            match = match or re.search(r'"job_id"\s*:\s*"([0-9a-z-]{1,64})"', value)
             return match.group(1) if match else None
     return None
 
@@ -106,7 +117,11 @@ def _messages_summary(job_id: str, new: list[dict[str, Any]], questions: list[di
 
 
 def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_SECONDS) -> tuple[int, str]:
-    """Wait for the job named in a subagent_start response. Returns (exit code, stderr text)."""
+    """Wait for the job named in a subagent_start or subagent_message response.
+
+    Returns (exit code, stderr text). One watcher per job: if another one is
+    already waiting for it, this one leaves quietly.
+    """
 
     job_id = find_job_id(payload.get("tool_response"))
     if not job_id:
@@ -115,6 +130,16 @@ def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_
         jobs.read_status(job_id)
     except ValueError:
         return 0, ""
+    handle = try_lock(jobs.job_dir(job_id) / "watch.lock", WATCH_LOCK_SECONDS)
+    if handle is None:
+        return 0, ""  # another watcher already waits for this job
+    try:
+        return _watch(job_id, deadline_seconds)
+    finally:
+        unlock(handle)
+
+
+def _watch(job_id: str, deadline_seconds: float) -> tuple[int, str]:
     deadline = time.monotonic() + deadline_seconds
     while True:
         try:
@@ -125,11 +150,13 @@ def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_
             if not jobs.claim_delivery(job_id):
                 return 0, ""  # the model already collected it (subagent_wait, subagent_result)
             return WAKE, _finished_summary(job_id, status)
-        if messages.has_new_for_host(job_id) or messages.open_questions(job_id):
+        if messages.has_new_for_host(job_id):
+            # Only entries nobody was shown yet wake the session (taken atomically),
+            # so a question already seen through subagent_wait or another watcher
+            # doesn't wake it a second time.
             new = messages.take_for_host(job_id)
-            questions = messages.open_questions(job_id)
-            if new or questions:
-                return WAKE, _messages_summary(job_id, new, questions)
+            if new:
+                return WAKE, _messages_summary(job_id, new, messages.open_questions(job_id))
         if time.monotonic() >= deadline:
             return WAKE, (
                 f"CLI Subagents job {job_id} is still running after {int(deadline_seconds // 60)} minutes. "

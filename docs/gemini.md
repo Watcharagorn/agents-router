@@ -30,6 +30,10 @@ Antigravity's own auto mode (a reviewer agent for commands) isn't available on e
 
 The prompt travels as a command-line argument, so it's limited to 24,000 characters. Point to files instead of pasting them. The job's `timeout_seconds` is passed to `agy` as `--print-timeout`.
 
+## Messages
+
+Antigravity workers have no channel back to the main session, so `message_parent` and `ask_parent` aren't available to them. Claude and Codex workers get those tools from an MCP server added for that one run, and `agy` has no flag for that. Follow-ups still reach an Antigravity worker. A `subagent_message` sent while the job runs is given to the worker by the runner as a follow-up turn once its current turn ends. A `subagent_message` sent to a finished job continues the same conversation as a new job.
+
 ## The standalone adapter
 
 [`adapters/antigravity/`](../adapters/antigravity/) is the original Windows MCP server for AGY. It runs `agy` through ConPTY (older versions printed nothing to a pipe) and adds its own command reviewer, so headless runs can execute shell commands after a separate model approves each one. Use it if you need reviewed shell commands on Windows; otherwise the core runtime is simpler and needs no setup.

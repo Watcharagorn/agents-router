@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import os
 from pathlib import Path
 import re
 import time
@@ -164,8 +166,19 @@ class Lease:
             unlock(self.handle)
 
 
+def _home_key(home: Path) -> str:
+    """A short key for an account folder, the same for every name that points to it."""
+
+    try:
+        resolved = str(Path(home).expanduser().resolve())
+    except (OSError, RuntimeError):
+        resolved = os.path.abspath(str(home))
+    return hashlib.sha256(os.path.normcase(resolved).encode("utf-8")).hexdigest()[:16]
+
+
 def _slot_path(runtime: RuntimeConfig, account: Account, slot: int) -> Path:
-    return state_dir() / "leases" / runtime.runtime / account.name / f"{slot}.lock"
+    # Keyed on the folder, not the name: two names for one folder share its slots.
+    return state_dir() / "leases" / runtime.runtime / _home_key(account.home) / f"{slot}.lock"
 
 
 def _orphan_alive(lock_path: Path) -> bool:

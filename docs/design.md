@@ -81,7 +81,7 @@ Each job folder has two append-only logs, `outbox.jsonl` (worker to main session
 
 For a Claude worker, a `PostToolUse` hook shows new follow-ups after the next tool call. Hook text is only a hint to the model, so anything the worker doesn't read explicitly is sent again by the runner as a follow-up turn (at most five).
 
-On the main session's side the plugin's `hooks/hooks.json` has two hooks. An async `PostToolUse` hook on `subagent_start` runs `csa hook await`, which waits for the job and exits with code 2 so Claude Code wakes an idle session when the job finishes or the worker asks something. A `SessionStart` hook on resume and compact runs `csa hook pending`, which lists finished jobs in the project whose result nobody collected. Each result is delivered once: whichever of `subagent_wait`, `subagent_result` or the hook calls `claim_delivery` first gets it.
+On the main session's side the plugin's `hooks/hooks.json` has two hooks. An async `PostToolUse` hook on `subagent_start` and `subagent_message` runs `csa hook await`, which waits for the job and exits with code 2 so Claude Code wakes an idle session when the job finishes or the worker asks something. A `SessionStart` hook on resume and compact runs `csa hook pending`, which lists finished jobs in the project whose result nobody collected. Each result is delivered once: whichever of `subagent_wait`, `subagent_result` or the hook calls `claim_delivery` first gets it.
 
 Results distinguish success, non-zero exit, timeout, cancellation, usage limit, auth failure and permission denial. "Produced some text" is never treated as success on its own; that is a known weakness of the current Antigravity adapter.
 
@@ -197,6 +197,12 @@ Each is a short experiment with real CLIs, recorded in `docs/research/` with the
 7. Verified with a real Claude worker: two-way messages work (a worker's question reaches the main session and the answer comes back), and a follow-up sent to a running worker is applied.
 8. Verified: a native Claude Code subagent and a CLI Subagents worker gave equivalent results on the same task.
 9. Verified with 2.1.295: plan mode blocks MCP calls, including the parent channel, so `read` jobs use `dontAsk` with an allowlist instead.
+
+Fixed after the fourth code review (covered by `tests/test_review_round4.py`):
+
+- When `ask_parent` finds its answer, only that answer is marked read. A follow-up queued at the same time still reaches the worker through `check_parent_messages`, the worker's inbox hook or the runner's follow-up turn. Before, every unread inbox entry was marked read, so such a follow-up was lost.
+- The wake-up hook runs again after `subagent_message`. `csa hook await` stops after it wakes the session for a question or a note, so before this nothing watched the rest of the job. Now answering a question starts a new watcher for the job, and a message to a finished job starts one for the new job (`new_job` in the reply). Only one watcher waits per job (`watch.lock` in the job folder), and only messages nobody has seen yet wake the session. A finished result is still claimed once with `claim_delivery`.
+- Job slots are locked per account folder, not per account name. The lock path uses a hash of the resolved, case-normalized folder, so two names for the same folder share one set of slots. The owner record that keeps a slot busy after its runner died works as before.
 
 Two findings from the live tests changed the design:
 

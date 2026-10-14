@@ -49,7 +49,7 @@ class OrphanedWorkerTests(TempHome):
         return config, config.find("a1")
 
     def owner_file(self):
-        return self.home / "state" / "leases" / "claude" / "a1" / "0.owner.json"
+        return accounts._owner_path(accounts._slot_path(*self.slot(), 0))
 
     def test_start_time_identifies_this_process(self):
         stamp = process_start_time(os.getpid())
@@ -427,7 +427,10 @@ class HomeOptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "acct").mkdir()
-            with patch.dict(os.environ, {"CLI_SUBAGENTS_HOME": str(root / "csa")}):
+            (root / "main").mkdir()
+            # A throwaway primary, so the sync never links the real ~/.claude into the temp folder.
+            env = {"CLI_SUBAGENTS_HOME": str(root / "csa"), "CLAUDE_CONFIG_DIR": str(root / "main")}
+            with patch.dict(os.environ, env):
                 self.assertEqual(cli.main(["accounts", "add", "x", "--home", str(root / "acct"), "--no-login"]), 0)
                 self.assertTrue((root / "csa" / "config.toml").exists())
                 self.assertFalse((root / "acct" / "config.toml").exists())
