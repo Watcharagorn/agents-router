@@ -303,7 +303,7 @@ def cmd_launch(args: argparse.Namespace, extra: list[str]) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="csa", description="CLI Subagents: run tasks in other agent CLIs under your own accounts.")
     parser.add_argument("--version", action="version", version=f"cli-subagents {__version__}")
-    parser.add_argument("--home", help="Use this folder instead of ~/.cli-subagents (sets CLI_SUBAGENTS_HOME).")
+    parser.add_argument("--home", dest="csa_home", help="Use this folder instead of ~/.cli-subagents (sets CLI_SUBAGENTS_HOME).")
     sub = parser.add_subparsers(dest="command", required=True)
 
     mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
@@ -375,8 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         index = argv.index("--")
         argv, extra = argv[:index], argv[index + 1 :]
     args = build_parser().parse_args(argv)
-    if args.home:
-        os.environ["CLI_SUBAGENTS_HOME"] = args.home
+    if getattr(args, "csa_home", None):
+        os.environ["CLI_SUBAGENTS_HOME"] = args.csa_home
     if args.command == "hook":
         from cli_subagents.hooks import main as run_hook
 

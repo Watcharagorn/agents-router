@@ -415,3 +415,20 @@ class HostLimitTests(TempHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeOptionTests(unittest.TestCase):
+    def test_account_home_is_not_taken_as_the_data_folder(self):
+        import os, tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from cli_subagents import cli
+        from cli_subagents.config import load_config
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "acct").mkdir()
+            with patch.dict(os.environ, {"CLI_SUBAGENTS_HOME": str(root / "csa")}):
+                self.assertEqual(cli.main(["accounts", "add", "x", "--home", str(root / "acct"), "--no-login"]), 0)
+                self.assertTrue((root / "csa" / "config.toml").exists())
+                self.assertFalse((root / "acct" / "config.toml").exists())
+                self.assertEqual([a.name for a in load_config().runtime("claude").accounts], ["x"])
