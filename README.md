@@ -64,6 +64,51 @@ flowchart LR
 
 That's it. Ask your main session to use a subagent, or use `/cli-subagents:delegate <task>` in Claude Code. Details per host are in [docs/hosts.md](docs/hosts.md).
 
+## For AI agents
+
+If a user asked you to install CLI Subagents, do the steps below. You don't need slash commands.
+
+1. Install the `csa` command, then check it with `csa --version`:
+
+   ```bash
+   pipx install git+https://github.com/lunati228/CLI-Subagents
+   ```
+
+   No pipx? Use `pip install --user git+https://github.com/lunati228/CLI-Subagents` and make sure its scripts folder is on PATH.
+
+2. Add the plugin to the user's CLI from the terminal:
+
+   | Host | Commands |
+   |---|---|
+   | Claude Code | `claude plugin marketplace add lunati228/CLI-Subagents` then `claude plugin install cli-subagents@cli-subagents` |
+   | Codex | `codex plugin marketplace add lunati228/CLI-Subagents` then `codex plugin add cli-subagents@cli-subagents` |
+   | Antigravity | `agy plugin install https://github.com/lunati228/CLI-Subagents` |
+
+   If `claude` isn't on PATH (common with the Claude desktop app), merge this into `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`). Keep every key that's already there. Claude Code installs the plugin on its next start:
+
+   ```json
+   {
+     "extraKnownMarketplaces": {
+       "cli-subagents": { "source": { "source": "github", "repo": "lunati228/CLI-Subagents" } }
+     },
+     "enabledPlugins": { "cli-subagents@cli-subagents": true }
+   }
+   ```
+
+3. Register the user's other accounts. A folder that is already logged in needs no new login:
+
+   ```bash
+   csa accounts add <name> --home <path to that account's config folder> --no-login
+   ```
+
+   For a new account, `csa accounts add <name>` opens the vendor's login, which the user completes in the browser.
+
+4. Check: `csa doctor` (no model calls), or `csa doctor --live` (one tiny job per account).
+
+5. Tell the user what's left: browser logins for new accounts, and restarting their CLI (or `/reload-plugins` in Claude Code) so the plugin loads.
+
+Never read or copy credential files, and never edit files inside `~/.cli-subagents/homes/`; those folders are managed by `csa`.
+
 ## Status
 
 | Subagent CLI | State | Guide |
