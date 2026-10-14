@@ -29,7 +29,7 @@ import uuid
 
 from cli_subagents import sync
 from cli_subagents.hosts import parent_note
-from cli_subagents.config import Account, RuntimeConfig, cache_dir, jobs_dir, state_dir
+from cli_subagents.config import Account, RuntimeConfig, cache_dir, home, jobs_dir, state_dir
 from cli_subagents.fsutil import (
     file_lock,
     is_link,
@@ -56,20 +56,25 @@ from cli_subagents.runtimes.base import (
 )
 
 SYNC_PLAN = sync.SyncPlan(
-    whole=("agents", "commands", "output-styles", "rules"),
+    whole=("agents", "commands", "output-styles", "rules", "workflows"),
     # Claude Code fills skills/synced per account, so skills are shared one by one.
     folders=("skills",),
     files=("CLAUDE.md",),
     skip=frozenset({("skills", "synced")}),
 )
 
-# Settings that choose an auth method or install plugins are account-specific.
+# Settings that choose an auth method, a gateway or credential helpers, or install
+# plugins are account-specific.
 DROP_SETTINGS = {
     "apiKeyHelper",
     "awsAuthRefresh",
     "awsCredentialExport",
     "forceLoginMethod",
     "forceLoginOrgUUID",
+    "forceLoginGatewayUrl",
+    "proxyAuthHelper",
+    "gcpAuthRefresh",
+    "otelHeadersHelper",
     "enabledPlugins",
     "extraKnownMarketplaces",
 }
@@ -242,7 +247,10 @@ class ClaudeParser:
         limited = not not_limit and (bool(LIMIT_RE.search(haystack)) or (rejected and names_limit))
         if limited:
             resets_at = _timestamp(self.rate_limit.get("resetsAt")) if rejected and self.rate_limit else None
-            return AttemptResult(USAGE_LIMIT, message=_first_line(haystack) or "usage limit reached", text=text, resets_at=resets_at, **common)
+            return AttemptResult(
+                USAGE_LIMIT, message=_first_line(haystack) or "usage limit reached", text=text, resets_at=resets_at,
+                error_text=haystack[-4000:], **common,
+            )
         if result.get("api_error_status") == 401 or AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=_first_line(haystack) or "authentication failed", text=text, **common)
         message = _first_line(haystack) or f"claude exited with status {exit_code} and no result"
@@ -503,8 +511,8 @@ class ClaudeRuntime:
             argv += ["--effort", spec.effort]
         if spec.max_turns:
             argv += ["--max-turns", str(spec.max_turns)]
-        if setup.get("settings_path"):
-            argv += ["--settings", setup["settings_path"]]
+        warnings: list[str] = []
+        argv += ["--settings", str(self._job_settings(spec.job_id, setup, warnings))]
         servers = dict((read_json(Path(setup["mcp_config_path"]), {}) or {}).get("mcpServers") or {}) if setup.get("mcp_config_path") else {}
         servers[PARENT_SERVER] = parent_server(spec.job_id)
         job_mcp = jobs_dir() / spec.job_id / "mcp.json"
@@ -531,7 +539,29 @@ class ClaudeRuntime:
         env["DISABLE_AUTOUPDATER"] = "1"
         env["CLI_SUBAGENTS_DEPTH"] = str(spec.depth)
         env["CLI_SUBAGENTS_JOB_ID"] = spec.job_id
-        return Launch(argv=argv, env=env, stdin=("" if spec.resume_session else parent_note(spec.parent, "claude")) + prompt, session_id=session_id)
+        stdin = ("" if spec.resume_session else parent_note(spec.parent, "claude")) + prompt
+        return Launch(argv=argv, env=env, stdin=stdin, session_id=session_id, warnings=warnings)
+
+    def _job_settings(self, job_id: str, setup: dict[str, Any], warnings: list[str]) -> Path:
+        """The account's settings overlay plus a PostToolUse hook that hands the worker its follow-ups.
+
+        The hook is added next to the user's own hooks, never in place of them.
+        """
+
+        from cli_subagents.hooks import worker_inbox_hook  # imported here: hooks imports jobs, which imports this module
+
+        settings = read_json(Path(setup["settings_path"]), {}) if setup.get("settings_path") else {}
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        hooks = settings.get("hooks", {})
+        if isinstance(hooks, dict) and isinstance(hooks.get("PostToolUse", []), list):
+            hooks = dict(hooks)
+            hooks["PostToolUse"] = [*hooks.get("PostToolUse", []), worker_inbox_hook(job_id, home())]
+            settings["hooks"] = hooks
+        else:
+            warnings.append("settings.json hooks are not in the expected shape; the worker inbox hook was not added")
+        path = jobs_dir() / job_id / "settings.json"
+        write_json(path, settings)
+        return path
 
     def interactive(self, config: RuntimeConfig, account: Account, setup: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
         """Command and environment for a normal interactive session on `account`."""

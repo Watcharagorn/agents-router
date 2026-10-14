@@ -75,6 +75,14 @@ def take_for_worker(job_id: str) -> list[dict[str, Any]]:
     return _take_unseen(job_id, "inbox.jsonl", "inbox-read.json")
 
 
+def take_for_hook(job_id: str) -> list[dict[str, Any]]:
+    """Inbox entries the worker's PostToolUse hook hasn't shown yet (doesn't mark them read)."""
+
+    folder = job_dir(job_id)
+    read = set(read_json(folder / "inbox-read.json", []) or [])
+    return [item for item in _take_unseen(job_id, "inbox.jsonl", "inbox-hooked.json") if item.get("id") not in read]
+
+
 def wait_for_reply(job_id: str, question_id: str, timeout: float) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

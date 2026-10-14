@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any
 
-from cli_subagents import __version__, accounts, jobs, tools
+from cli_subagents import __version__, accounts, jobs, sync, tools
 from cli_subagents.config import NAME_RE, SINGLE_ACCOUNT, Account, homes_dir, load_config, save_config
 from cli_subagents.fsutil import make_private_dir
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
@@ -163,6 +163,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     report = tools.account_report(args.runtime)
     _print(report)
     problems = 0
+    for account in runtime_config.worker_accounts():
+        copies = sync.fallback_copies(account.home)
+        if copies and not account.is_primary:
+            print(f"Note: account '{account.name}' has copies instead of links (they don't follow later edits "
+                  f"until the next sync): {', '.join(copies)}")
     if not report["binary"]:
         print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in the config.")
         return 1
@@ -231,6 +236,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Started {status['job_id']}", file=sys.stderr)
     status = jobs.wait_for(status["job_id"], args.timeout + 960)
     result = jobs.read_result(status["job_id"], 1_000_000)
+    if result.get("state") == "done":
+        jobs.claim_delivery(status["job_id"])
     if result.get("result"):
         print(result["result"])
     print(json.dumps(tools.summarize(result), indent=2, default=str), file=sys.stderr)
@@ -296,6 +303,7 @@ def cmd_launch(args: argparse.Namespace, extra: list[str]) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="csa", description="CLI Subagents: run tasks in other agent CLIs under your own accounts.")
     parser.add_argument("--version", action="version", version=f"cli-subagents {__version__}")
+    parser.add_argument("--home", help="Use this folder instead of ~/.cli-subagents (sets CLI_SUBAGENTS_HOME).")
     sub = parser.add_subparsers(dest="command", required=True)
 
     mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
@@ -343,6 +351,14 @@ def build_parser() -> argparse.ArgumentParser:
     launcher.add_argument("--runtime", default="claude", choices=RUNTIMES)
     launcher.add_argument("--account")
 
+    hook = sub.add_parser("hook", help="Claude Code hook commands (see hooks/hooks.json).")
+    hook.add_argument(
+        "action", choices=("await", "pending", "inbox"),
+        help="await: wake the main session when a job finishes or asks something. "
+        "pending: list uncollected results at session start. inbox: a worker's follow-ups.",
+    )
+    hook.add_argument("job_id", nargs="?", help="The worker's job (inbox only).")
+
     runner = sub.add_parser("_runner", help=argparse.SUPPRESS)
     runner.add_argument("job_id")
     return parser
@@ -350,14 +366,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     # Everything after `csa launch [options] --` goes to the launched CLI.
     extra: list[str] = []
     if argv[:1] == ["launch"] and "--" in argv:
         index = argv.index("--")
         argv, extra = argv[:index], argv[index + 1 :]
     args = build_parser().parse_args(argv)
+    if args.home:
+        os.environ["CLI_SUBAGENTS_HOME"] = args.home
+    if args.command == "hook":
+        from cli_subagents.hooks import main as run_hook
+
+        return run_hook(args.action, args.job_id)
     try:
         if args.command == "mcp":
             from cli_subagents.mcp_server import main as serve

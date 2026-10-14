@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import time
 from typing import Any, BinaryIO
 
@@ -12,6 +13,10 @@ from cli_subagents.fsutil import file_lock, read_json, same_process, try_lock, u
 
 # Above this utilization (0..1) an account is only used when nothing else is free.
 NEARLY_FULL = 0.97
+MAX_COOLDOWN_SECONDS = 7 * 86400
+RETRY_AFTER_RE = re.compile(
+    r"retry[- ]after\b[\s:=]*(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?)?\b", re.IGNORECASE
+)
 
 
 def _usage_path(runtime: str):
@@ -64,6 +69,35 @@ def record_rate_limit_event(runtime: str, account: str, info: dict[str, Any]) ->
     # Only usage figures are stored here. A cooldown comes from the runner, and only
     # when an attempt actually ended with a usage limit.
     update_usage(runtime, account, status=info.get("status"), windows=windows or None)
+
+
+def retry_after_seconds(text: str) -> float | None:
+    """A Retry-After value in error text: "Retry-After: 120" or "retry after 5 minutes"."""
+
+    match = RETRY_AFTER_RE.search(text or "")
+    if not match:
+        return None
+    unit = (match.group(2) or "s").lower()
+    scale = 3600 if unit.startswith("h") else 60 if unit.startswith("m") else 1
+    return float(match.group(1)) * scale
+
+
+def cooldown_end(error_text: str, resets_at: float | None, cooldown_minutes: int, now: float | None = None) -> float:
+    """When an account that hit its limit is usable again.
+
+    In order (OpenCodex's shape): a Retry-After value in the error text, then the
+    reset time the CLI reported, then the configured cooldown; never more than 7 days.
+    """
+
+    now = now or time.time()
+    retry = retry_after_seconds(error_text)
+    if retry is not None and retry > 0:
+        until = now + retry
+    elif resets_at and resets_at > now:
+        until = float(resets_at)
+    else:
+        until = now + cooldown_minutes * 60
+    return min(until, now + MAX_COOLDOWN_SECONDS)
 
 
 def set_cooldown(runtime: str, account: str, until: float, reason: str) -> None:

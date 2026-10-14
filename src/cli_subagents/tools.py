@@ -18,6 +18,7 @@ MAX_LONG_WAIT_SECONDS = 3600
 CODEX_MAX_WAIT_SECONDS = 240
 MAX_RESULT_CHARS = 80000
 PING_SECONDS = 15
+WAIT_PING_SECONDS = 3
 
 
 class ToolError(Exception):
@@ -233,6 +234,30 @@ def _ping(progress, count: int, message: str) -> None:
             pass
 
 
+def progress_message(job_ids: list[str]) -> str:
+    """One line per job for a progress ping: state, last tool and the start of its last text."""
+
+    lines = []
+    for job_id in job_ids:
+        try:
+            status = jobs.read_status(job_id)
+        except ValueError:
+            continue
+        progress = status.get("progress") or {}
+        parts = [str(status.get("state") or "?")]
+        if status.get("account"):
+            parts.append(f"on {status['account']}")
+        if progress.get("tool_uses"):
+            parts.append(f"{progress['tool_uses']} tool calls")
+        if progress.get("last_tool"):
+            parts.append(f"last tool {progress['last_tool']}")
+        text = " ".join(str(progress.get("last_text") or "").split())
+        if text:
+            parts.append(f'"{text[:120]}{"..." if len(text) > 120 else ""}"')
+        lines.append(f"{job_id}: " + ", ".join(parts))
+    return "\n".join(lines) or f"waiting for {len(job_ids)} subagent job(s)"
+
+
 def wait_any(job_ids: list[str], timeout: float, progress=None) -> dict[str, Any]:
     """Block until a job finishes or sends a message; report every job's state."""
 
@@ -249,10 +274,10 @@ def wait_any(job_ids: list[str], timeout: float, progress=None) -> dict[str, Any
         talking = [job_id for job_id in ids if messages.has_new_for_host(job_id)]
         if done or talking or time.monotonic() >= deadline:
             break
-        if time.monotonic() - last_ping >= PING_SECONDS:
+        if time.monotonic() - last_ping >= WAIT_PING_SECONDS:
             pings += 1
             last_ping = time.monotonic()
-            _ping(progress, pings, f"waiting for {len(ids)} subagent job(s)")
+            _ping(progress, pings, progress_message(ids))
         time.sleep(1.0)
     report: dict[str, Any] = {"finished": [], "updates": [], "still_running": []}
     for job_id in ids:
@@ -356,6 +381,8 @@ def _result(job_id: str, max_chars: int) -> dict[str, Any]:
     summary = summarize(data)
     if data.get("state") != "done":
         summary["note"] = "The job is still running; this is not a final result."
+    else:
+        jobs.claim_delivery(job_id)  # the model has the result now: the wake-up hook stays silent
     summary["result"] = data.get("result")
     if data.get("result_truncated"):
         summary["result_truncated"] = True

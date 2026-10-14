@@ -4,7 +4,9 @@ Each account has its own `CODEX_HOME` holding its login (`auth.json`, forced to
 file storage so logins never share a keyring entry), sessions and state
 databases. From the primary home, every run gets:
 
-* `config.toml` (MCP servers, model defaults, features), copied as is;
+* `config.toml` (MCP servers, model defaults, features), taken from the primary
+  table by table, except the account's own `[projects.*]` (trust),
+  `[hooks.state.*]` and `[notice.*]` tables, which Codex writes per home;
 * `skills/` and `plugins/` entries, linked; `AGENTS.md`, hard-linked.
 
 Every run, on the primary account too, turns this tool's own MCP server off
@@ -144,6 +146,96 @@ def _parent_overrides(job_id: str) -> list[str]:
     return [part for override in overrides for part in ("-c", override)]
 
 
+# Tables Codex writes into each home itself; the account's copy wins over the primary's.
+ACCOUNT_TABLES = (("projects",), ("hooks", "state"), ("notice",))
+TABLE_HEADER_RE = re.compile(r"^\s*\[(\[?)\s*(.+?)\s*\]\]?\s*(?:#.*)?$")
+
+
+def _key_path(text: str) -> tuple[str, ...] | None:
+    """Split a TOML table name (`projects.'/repo'`) into its keys; None if it isn't one."""
+
+    keys: list[str] = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index] in " \t":
+            index += 1
+        if index < len(text) and text[index] in "\"'":
+            quote = text[index]
+            end = index + 1
+            while end < len(text) and text[end] != quote:
+                end += 2 if quote == '"' and text[end] == "\\" else 1
+            if end >= len(text):
+                return None
+            raw = text[index + 1 : end]
+            if quote == '"':
+                try:
+                    raw = json.loads('"' + raw + '"')
+                except ValueError:
+                    pass
+            keys.append(raw)
+            index = end + 1
+        else:
+            match = BARE_KEY_RE.match(text, index)
+            if not match:
+                return None
+            keys.append(match.group(0))
+            index = match.end()
+        while index < len(text) and text[index] in " \t":
+            index += 1
+        if index == len(text):
+            break
+        if text[index] != ".":
+            return None
+        index += 1
+    return tuple(keys) if keys else None
+
+
+def _toml_blocks(text: str) -> list[tuple[tuple[str, ...] | None, bool, str]]:
+    """Cut a TOML document into (table name, is array table, text) blocks; the root block has no name."""
+
+    blocks: list[tuple[tuple[str, ...] | None, bool, str]] = []
+    name: tuple[str, ...] | None = None
+    array = False
+    lines: list[str] = []
+    in_string: str | None = None  # an open multi-line string's delimiter
+    for line in text.splitlines(keepends=True):
+        match = None if in_string else TABLE_HEADER_RE.match(line)
+        path = _key_path(match.group(2)) if match else None
+        if path is not None:
+            blocks.append((name, array, "".join(lines)))
+            name, array, lines = path, bool(match.group(1)), []
+        lines.append(line)
+        for delimiter in ('"""', "'''"):
+            if in_string in (None, delimiter) and line.count(delimiter) % 2:
+                in_string = None if in_string else delimiter
+    blocks.append((name, array, "".join(lines)))
+    return blocks
+
+
+def _account_owned(name: tuple[str, ...] | None) -> bool:
+    return name is not None and any(name[: len(prefix)] == prefix for prefix in ACCOUNT_TABLES)
+
+
+def merge_config(primary: str, account: str) -> str:
+    """The primary config with the account's own `[projects.*]`, `[hooks.state.*]` and `[notice.*]` tables kept.
+
+    Everything else, the root keys included, comes from the primary. A primary table
+    of those kinds stays only where the account has no table of the same name.
+    """
+
+    kept = [(name, array, text) for name, array, text in _toml_blocks(account) if _account_owned(name)]
+    if not kept:
+        return primary
+    own = {name for name, _array, _text in kept}
+    parts = [text for name, _array, text in _toml_blocks(primary) if not (_account_owned(name) and name in own)]
+    merged = "".join(parts)
+    if merged and not merged.endswith("\n"):
+        merged += "\n"
+    for _name, _array, text in kept:
+        merged += text if text.endswith("\n") else text + "\n"
+    return merged
+
+
 class CodexParser:
     """Turns `codex exec --json` events into progress and a result."""
 
@@ -204,7 +296,9 @@ class CodexParser:
         details = "\n".join(part for part in (haystack, *self.error_events, *self.error_items, stderr_tail) if part)
         message = next((line.strip() for line in details.splitlines() if line.strip()), "")[:300]
         if LIMIT_RE.search(haystack):
-            return AttemptResult(USAGE_LIMIT, message=message or "usage limit reached", text=self.last_text, **common)
+            return AttemptResult(
+                USAGE_LIMIT, message=message or "usage limit reached", text=self.last_text, error_text=details[-4000:], **common
+            )
         if AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=message or "authentication failed", text=self.last_text, **common)
         return AttemptResult(ERROR, message=message or f"codex exited with status {exit_code}", text=self.last_text, **common)
@@ -299,9 +393,20 @@ class CodexRuntime:
         if is_link(destination) or is_link(home):
             report["conflicts"].append("config.toml: is a link in the account folder, left in place")
             return
-        # Copied as is: launch() turns this tool's own server off with -c overrides.
-        content = source.read_text(encoding="utf-8") if source.is_file() else ""
+        # launch() turns this tool's own server off with -c overrides.
+        primary_text = source.read_text(encoding="utf-8") if source.is_file() else ""
         current = destination.read_text(encoding="utf-8") if destination.is_file() else None
+        content = primary_text
+        if current is not None:
+            content = merge_config(primary_text, current)
+            try:
+                tomllib.loads(content)
+            except tomllib.TOMLDecodeError as exc:
+                content = primary_text
+                report["warnings"].append(
+                    f"config.toml: could not keep the account's own trust and notice settings ({exc}); "
+                    "used the primary config as is"
+                )
         if current == content:
             return
         marker = home / ".cli-subagents-config"

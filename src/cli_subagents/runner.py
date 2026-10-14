@@ -18,7 +18,7 @@ from typing import Any
 from cli_subagents import accounts, messages
 from cli_subagents.config import SINGLE_ACCOUNT, Account, RuntimeConfig, load_config
 from cli_subagents.fsutil import kill_tree, new_group_kwargs, open_private, process_start_time, write_text
-from cli_subagents.jobs import job_dir, read_spec, update_status
+from cli_subagents.jobs import job_dir, mark_pending, read_spec, update_status
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import (
     CANCELLED,
@@ -103,6 +103,10 @@ class Runner:
             child_pid=None,
             child_started=None,
         )
+        try:
+            mark_pending(self.job_id)  # before the final status: whoever sees "done" also sees the marker
+        except OSError as exc:
+            self.warnings.append(f"could not mark the result for delivery: {exc}")
         # The final write is the one that matters, so it keeps trying for a while.
         deadline = time.monotonic() + FINAL_STATUS_RETRY_SECONDS
         while True:
@@ -150,14 +154,22 @@ class Runner:
                     # Follow-ups sent while the worker was busy: continue the same conversation.
                     follow_ups += 1
                     session, owner = last.session_id, lease.account.name
-                    prompt = "Follow-up from the main session:\n\n" + "\n\n".join(item["text"] for item in pending)
+                    prompt = (
+                        "Follow-up from the main session (you may already have seen it during your run; "
+                        "if you already handled it, just confirm briefly):\n\n"
+                        + "\n\n".join(item["text"] for item in pending)
+                    )
                     self.status(follow_up_turns=follow_ups)
                     continue
             if last.outcome != USAGE_LIMIT:
                 return self.finish(last.outcome, last.message, last)
             if self.spec.runtime not in SINGLE_ACCOUNT:
                 # With one account there is nothing to fail over to; a cooldown would only block later jobs.
-                until = last.resets_at or time.time() + self.runtime_config.cooldown_minutes * 60
+                until = accounts.cooldown_end(
+                    "\n".join(part for part in (last.message, last.error_text) if part),
+                    last.resets_at,
+                    self.runtime_config.cooldown_minutes,
+                )
                 accounts.set_cooldown(self.spec.runtime, lease.account.name, until, last.message or USAGE_LIMIT)
             if not failover:
                 return self.finish(USAGE_LIMIT, f"{lease.account.name}: {last.message}", last)
@@ -244,6 +256,9 @@ class Runner:
             attempt.update(ended_at=time.time(), outcome=result.outcome, message=result.message)
             return result
         attempt["session_id"] = launch.session_id
+        for message in launch.warnings:
+            if message not in self.warnings:
+                self.warnings.append(message)
         parser = self.runtime.new_parser()
         time_limit = max(1.0, min(float(self.spec.timeout_seconds), self.deadline - time.time()))
 
@@ -388,6 +403,7 @@ def main(job_id: str) -> int:
     try:
         runner = Runner(job_id)
     except Exception as exc:
+        mark_pending(job_id)
         update_status(job_id, state="done", outcome=ERROR, message=f"runner could not start: {exc}", finished_at=time.time())
         return 1
     try:

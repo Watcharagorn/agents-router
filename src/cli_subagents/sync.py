@@ -150,6 +150,21 @@ def sync(primary: Path, target: Path, plan: SyncPlan, report: dict[str, Any]) ->
     write_json(manifest_path, {"version": 2, "primary": str(primary), "items": items})
 
 
+def fallback_copies(target: Path) -> list[str]:
+    """Shared entries in an account folder that fell back to copies (no link was possible)."""
+
+    if is_link(target / MANIFEST):
+        return []
+    manifest = read_json(target / MANIFEST, {}) or {}
+    items = manifest.get("items") if isinstance(manifest, dict) else None
+    if not isinstance(items, dict):
+        return []
+    return sorted(
+        key for key, info in items.items()
+        if isinstance(key, str) and isinstance(info, dict) and info.get("kind") in ("copy", "copydir")
+    )
+
+
 def _can_link_whole(target: Path, folder: str, items: dict, report: dict) -> bool:
     """Make room for a whole-folder link; False if the account keeps its own content there."""
 

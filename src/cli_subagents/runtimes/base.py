@@ -127,6 +127,7 @@ class AttemptResult:
     cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     num_turns: int | None = None
+    error_text: str = ""  # the error output the outcome was judged from (Retry-After hints and the like)
 
 
 class Parser(Protocol):

@@ -8,6 +8,8 @@ One folder per job under `~/.cli-subagents/jobs/<job_id>/`:
     result.md      final answer text
     runner.log     runner stdout/stderr (diagnostics)
     cancel         marker file; its presence asks the runner to stop
+    notify.pending the result waits for delivery; renamed to notify.claimed
+                   by whoever delivers it first (hook, subagent_wait, subagent_result)
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from cli_subagents.runtimes.base import ACCESS_LEVELS, CANCELLED, ERROR, LOST, J
 
 ACTIVE_STATES = ("queued", "starting", "running")
 JOB_ID_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz-")
+NOTIFY_PENDING = "notify.pending"
+NOTIFY_CLAIMED = "notify.claimed"
 
 
 def job_dir(job_id: str) -> Path:
@@ -156,6 +160,7 @@ def create_job(
                 env=_runner_env(),
             )
         except OSError as exc:
+            mark_pending(spec.job_id)
             return update_status(
                 spec.job_id, state="done", outcome=ERROR, message=f"could not start the runner: {exc}", finished_at=time.time()
             )
@@ -220,6 +225,46 @@ def update_status(job_id: str, **fields: Any) -> dict[str, Any]:
     status["updated_at"] = time.time()
     write_json(folder / "status.json", status)
     return status
+
+
+def mark_pending(job_id: str) -> None:
+    """Record that the job's result waits for delivery. Written before the final status."""
+
+    folder = job_dir(job_id)
+    if not (folder / NOTIFY_CLAIMED).exists():
+        write_text(folder / NOTIFY_PENDING, str(time.time()))
+
+
+def is_pending(job_id: str) -> bool:
+    return (job_dir(job_id) / NOTIFY_PENDING).exists()
+
+
+def claim_delivery(job_id: str) -> bool:
+    """Take the one delivery of a finished result. True only for the first caller.
+
+    The rename is atomic, so of several racing callers (the wake-up hook,
+    subagent_wait, subagent_result) exactly one wins. A finished job that never
+    got a marker (its runner died) is claimed by creating notify.claimed exclusively.
+    """
+
+    folder = job_dir(job_id)
+    try:
+        os.rename(folder / NOTIFY_PENDING, folder / NOTIFY_CLAIMED)
+        return True
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False  # notify.claimed already exists (Windows refuses to rename over it)
+    if (folder / NOTIFY_CLAIMED).exists() or (folder / NOTIFY_PENDING).exists():
+        return False
+    try:
+        if read_status(job_id).get("state") in ACTIVE_STATES:
+            return False
+        fd = os.open(folder / NOTIFY_CLAIMED, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except (ValueError, OSError):
+        return False
+    os.close(fd)
+    return True
 
 
 def wait_for(job_id: str, seconds: float) -> dict[str, Any]:
