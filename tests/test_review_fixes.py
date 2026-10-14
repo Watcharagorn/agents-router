@@ -44,7 +44,7 @@ class SyncSafetyTests(TempHome):
         make_dir_link(outside, self.target / "commands")
         report = self.run_sync()
         self.assertFalse((outside / "x.md").exists())
-        self.assertTrue(any("commands/x.md" in item for item in report["conflicts"]))
+        self.assertTrue(any(item.startswith("commands") for item in report["conflicts"]))
 
     def test_stale_entry_behind_linked_folder_is_not_removed(self):
         repo = self.root / "repo-skill"
@@ -90,9 +90,10 @@ class ClassificationTests(unittest.TestCase):
 
 class OverlayEnvTests(unittest.TestCase):
     def test_auth_env_rules(self):
-        for key in ("ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "CLAUDE_CODE_USE_VERTEX", "GITHUB_TOKEN", "AWS_PROFILE"):
+        for key in ("ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_OAUTH_TOKEN"):
             self.assertTrue(is_auth_env(key), key)
-        for key in ("ANTHROPIC_MODEL", "CLAUDE_CODE_PLUGIN_DIRS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "MY_FLAG"):
+        # Tool API keys and everything else are part of the shared setup.
+        for key in ("ANTHROPIC_MODEL", "CLAUDE_CODE_PLUGIN_DIRS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "GITHUB_TOKEN", "TAVILY_API_KEY", "MY_FLAG"):
             self.assertFalse(is_auth_env(key), key)
 
 

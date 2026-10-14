@@ -72,7 +72,7 @@ class RuntimeConfig:
     primary: Path
     binary: str | None = None
     include_primary: bool = False
-    failover: str = "off"
+    failover: str = "on-limit"
     max_jobs_per_account: int = 1
     connectors: str = "account"
     edit_permission_mode: str = "auto"
@@ -130,7 +130,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
                 enabled=bool(item.get("enabled", True)),
             )
         )
-    failover = str(data.get("failover", "off"))
+    failover = str(data.get("failover", "off" if name in SINGLE_ACCOUNT else "on-limit"))
     if failover not in FAILOVER_MODES:
         raise ValueError(f"[{name}] failover must be one of {FAILOVER_MODES}")
     if name in SINGLE_ACCOUNT and (accounts or failover != "off"):

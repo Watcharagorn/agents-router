@@ -19,6 +19,7 @@ import subprocess
 from typing import Any
 
 from cli_subagents.config import Account, RuntimeConfig
+from cli_subagents.hosts import parent_note
 from cli_subagents.runtimes.base import (
     AUTH,
     ERROR,
@@ -41,7 +42,8 @@ WORKER_NOTE = (
 )
 
 LIMIT_RE = re.compile(r"quota|resource exhausted|rate limit|usage limit|\b429\b", re.IGNORECASE)
-AUTH_RE = re.compile(r"authentication required|not signed in|sign in|unauthenticated|\b401\b", re.IGNORECASE)
+# Only wording that says the CLI itself lacks a login; "sign in" alone shows up in ordinary output.
+AUTH_RE = re.compile(r"authentication (is )?required|not (currently )?signed in|unauthenticated", re.IGNORECASE)
 
 
 class AntigravityParser:
@@ -88,10 +90,10 @@ class AntigravityParser:
 
     def finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
         result = self.result or {}
-        text = str(result.get("response") or "") or self.last_text
         common = {"session_id": self.session_id, "usage": result.get("usage"), "num_turns": result.get("num_turns")}
         if result.get("status") == "SUCCESS":
-            return AttemptResult(SUCCESS, text=text.strip(), **common)
+            return AttemptResult(SUCCESS, text=(str(result.get("response") or "") or self.last_text).strip(), **common)
+        text = self.last_text  # the worker's last real message, not an error text
         error = result.get("error")
         error_text = error if isinstance(error, str) else str((error or {}).get("message") or "")
         haystack = "\n".join(part for part in (error_text, stderr_tail) if part)
@@ -167,7 +169,7 @@ class AntigravityRuntime:
         command = self.find_binary(config)
         if not command:
             raise RuntimeError("agy binary not found; install Antigravity CLI or set [antigravity] binary")
-        text = WORKER_NOTE + prompt
+        text = WORKER_NOTE + ("" if spec.resume_session else parent_note(spec.parent, "antigravity")) + prompt
         if len(text) > MAX_PROMPT_CHARS:
             raise RuntimeError(
                 f"prompt is {len(text)} characters; Antigravity takes at most {MAX_PROMPT_CHARS}. "
@@ -186,6 +188,7 @@ class AntigravityRuntime:
             argv.append(f"--add-dir={directory}")
         if spec.resume_session:
             argv += ["--conversation", str(spec.resume_session)]
+        argv.append(f"--print-timeout={spec.timeout_seconds}s")
         argv.append(f"--print={text}")
         env = clean_environment()
         env["CLI_SUBAGENTS_DEPTH"] = str(spec.depth)

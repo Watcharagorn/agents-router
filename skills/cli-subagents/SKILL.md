@@ -1,57 +1,48 @@
 ---
 name: cli-subagents
-description: Delegate a bounded coding, review or research task to a subagent that runs in another installed agent CLI under one of the user's own accounts (CLI Subagents MCP tools subagent_start, subagent_status, subagent_result). Use when parallel work, a second opinion, or spreading load across the user's accounts would help. Skip it for trivial answers and tiny edits.
+description: How to run subagents through CLI Subagents (subagent_start, subagent_wait, subagent_result, subagent_message). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity). Skip it for trivial answers and tiny edits.
 ---
 
 # CLI Subagents
 
-The `subagent_*` tools start a separate agent CLI process (Claude Code, Codex, or Gemini through Antigravity CLI) on one of the user's accounts. Every account has the same MCP servers, plugins, skills and settings as the main setup, so a subagent can do anything this session could. You stay responsible for the plan, for checking the work and for the final answer.
+These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex or Antigravity) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them.
 
-## When to delegate
+## The loop
 
-- Independent pieces of work that can run in parallel with yours.
-- A review or second opinion on a design, diff or bug.
-- Long research or reading that would fill your own context.
-- Heavy work the user wants to run on their other accounts instead of this one.
+1. Start: `subagent_start` with a complete task (`prompt`), the project folder (`cwd`, absolute) and `access` (`read` for analysis and review, `edit` for changes). Start several jobs before waiting if the work is independent.
+2. Wait: `subagent_wait` with the job IDs. It returns when a job finishes or a subagent sends a message or question. Call it again for the jobs still running.
+3. Answer: if a result shows `open_questions`, reply with `subagent_message` and `reply_to` set to the question id. To give a running subagent new instructions, send `subagent_message` without `reply_to`.
+4. Collect and check: finished jobs come back with `outcome` and `result`. `success` means the subagent finished; still read the diff, run the tests and confirm the files exist before relying on it.
+5. Follow up: `subagent_message` to a finished job continues the same conversation as a new job.
 
-Don't delegate a task you can't describe with a clear outcome, and never give the same files to two subagents that both edit.
+## Writing the task
 
-## Starting a job
+The subagent can't see this conversation. State the goal, the files or folders involved, what it must not touch, decisions already made, how to verify the result, and what to report back. Point to files instead of pasting them.
 
-Call `subagent_start` with:
+Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when a specific agent or a second opinion from another vendor helps; `model`; `effort`; `max_turns`; `timeout_seconds` (default 1800); `account` to pin one account; `add_dirs`.
 
-- `prompt`: a complete, self-contained task. The subagent can't see this conversation. State the goal, the files or folders involved, what it must not touch, facts it shouldn't re-check, how to verify the result, and what to report back.
-- `cwd`: the absolute path of the project. Never a drive root, home folder or config folder.
-- `access`: `read` for analysis and review (no edits), `edit` for changes (the CLI's own auto-mode safety checks stay on). Use `full` only when the user explicitly asked to skip all permission checks.
-- `runtime`: `claude` (default), `codex` or `antigravity` (Gemini models), when the user wants a specific agent or a second opinion from another vendor.
-- Optional: `model` (`haiku`, `sonnet`, `opus` or a full ID for Claude; a Codex model ID for Codex), `effort`, `max_turns`, `timeout_seconds` (default 1800), `account` to pin one account, `add_dirs` for extra folders.
-- `wait_seconds`: up to 600. With a value, short jobs return their result directly.
-
-`subagent_start` returns a `job_id` right away. Start several jobs before waiting on any of them if the work is independent.
-
-## Following up
-
-- `subagent_status` with `wait_seconds` (for example 120) waits efficiently. Don't poll in a tight loop.
-- `subagent_result` returns `outcome`, `result` (the subagent's final answer), `account`, `session_id`, `cost_usd` and `warnings`.
-- `resume_job` on a new `subagent_start` continues an earlier job's session on the same account, for follow-up instructions.
-- `subagent_cancel` stops a job and everything it started.
-- `subagent_accounts` shows accounts, login state, last known usage and cooldowns, without using any quota.
+`access: "full"` skips the CLI's own permission checks. Use it only when the user asked for that.
 
 ## Outcomes
 
-| outcome | Meaning | What to do |
-|---|---|---|
-| `success` | The subagent finished | Check the work before you rely on it |
-| `usage_limit` | The account hit its limit and failover is off | Start again later, pin another account, or ask the user |
-| `no_account` | Every account is cooling down or busy | Tell the user when the earliest one resets |
-| `auth` | The account needs a new login | Ask the user to run `csa accounts login <name>` |
-| `timeout`, `max_turns` | Stopped by a limit you set | Narrow the task or raise the limit |
-| `error`, `lost` | The CLI or runner failed | Read `message` and `warnings`; retry once at most |
+| outcome | What to do |
+|---|---|
+| `success` | Check the work |
+| `usage_limit` | Every eligible account is out of quota (switching already happened); tell the user when the earliest resets |
+| `no_account` | All accounts are busy or cooling down; wait or tell the user |
+| `auth` | Ask the user to run `csa accounts login <name>` |
+| `timeout`, `max_turns` | Narrow the task or raise the limit |
+| `error`, `lost` | Read `message` and `warnings`; retry once at most |
 
-`success` only means the subagent produced a final answer. Read the diff, run the tests, and confirm the requested files exist.
+## Per host
 
-## Rules
+Read the note for the CLI you are running in once: [Claude Code](hosts/claude-code.md), [Codex](hosts/codex.md) or [Antigravity](hosts/antigravity.md). It covers how waiting works there and where to put new skills, MCP servers and instructions so every subagent shares them.
 
-- Never send secrets, credentials or unrelated personal data in a prompt.
-- Subagents can't start their own subagents.
-- Report which account ran the work when the user cares about usage.
+- Claude Code: `subagent_wait` can run for up to an hour; Claude Code moves it to the background and notifies you when it returns.
+- Codex and Antigravity: waits end after a few minutes; call `subagent_wait` again until the jobs finish.
+
+## What subagents get
+
+Subagents in the same CLI as you load the same setup you have. Subagents in another CLI get a short note listing your instruction files and skill folders to read. Every subagent can send you progress notes, ask you a question (it waits for your answer), and read follow-ups you send. Subagents can't start subagents of their own.
+
+Never put secrets or credentials in a prompt.

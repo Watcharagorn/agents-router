@@ -13,6 +13,7 @@ from typing import Any
 
 from cli_subagents import __version__, accounts, jobs, tools
 from cli_subagents.config import NAME_RE, SINGLE_ACCOUNT, Account, homes_dir, load_config, save_config
+from cli_subagents.fsutil import make_private_dir
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from cli_subagents.runtimes.base import ACCESS_LEVELS, JobSpec
 
@@ -68,6 +69,15 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         _print(tools.account_report(args.runtime))
         return 0
 
+    if action == "reset":
+        # The primary account can cool down too, so 'primary' is a valid name here.
+        if not args.name or runtime_config.find(args.name) is None:
+            print(f"No {args.runtime} account named '{args.name or ''}'. See: csa accounts list")
+            return 1
+        cleared = accounts.clear_cooldown(args.runtime, args.name)
+        print(f"{args.runtime} account '{args.name}': " + ("cooldown cleared" if cleared else "had no cooldown"))
+        return 0
+
     if not args.name or not NAME_RE.match(args.name) or args.name == "primary":
         print("Give the account a short name: letters, digits, dot, dash or underscore ('primary' is reserved).")
         return 2
@@ -83,7 +93,7 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         if os.path.normcase(str(home)) == os.path.normcase(str(runtime_config.primary.resolve())):
             print("That folder is the primary setup. Extra accounts need their own folder.")
             return 1
-        home.mkdir(parents=True, exist_ok=True)
+        make_private_dir(home)
         runtime_config.accounts.append(Account(name=args.name, home=home))
         save_config(config)
         print(f"Added {args.runtime} account '{args.name}' with folder {home}")
@@ -166,6 +176,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1 if problems else 0
 
     cwd = str(Path(args.cwd).resolve())
+    # Claude's cheapest model is a known alias; other runtimes use their default unless asked.
+    model = args.model or ("haiku" if args.runtime == "claude" else None)
     started = []
     for account in runtime_config.worker_accounts():
         status = jobs.create_job(
@@ -173,7 +185,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             prompt="Reply with exactly: OK",
             cwd=cwd,
             account=account.name,
-            model=args.model,
+            model=model,
             access="read",
             max_turns=1,
             timeout_seconds=180,
@@ -286,10 +298,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"cli-subagents {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("mcp", help="Run the MCP server on stdio.")
+    mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
+    mcp_parser.add_argument("--worker", help=argparse.SUPPRESS)
 
-    accounts_parser = sub.add_parser("accounts", help="List, add, log in, sync or remove accounts.")
-    accounts_parser.add_argument("action", nargs="?", choices=("list", "add", "login", "sync", "remove", "enable", "disable"))
+    accounts_parser = sub.add_parser("accounts", help="List, add, log in, sync, reset or remove accounts.")
+    accounts_parser.add_argument(
+        "action", nargs="?", choices=("list", "add", "login", "sync", "remove", "enable", "disable", "reset"),
+        help="reset clears an account's usage-limit cooldown.",
+    )
     accounts_parser.add_argument("name", nargs="?")
     accounts_parser.add_argument("--runtime", default="claude", choices=RUNTIMES)
     accounts_parser.add_argument("--home", help="Folder for this account (default ~/.cli-subagents/homes/<runtime>/<name>).")
@@ -299,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Check binaries, logins and shared setup.")
     doctor.add_argument("--runtime", default="claude", choices=RUNTIMES)
     doctor.add_argument("--live", action="store_true", help="Run one tiny job per account (uses a little quota).")
-    doctor.add_argument("--model", default="haiku")
+    doctor.add_argument("--model", help="Model for --live jobs (default: haiku for claude, the CLI's default otherwise).")
     doctor.add_argument("--cwd", default=os.getcwd())
 
     for name, help_text in (("run", "Run a task and print the result."), ("start", "Start a task in the background.")):
@@ -313,6 +329,13 @@ def build_parser() -> argparse.ArgumentParser:
     result.add_argument("--max-chars", type=int, default=20000)
     cancel = sub.add_parser("cancel", help="Stop a job.")
     cancel.add_argument("job_id")
+    wait = sub.add_parser("wait", help="Wait until a job finishes or sends a message.")
+    wait.add_argument("job_ids", nargs="+")
+    wait.add_argument("--timeout", type=int, default=1800)
+    message = sub.add_parser("message", help="Send a follow-up or an answer to a job.")
+    message.add_argument("job_id")
+    message.add_argument("text")
+    message.add_argument("--reply-to")
     jobs_parser = sub.add_parser("jobs", help="List recent jobs.")
     jobs_parser.add_argument("--limit", type=int, default=20)
 
@@ -339,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mcp":
             from cli_subagents.mcp_server import main as serve
 
-            return serve()
+            return serve(args.worker)
         if args.command == "_runner":
             from cli_subagents.runner import main as run_job
 
@@ -353,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
             "result": cmd_result,
             "cancel": cmd_cancel,
             "jobs": cmd_jobs,
+            "wait": lambda a: _print(tools.call("subagent_wait", {"job_ids": a.job_ids, "timeout_seconds": a.timeout})) or 0,
+            "message": lambda a: _print(tools.call("subagent_message", {"job_id": a.job_id, "text": a.text, "reply_to": a.reply_to})) or 0,
         }
         if args.command == "launch":
             return cmd_launch(args, extra)

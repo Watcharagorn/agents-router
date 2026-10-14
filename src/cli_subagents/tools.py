@@ -5,12 +5,19 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from cli_subagents import accounts, jobs
+from cli_subagents import accounts, jobs, messages
 from cli_subagents.config import load_config
+from cli_subagents.hosts import detect_host
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from cli_subagents.runtimes.base import ACCESS_LEVELS
 
 MAX_WAIT_SECONDS = 600
+MAX_LONG_WAIT_SECONDS = 3600
+# Codex ends an MCP tool call after its tool timeout (300 s in its source, 60 s in
+# its docs), so a Codex host never blocks longer than this.
+CODEX_MAX_WAIT_SECONDS = 240
+MAX_RESULT_CHARS = 80000
+PING_SECONDS = 15
 
 
 class ToolError(Exception):
@@ -62,6 +69,37 @@ DEFINITIONS = [
         ),
     },
     {
+        "name": "subagent_wait",
+        "description": (
+            "Wait until one of the given jobs finishes, or a subagent sends a message or question, then "
+            "return what happened. In Claude Code a long wait moves to the background on its own and you "
+            "get a notification when it returns, so call this after starting jobs instead of polling."
+        ),
+        "inputSchema": _schema(
+            {
+                "job_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_LONG_WAIT_SECONDS, "default": 1800},
+            },
+            ["job_ids"],
+        ),
+    },
+    {
+        "name": "subagent_message",
+        "description": (
+            "Send a message to a subagent. While it runs: a follow-up or an answer to its question "
+            "(set reply_to to the question's id). After it finished: continues the same conversation as a "
+            "new job and returns that job."
+        ),
+        "inputSchema": _schema(
+            {
+                "job_id": JOB_ID,
+                "text": {"type": "string"},
+                "reply_to": {"type": "string", "description": "Id of the question you are answering."},
+            },
+            ["job_id", "text"],
+        ),
+    },
+    {
         "name": "subagent_status",
         "description": "State and progress of a job. Use wait_seconds instead of polling in a tight loop.",
         "inputSchema": _schema({"job_id": JOB_ID, "wait_seconds": WAIT}, ["job_id"]),
@@ -70,7 +108,7 @@ DEFINITIONS = [
         "name": "subagent_result",
         "description": "Final answer, outcome, account, session and cost of a finished job.",
         "inputSchema": _schema(
-            {"job_id": JOB_ID, "max_chars": {"type": "integer", "minimum": 500, "maximum": 200000, "default": 20000}},
+            {"job_id": JOB_ID, "max_chars": {"type": "integer", "minimum": 500, "maximum": MAX_RESULT_CHARS, "default": 20000}},
             ["job_id"],
         ),
     },
@@ -92,8 +130,33 @@ DEFINITIONS = [
 ]
 
 
-def definitions() -> list[dict[str, Any]]:
-    return DEFINITIONS
+WORKER_DEFINITIONS = [
+    {
+        "name": "message_parent",
+        "description": "Send a short progress note or an early finding to the main session that started you. It doesn't wait for a reply.",
+        "inputSchema": _schema({"text": {"type": "string"}}, ["text"]),
+    },
+    {
+        "name": "ask_parent",
+        "description": (
+            "Ask the main session a question and wait for the answer. Only for decisions you can't make "
+            "from the task and the files; otherwise keep working."
+        ),
+        "inputSchema": _schema(
+            {"question": {"type": "string"}, "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 1800, "default": 600}},
+            ["question"],
+        ),
+    },
+    {
+        "name": "check_parent_messages",
+        "description": "Read follow-up instructions the main session sent while you were working. Check between major steps.",
+        "inputSchema": _schema({}, []),
+    },
+]
+
+
+def definitions(worker_job: str | None = None) -> list[dict[str, Any]]:
+    return WORKER_DEFINITIONS if worker_job else DEFINITIONS
 
 
 def startup() -> None:
@@ -129,16 +192,31 @@ def summarize(status: dict[str, Any]) -> dict[str, Any]:
     if started:
         end = status.get("finished_at") or time.time()
         summary["elapsed_seconds"] = round(float(end) - float(started), 1)
+    job_id = status.get("job_id")
+    if job_id:
+        new = messages.take_for_host(job_id)
+        if new:
+            summary["messages"] = [{key: item.get(key) for key in ("id", "kind", "text")} for item in new]
+        questions = messages.open_questions(job_id)
+        if questions:
+            summary["open_questions"] = [{"id": item["id"], "text": item["text"]} for item in questions]
     return summary
 
 
-def _wait(arguments: dict[str, Any]) -> float:
-    return float(min(MAX_WAIT_SECONDS, max(0, int(arguments.get("wait_seconds") or 0))))
+def _is_codex(client: str | None) -> bool:
+    return "codex" in (client or "").lower()
 
 
-def call(name: str, arguments: dict[str, Any]) -> Any:
+def _wait(arguments: dict[str, Any], client: str | None = None) -> float:
+    limit = CODEX_MAX_WAIT_SECONDS if _is_codex(client) else MAX_WAIT_SECONDS
+    return float(min(limit, max(0, int(arguments.get("wait_seconds") or 0))))
+
+
+def call(name: str, arguments: dict[str, Any], progress=None, worker_job: str | None = None, client: str | None = None) -> Any:
     try:
-        return _call(name, arguments)
+        if worker_job:
+            return _call_worker(worker_job, name, arguments, progress)
+        return _call(name, arguments, progress, client)
     except ToolError:
         raise
     except (ValueError, RuntimeError, TimeoutError, OSError) as exc:
@@ -147,7 +225,68 @@ def call(name: str, arguments: dict[str, Any]) -> Any:
         raise ToolError(f"{type(exc).__name__}: {exc}") from exc
 
 
-def _call(name: str, arguments: dict[str, Any]) -> Any:
+def _ping(progress, count: int, message: str) -> None:
+    if progress:
+        try:
+            progress(count, message)
+        except Exception:
+            pass
+
+
+def wait_any(job_ids: list[str], timeout: float, progress=None) -> dict[str, Any]:
+    """Block until a job finishes or sends a message; report every job's state."""
+
+    ids = [str(job_id) for job_id in job_ids if job_id]
+    if not ids:
+        raise ToolError("job_ids is empty")
+    for job_id in ids:
+        jobs.read_status(job_id)  # fail fast on unknown ids
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    pings = 0
+    last_ping = time.monotonic()
+    while True:
+        done = [job_id for job_id in ids if jobs.read_status(job_id).get("state") == "done"]
+        talking = [job_id for job_id in ids if messages.has_new_for_host(job_id)]
+        if done or talking or time.monotonic() >= deadline:
+            break
+        if time.monotonic() - last_ping >= PING_SECONDS:
+            pings += 1
+            last_ping = time.monotonic()
+            _ping(progress, pings, f"waiting for {len(ids)} subagent job(s)")
+        time.sleep(1.0)
+    report: dict[str, Any] = {"finished": [], "updates": [], "still_running": []}
+    for job_id in ids:
+        if job_id in done:
+            report["finished"].append(_result(job_id, 20000))
+        elif job_id in talking:
+            report["updates"].append(summarize(jobs.read_status(job_id)))
+        else:
+            report["still_running"].append(job_id)
+    if not done and not talking:
+        report["note"] = "Nothing finished before the timeout; call subagent_wait again to keep waiting."
+    return report
+
+
+def _call(name: str, arguments: dict[str, Any], progress=None, client: str | None = None) -> Any:
+    if name == "subagent_wait":
+        job_ids = arguments.get("job_ids") or ([arguments["job_id"]] if arguments.get("job_id") else [])
+        limit = CODEX_MAX_WAIT_SECONDS if _is_codex(client) else MAX_LONG_WAIT_SECONDS
+        timeout = min(limit, max(1, int(arguments.get("timeout_seconds") or 1800)))
+        return wait_any(list(job_ids), timeout, progress)
+    if name == "subagent_message":
+        job_id = _job_id(arguments)
+        status = jobs.read_status(job_id)
+        text = str(arguments.get("text") or "")
+        if status.get("state") in jobs.ACTIVE_STATES:
+            record = messages.post_to_worker(job_id, text, arguments.get("reply_to") or None)
+            return {"job_id": job_id, "delivered": "queued for the running subagent", "message_id": record["id"]}
+        spec = jobs.read_spec(job_id)
+        follow_up = jobs.create_job(
+            runtime=spec.runtime, prompt=text, cwd=spec.cwd, model=spec.model, effort=spec.effort,
+            access=spec.access, max_turns=spec.max_turns, timeout_seconds=spec.timeout_seconds,
+            add_dirs=spec.add_dirs, resume_job=job_id,
+        )
+        return {"job_id": job_id, "delivered": "continued the finished conversation as a new job", "new_job": summarize(follow_up)}
     if name == "subagent_start":
         status = jobs.create_job(
             runtime=str(arguments.get("runtime") or "claude"),
@@ -161,15 +300,16 @@ def _call(name: str, arguments: dict[str, Any]) -> Any:
             timeout_seconds=int(arguments.get("timeout_seconds") or 1800),
             add_dirs=list(arguments.get("add_dirs") or []),
             resume_job=arguments.get("resume_job"),
+            host=detect_host(client),
         )
-        wait = _wait(arguments)
+        wait = _wait(arguments, client)
         if wait:
             status = jobs.wait_for(status["job_id"], wait)
             if status.get("state") == "done":
                 return _result(status["job_id"], 20000)
         return summarize(jobs.read_status(status["job_id"]))
     if name == "subagent_status":
-        return summarize(jobs.wait_for(_job_id(arguments), _wait(arguments)))
+        return summarize(jobs.wait_for(_job_id(arguments), _wait(arguments, client)))
     if name == "subagent_result":
         return _result(_job_id(arguments), int(arguments.get("max_chars") or 20000))
     if name == "subagent_cancel":
@@ -182,6 +322,28 @@ def _call(name: str, arguments: dict[str, Any]) -> Any:
     raise ToolError(f"unknown tool: {name}")
 
 
+def _call_worker(job_id: str, name: str, arguments: dict[str, Any], progress=None) -> Any:
+    if name == "message_parent":
+        record = messages.post_from_worker(job_id, str(arguments.get("text") or ""))
+        return {"sent": True, "id": record["id"]}
+    if name == "ask_parent":
+        record = messages.post_from_worker(job_id, str(arguments.get("question") or ""), kind="question")
+        timeout = min(1800, max(10, int(arguments.get("timeout_seconds") or 600)))
+        deadline = time.monotonic() + timeout
+        pings = 0
+        while time.monotonic() < deadline:
+            reply = messages.wait_for_reply(job_id, record["id"], min(PING_SECONDS, deadline - time.monotonic()))
+            if reply:
+                return {"answer": reply["text"]}
+            pings += 1
+            _ping(progress, pings, "waiting for the main session to answer")
+        return {"answer": None, "note": f"No answer within {timeout} seconds. Continue with your best judgment and say what you assumed."}
+    if name == "check_parent_messages":
+        new = messages.take_for_worker(job_id)
+        return {"messages": [{"kind": item.get("kind"), "text": item.get("text")} for item in new]}
+    raise ToolError(f"unknown tool: {name}")
+
+
 def _job_id(arguments: dict[str, Any]) -> str:
     job_id = str(arguments.get("job_id") or "")
     if not job_id:
@@ -190,7 +352,7 @@ def _job_id(arguments: dict[str, Any]) -> str:
 
 
 def _result(job_id: str, max_chars: int) -> dict[str, Any]:
-    data = jobs.read_result(job_id, max(500, min(200000, max_chars)))
+    data = jobs.read_result(job_id, max(500, min(MAX_RESULT_CHARS, max_chars)))
     summary = summarize(data)
     if data.get("state") != "done":
         summary["note"] = "The job is still running; this is not a final result."

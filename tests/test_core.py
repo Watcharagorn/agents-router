@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import accounts, jobs, mcp_server, runner
+import re
+
+from cli_subagents import accounts, jobs, mcp_server, runner, sync
 from cli_subagents.config import load_config
 from cli_subagents.fsutil import is_link
 from cli_subagents.runtimes.base import clean_environment
@@ -57,7 +59,7 @@ class ParserTests(unittest.TestCase):
     def test_usage_limit_from_rejected_event(self):
         parser = self.feed(
             {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 123}},
-            {"type": "result", "subtype": "success", "is_error": True, "result": "API Error"},
+            {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429, "result": "API Error: 429"},
         )
         result = parser.finish(1, "")
         self.assertEqual((result.outcome, result.resets_at), ("usage_limit", 123.0))
@@ -145,6 +147,37 @@ class SharedSetupTests(TempHome):
         self.assertEqual(report["plugin_dirs"], [str(plugin)])
         self.assertFalse(report["conflicts"])
 
+    def test_one_shared_pool_not_copies(self):
+        self.write_config()
+        self.make_primary()
+        account, _ = self.prepare()
+        home = account.home
+        self.assertTrue(is_link(home / "agents"))
+        self.assertTrue(os.path.samefile(home / "CLAUDE.md", self.primary / "CLAUDE.md"))
+        # An edit through the account changes the one shared file.
+        (home / "agents" / "new.md").write_text("added by a worker", encoding="utf-8")
+        self.assertTrue((self.primary / "agents" / "new.md").exists())
+
+    def test_project_memory_is_shared(self):
+        self.write_config()
+        self.make_primary()
+        account, _ = self.prepare()
+        name = re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(str(self.project)))
+        (account.home / "projects" / name / "memory" / "note.md").write_text("remember", encoding="utf-8")
+        self.assertEqual((self.primary / "projects" / name / "memory" / "note.md").read_text(), "remember")
+
+    def test_old_per_file_copies_become_one_link(self):
+        self.write_config()
+        self.make_primary()
+        home = self.root / "homes" / "a1"
+        (home / "agents").mkdir(parents=True)
+        (home / "agents" / "helper.md").write_text("agent", encoding="utf-8")
+        from cli_subagents.fsutil import sha256_file
+        (home / sync.MANIFEST).write_text(json.dumps({"items": {"agents/helper.md": {
+            "kind": "copy", "sha256": sha256_file(home / "agents" / "helper.md")}}}), encoding="utf-8")
+        self.prepare()
+        self.assertTrue(is_link(home / "agents"))
+
     def test_removed_skill_is_unlinked_but_source_kept(self):
         self.write_config()
         self.make_primary()
@@ -196,8 +229,14 @@ class JobTests(TempHome):
         usage = accounts.load_usage("claude")
         self.assertGreater(usage["a1"]["cooldown_until"], time.time())
         self.assertEqual(usage["a2"]["windows"]["seven_day"]["utilization"], 0.5)
-        second = self.records()[1]
+        # The second account continues the same conversation from a copied transcript.
+        first_argv, second = self.records()[0]["argv"], self.records()[1]
+        session = first_argv[first_argv.index("--session-id") + 1]
+        self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], session)
         self.assertIn("usage limit", second["stdin"])
+        self.assertEqual(status["session_id"], session)
+        self.assertTrue(list((self.root / "homes" / "a2" / "projects").glob(f"*/{session}.jsonl")))
+        self.assertTrue(list((self.root / "homes" / "a1" / "projects").glob(f"*/{session}.jsonl")))
 
     def test_without_failover_the_limit_is_reported(self):
         self.write_config(failover="off")
@@ -256,6 +295,20 @@ class JobTests(TempHome):
         with patch.dict(os.environ, {"CLI_SUBAGENTS_DEPTH": "1"}):
             with self.assertRaises(ValueError):
                 jobs.create_job(runtime="claude", prompt="x", cwd=str(self.project))
+
+    def test_resume_moves_to_another_account_when_the_first_is_cooling_down(self):
+        self.write_config(failover="off")
+        first = self.wait(jobs.create_job(runtime="claude", prompt="x", cwd=str(self.project), account="a1")["job_id"])
+        accounts.set_cooldown("claude", "a1", time.time() + 3600, "test")
+        second = self.wait(jobs.create_job(runtime="claude", prompt="more", cwd=str(self.project), resume_job=first["job_id"])["job_id"])
+        self.assertEqual((second["outcome"], second["account"]), ("success", "a2"), second)
+        argv = self.records()[-1]["argv"]
+        self.assertEqual(argv[argv.index("--resume") + 1], first["session_id"])
+
+    def test_failover_is_on_by_default(self):
+        (self.home / "config.toml").write_text("", encoding="utf-8")
+        self.assertEqual(load_config().runtime("claude").failover, "on-limit")
+        self.assertEqual(load_config().runtime("antigravity").failover, "off")
 
     def test_resume_stays_on_the_same_account(self):
         self.write_config(failover="off")

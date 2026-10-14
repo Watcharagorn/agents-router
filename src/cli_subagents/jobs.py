@@ -16,20 +16,25 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import subprocess
 import time
 from typing import Any
 
 from cli_subagents.config import jobs_dir, load_config
 from cli_subagents.fsutil import (
     kill_tree,
+    make_private_dir,
     pid_alive,
     python_executable,
     read_json,
+    same_process,
     spawn_detached,
     write_json,
     write_text,
 )
-from cli_subagents.runtimes.base import ACCESS_LEVELS, CANCELLED, LOST, JobSpec
+from cli_subagents.hosts import detect_host, host_context
+from cli_subagents.runtimes import get_runtime
+from cli_subagents.runtimes.base import ACCESS_LEVELS, CANCELLED, ERROR, LOST, JobSpec
 
 ACTIVE_STATES = ("queued", "starting", "running")
 JOB_ID_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz-")
@@ -58,6 +63,7 @@ def create_job(
     timeout_seconds: int = 1800,
     add_dirs: list[str] | None = None,
     resume_job: str | None = None,
+    host: str | None = None,
     start: bool = True,
 ) -> dict[str, Any]:
     """Validate a request, write the job record and start its runner."""
@@ -90,15 +96,22 @@ def create_job(
         directories.append(str(directory))
 
     resume_session = None
+    resume_account = None
     if resume_job:
         previous = read_status(resume_job)
+        if previous.get("state") in ACTIVE_STATES:
+            raise ValueError(
+                f"job {resume_job} is still running; wait for it to finish, or send it a follow-up with subagent_message"
+            )
         resume_session = previous.get("session_id")
         if not resume_session:
             raise ValueError(f"job {resume_job} has no session to continue")
         if previous.get("runtime") != runtime:
             raise ValueError("resume_job belongs to a different runtime")
-        # A session lives in one account's config folder, so stay on that account.
-        account = previous.get("account") or account
+        resume_account = previous.get("account")
+        if not hasattr(get_runtime(runtime), "transfer_session"):
+            # The session lives in one account's folder and can't be moved: stay there.
+            account = resume_account or account
 
     spec = JobSpec(
         job_id=new_job_id(),
@@ -113,11 +126,14 @@ def create_job(
         timeout_seconds=timeout_seconds,
         add_dirs=directories,
         resume_session=resume_session,
+        resume_account=resume_account,
+        parent=host_context(host or detect_host(), str(path.resolve())),
         depth=depth + 1,
         created=time.time(),
     )
     folder = job_dir(spec.job_id)
-    folder.mkdir(parents=True, exist_ok=False)
+    make_private_dir(folder.parent)
+    folder.mkdir(mode=0o700)
     write_json(folder / "spec.json", spec.to_dict())
     status = {
         "job_id": spec.job_id,
@@ -133,11 +149,16 @@ def create_job(
     }
     write_json(folder / "status.json", status)
     if start:
-        pid = spawn_detached(
-            [python_executable(), "-m", "cli_subagents", "_runner", spec.job_id],
-            folder / "runner.log",
-            env=_runner_env(),
-        )
+        try:
+            pid = spawn_detached(
+                [python_executable(), "-m", "cli_subagents", "_runner", spec.job_id],
+                folder / "runner.log",
+                env=_runner_env(),
+            )
+        except OSError as exc:
+            return update_status(
+                spec.job_id, state="done", outcome=ERROR, message=f"could not start the runner: {exc}", finished_at=time.time()
+            )
         # The runner owns status.json; the launcher only leaves its PID beside it.
         write_text(folder / "runner.pid", str(pid))
         status["runner_pid"] = pid
@@ -169,7 +190,20 @@ def read_status(job_id: str) -> dict[str, Any]:
         stale = time.time() - float(status.get("updated_at") or 0) > 15
         if pid and stale and not pid_alive(int(pid)):
             status.update(state="done", outcome=LOST, message="the runner process stopped unexpectedly")
+            _stop_orphan(status)
     return status
+
+
+def _stop_orphan(status: dict[str, Any]) -> None:
+    """Kill the worker a dead runner left behind, if it is still the same process."""
+
+    pid = status.get("child_pid")
+    started = status.get("child_started")
+    try:
+        if pid and same_process(int(pid), int(started) if started is not None else None):
+            kill_tree(int(pid))
+    except (TypeError, ValueError, OSError, subprocess.SubprocessError):
+        pass
 
 
 def _runner_pid(folder: Path) -> int | None:
@@ -215,6 +249,13 @@ def read_result(job_id: str, max_chars: int = 20000) -> dict[str, Any]:
 
 def cancel(job_id: str) -> dict[str, Any]:
     status = read_status(job_id)
+    if status.get("outcome") == LOST:
+        # The runner is gone; read_status already stopped its worker. Record the cancel.
+        _stop_orphan(status)
+        return update_status(
+            job_id, state="done", outcome=CANCELLED, message="cancelled (the runner had stopped)",
+            finished_at=time.time(), child_pid=None,
+        )
     if status.get("state") not in ACTIVE_STATES:
         return status
     folder = job_dir(job_id)
@@ -226,9 +267,10 @@ def cancel(job_id: str) -> dict[str, Any]:
             return status
         time.sleep(0.3)
     # The runner didn't react; stop everything ourselves.
-    for pid in (status.get("child_pid"), status.get("runner_pid") or _runner_pid(folder)):
-        if pid and pid_alive(int(pid)):
-            kill_tree(int(pid))
+    _stop_orphan(status)
+    runner_pid = status.get("runner_pid") or _runner_pid(folder)
+    if runner_pid and pid_alive(int(runner_pid)):
+        kill_tree(int(runner_pid))
     return update_status(job_id, state="done", outcome=CANCELLED, message="cancelled", finished_at=time.time())
 
 
@@ -258,7 +300,10 @@ def clean_old_jobs(days: int) -> int:
     for path in folder.iterdir():
         if not path.is_dir() or path.is_symlink():
             continue
-        status = read_json(path / "status.json", {}) or {}
+        try:
+            status = read_status(path.name)  # a job whose runner died reads as done/lost
+        except ValueError:
+            status = {}
         if status.get("state") in ACTIVE_STATES:
             continue
         if float(status.get("updated_at") or path.stat().st_mtime) < cutoff:

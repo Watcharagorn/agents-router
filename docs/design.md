@@ -153,8 +153,8 @@ Codex keeps MCP servers, plugins and settings in `config.toml` inside `CODEX_HOM
 - An explicit `account` on a job always wins.
 - Otherwise the pool picks the account with no active cooldown and the fewest running jobs, then the most remaining quota where the CLI reports it.
 - Limit detection for Claude: `rate_limit_event` with `status: rejected`, `api_error_status` 429, `api_retry` with `error: rate_limit`, or the "hit your … limit · resets" text. For Codex: `turn.failed` or `error` with a usage message; remaining percentage from the app-server where available. The reset time becomes the account's cooldown.
-- With `failover = "on-limit"`, a job that hit a limit is restarted on another account with a handoff note (the original task, what was done, the partial result). Resuming the same transcript under another account is not documented and stays off unless a spike proves it works.
-- `failover` is off by default for every vendor and refused for Antigravity consumer plans. Turning it on shows the relevant terms. See [provider-terms.md](research/provider-terms.md).
+- On a usage limit the job continues on another account: the Claude session transcript is copied into that account's folder and resumed (verified with Claude Code 2.1.295). Codex restarts with a handoff note containing the task and the partial output.
+- `failover` is on by default for Claude Code and Codex, and refused for Antigravity. See [provider-terms.md](research/provider-terms.md).
 
 Concurrency: one running worker per account folder by default, because `.claude.json` has a history of corruption under concurrent writers.
 
@@ -173,7 +173,7 @@ Each is a short experiment with real CLIs, recorded in `docs/research/` with the
 1. Verified: two account folders with the shared setup loaded identical plugins (6), skills (40) and agents (11) in `system/init`, including the user's own skills and agents and an installed plugin. Claude Code keeps account-synced skills in `skills/synced`, so shared skills are linked one by one instead of replacing the folder.
 2. Verified: with `CLAUDE_CONFIG_DIR` set, the state file is `<dir>/.claude.json`; without it, `~/.claude.json`.
 3. Partly verified: every run emits `rate_limit_event` with `status`, `utilization`, `resetsAt`, `rateLimitType` and `unifiedWindows.five_hour` / `seven_day`. The exact output at a real limit is still unobserved; detection uses `status: rejected`, HTTP 429 and the "hit your ... limit" text.
-4. Open: resuming a transcript under another account. Failover starts a new session with a handoff note instead.
+4. Verified: a session transcript copied into another account folder resumes there with its full history (a code word given on one account was recalled on the other). Failover and `resume_job` use this; the accounts in the test belonged to the same organization, so behaviour across organizations is still to be confirmed.
 5. Partly open: `skills/` and `plugins/` entries are linked into Codex account homes, but whether the real Codex follows junctions is not verified yet. `config.toml` is written as a file, not linked, because Codex may rewrite it.
 6. Verified: AGY 1.3.5 on Windows streams `--output-format stream-json` through a plain pipe (`init`, `step_update` text deltas, `result` with `status` and `response`), so the core runtime needs no PTY. `--mode auto` reports "not available for this account" and falls back to `request-review`, so `edit` uses `accept-edits`.
 
@@ -208,7 +208,7 @@ adapters/antigravity/         standalone AGY server until phase 5
 
 ## Risks
 
-- Terms: failover at usage limits is a grey zone for Anthropic, at odds with OpenAI's rate-limit wording, and forbidden for Antigravity consumer plans. Mitigated by off-by-default and per-vendor gating, not removed.
+- Terms: the vendors' restrictions target third-party token handling, which this project avoids; their terms don't address switching between your own CLI logins explicitly. Antigravity consumer plans rule out rotation, so that runtime is single-account. Failover is on by default for Claude Code and Codex and can be turned off per runtime.
 - Vendor drift: flags, event formats and config layouts change often. Adapters check versions and `doctor` flags mismatches.
 - Concurrency bugs in vendor CLIs (`.claude.json`, credential refresh). Mitigated by one job per account folder.
 - Windows: symlinks need developer mode; junctions don't, but only work for folders. The overlay approach avoids most links.

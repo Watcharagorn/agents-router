@@ -4,9 +4,11 @@ Each account has its own `CODEX_HOME` holding its login (`auth.json`, forced to
 file storage so logins never share a keyring entry), sessions and state
 databases. From the primary home, every run gets:
 
-* `config.toml` (MCP servers, model defaults, features), minus this tool's own
-  MCP server so workers can't start subagents of their own;
-* `skills/` and `plugins/` entries, linked; `AGENTS.md`, copied.
+* `config.toml` (MCP servers, model defaults, features), copied as is;
+* `skills/` and `plugins/` entries, linked; `AGENTS.md`, hard-linked.
+
+Every run, on the primary account too, turns this tool's own MCP server off
+with `-c` overrides so workers can't start subagents of their own.
 """
 
 from __future__ import annotations
@@ -21,9 +23,12 @@ import tomllib
 from typing import Any
 
 from cli_subagents import sync
+from cli_subagents.hosts import parent_note
 from cli_subagents.config import Account, RuntimeConfig, state_dir
-from cli_subagents.fsutil import file_lock, is_link, same_path, write_text
+from cli_subagents.fsutil import copy_exclusive, file_lock, is_link, same_path, write_text
 from cli_subagents.runtimes.base import (
+    WORKER_TOOLS_NOTE,
+    parent_server,
     AUTH,
     ERROR,
     SUCCESS,
@@ -34,9 +39,11 @@ from cli_subagents.runtimes.base import (
     clean_environment,
 )
 
-SYNC_PLAN = sync.SyncPlan(folders=("skills", "plugins"), files=("AGENTS.md",))
+SYNC_PLAN = sync.SyncPlan(folders=("skills", "plugins"), files=("AGENTS.md",))  # entries linked, file hard-linked
 FILE_AUTH = "cli_auth_credentials_store=file"
 SELF_COMMANDS = {"csa", "csa.exe", "cli-subagents-mcp", "cli-subagents-mcp.exe"}
+PLUGIN_SERVER = "cli-subagents"  # this tool's server name in its plugin manifests
+BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 WORKER_NOTE = (
     "[You are running as a delegated subagent for another agent session, which will read your "
@@ -53,36 +60,88 @@ def _default_home() -> Path:
     return Path.home() / ".codex"
 
 
-def strip_own_server(text: str) -> str:
-    """Remove this tool's MCP server tables from a Codex config.toml."""
+def _is_self_server(server: Any) -> bool:
+    if not isinstance(server, dict):
+        return False
+    command = Path(str(server.get("command") or "")).name.lower()
+    args = server.get("args")
+    args = [str(item) for item in args] if isinstance(args, list) else []
+    return command in SELF_COMMANDS or any("cli_subagents" in item for item in args)
 
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        return text
-    servers = data.get("mcp_servers") or {}
-    drop = set()
-    for name, server in servers.items():
-        if not isinstance(server, dict):
-            continue
-        command = Path(str(server.get("command") or "")).name.lower()
-        args = [str(item) for item in server.get("args") or []]
-        if command in SELF_COMMANDS or "cli_subagents" in args:
-            drop.add(name)
-    if not drop:
-        return text
-    out: list[str] = []
-    skipping = False
-    for line in text.splitlines(keepends=True):
-        header = re.match(r"\s*\[\s*mcp_servers\.(\"[^\"]+\"|'[^']+'|[A-Za-z0-9_-]+)(\.[^\]]*)?\s*\]\s*$", line)
-        if header:
-            name = header.group(1).strip("\"'")
-            skipping = name in drop
-        elif re.match(r"\s*\[", line):
-            skipping = False
-        if not skipping:
-            out.append(line)
-    return "".join(out)
+
+def config_files(home: Path, cwd: str) -> list[Path]:
+    """The config.toml files a Codex run reads: the account home's, then project ones up to the repository root."""
+
+    files = [home / "config.toml"]
+    project: list[Path] = []
+    folder = Path(cwd)
+    for current in (folder, *folder.parents):
+        project.append(current / ".codex" / "config.toml")
+        if (current / ".git").exists():
+            break
+    else:
+        project = project[:1]  # not in a repository: only the folder itself
+    files += [path for path in reversed(project) if not same_path(path.parent, home)]
+    return [path for path in files if path.is_file()]
+
+
+def self_server_overrides(files: list[Path]) -> list[str]:
+    """`-c` arguments that turn this tool's own MCP server off for a worker.
+
+    Codex hands MCP servers a filtered environment, so CLI_SUBAGENTS_DEPTH never
+    reaches a nested `csa mcp`; the recursion guard has to happen here. Every
+    configured server that runs csa or the cli_subagents module is disabled, and
+    so is `cli-subagents`, the name the plugin uses.
+
+    Verified with codex-cli 0.162.1: `-c mcp_servers.<name>.enabled=false` for a
+    name config.toml doesn't define (absent, or provided only by a plugin) makes
+    Codex refuse to load its config ("invalid transport"). Such a name also gets a
+    stub command; that loads, and it replaces a plugin's server of the same name.
+    Codex splits `-c` keys on every dot, so names must be bare TOML keys.
+    """
+
+    defined: set[str] = set()
+    own: set[str] = {PLUGIN_SERVER}
+    for path in files:
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise RuntimeError(
+                f"could not read Codex config {path}: {exc}. Fix it so CLI Subagents can turn its own MCP "
+                "server off for the worker."
+            ) from exc
+        servers = data.get("mcp_servers") or {}
+        if not isinstance(servers, dict):
+            raise RuntimeError(f"Codex config {path}: mcp_servers is not a table")
+        for name, server in servers.items():
+            defined.add(str(name))
+            if _is_self_server(server):
+                own.add(str(name))
+    overrides: list[str] = []
+    for name in sorted(own):
+        if not BARE_KEY_RE.fullmatch(name):
+            raise RuntimeError(
+                f"Codex MCP server '{name}' runs CLI Subagents but its name can't be turned off with -c; "
+                "rename it to letters, digits, '-' and '_' only"
+            )
+        if name not in defined:
+            overrides += ["-c", f"mcp_servers.{name}.command='csa'"]
+        overrides += ["-c", f"mcp_servers.{name}.enabled=false"]
+    return overrides
+
+
+def _toml_literal(value: str) -> str:
+    return "'" + value + "'" if "'" not in value else json.dumps(value)
+
+
+def _parent_overrides(job_id: str) -> list[str]:
+    server = parent_server(job_id)
+    prefix = "mcp_servers.csa_parent"
+    args = "[" + ", ".join(_toml_literal(item) for item in server["args"]) + "]"
+    overrides = [f"{prefix}.command={_toml_literal(server['command'])}", f"{prefix}.args={args}"]
+    for key, value in server["env"].items():
+        overrides.append(f"{prefix}.env.{key}={_toml_literal(value)}")
+    return [part for override in overrides for part in ("-c", override)]
 
 
 class CodexParser:
@@ -96,7 +155,9 @@ class CodexParser:
         self.last_tool: str | None = None
         self.usage: dict[str, Any] | None = None
         self.completed = False
-        self.errors: list[str] = []
+        self.failures: list[str] = []  # turn.failed
+        self.error_events: list[str] = []  # top-level `error` events (retries, stream errors)
+        self.error_items: list[str] = []  # `error` items inside a turn
 
     def feed(self, event: dict[str, Any]) -> dict[str, Any] | None:
         kind = event.get("type")
@@ -111,32 +172,41 @@ class CodexParser:
                 self.tool_uses += 1
                 self.last_tool = item_type
             elif item_type == "error" and item.get("message"):
-                self.errors.append(str(item["message"]))
+                self.error_items.append(str(item["message"]))
         elif kind == "turn.completed":
             self.completed = True
             self.usage = event.get("usage")
         elif kind == "turn.failed":
             message = (event.get("error") or {}).get("message") or "turn failed"
-            self.errors.append(str(message))
+            self.failures.append(str(message))
         elif kind == "error" and event.get("message"):
-            self.errors.append(str(event["message"]))
+            self.error_events.append(str(event["message"]))
         return None
 
     def progress(self) -> dict[str, Any]:
-        return {"tool_uses": self.tool_uses, "last_tool": self.last_tool, "last_text": self.last_text[-600:]}
+        progress: dict[str, Any] = {"tool_uses": self.tool_uses, "last_tool": self.last_tool, "last_text": self.last_text[-600:]}
+        warnings = [*self.error_events, *self.error_items]
+        if warnings:
+            progress["warnings"] = [item[:300] for item in warnings[-5:]]
+        return progress
 
     def finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
         common = {"session_id": self.session_id, "usage": self.usage}
-        if self.completed and not self.errors and exit_code in (0, None):
+        if self.completed and exit_code in (0, None):
+            # A finished turn is a success; errors Codex recovered from stay warnings in progress.
             return AttemptResult(SUCCESS, text=self.last_text, **common)
-        haystack = "\n".join([*self.errors, stderr_tail])
-        message = next((line.strip() for line in haystack.splitlines() if line.strip()), "")[:300]
+        # Limits and logins are judged only from a failed turn, or from CLI errors when
+        # no turn finished: error items and retried errors inside a finished turn don't count.
+        sources = list(self.failures)
+        if not self.completed:
+            sources += [*self.error_events, stderr_tail]
+        haystack = "\n".join(part for part in sources if part)
+        details = "\n".join(part for part in (haystack, *self.error_events, *self.error_items, stderr_tail) if part)
+        message = next((line.strip() for line in details.splitlines() if line.strip()), "")[:300]
         if LIMIT_RE.search(haystack):
             return AttemptResult(USAGE_LIMIT, message=message or "usage limit reached", text=self.last_text, **common)
         if AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=message or "authentication failed", text=self.last_text, **common)
-        if self.completed and exit_code in (0, None):
-            return AttemptResult(SUCCESS, text=self.last_text, **common)
         return AttemptResult(ERROR, message=message or f"codex exited with status {exit_code}", text=self.last_text, **common)
 
 
@@ -229,7 +299,8 @@ class CodexRuntime:
         if is_link(destination) or is_link(home):
             report["conflicts"].append("config.toml: is a link in the account folder, left in place")
             return
-        content = strip_own_server(source.read_text(encoding="utf-8")) if source.is_file() else ""
+        # Copied as is: launch() turns this tool's own server off with -c overrides.
+        content = source.read_text(encoding="utf-8") if source.is_file() else ""
         current = destination.read_text(encoding="utf-8") if destination.is_file() else None
         if current == content:
             return
@@ -237,8 +308,8 @@ class CodexRuntime:
         if current is not None and not marker.exists():
             # First run on a folder that already had its own config: keep a copy.
             backup = home / "config.toml.before-cli-subagents"
-            if not backup.exists():
-                shutil.copyfile(destination, backup)
+            if not os.path.lexists(backup):  # a dangling link counts as taken: never write through it
+                copy_exclusive(destination, backup)
                 report["warnings"].append(f"kept the account's previous config.toml as {backup.name}")
         write_text(destination, content)
         write_text(marker, "config.toml is generated from the primary setup on every run\n")
@@ -261,6 +332,7 @@ class CodexRuntime:
         command = self.find_binary(config)
         if not command:
             raise RuntimeError("codex binary not found; install Codex or set [codex] binary in config.toml")
+        no_nesting = self_server_overrides(config_files(account.home, spec.cwd))
         resume = bool(spec.resume_session)
         argv = [*command, "exec"]
         if resume:
@@ -274,13 +346,18 @@ class CodexRuntime:
         if model:
             argv += ["-m", model]
         if spec.effort:
-            argv += ["-c", f"model_reasoning_effort={spec.effort}"]
+            # Codex has no "max"; its highest level is "xhigh".
+            effort = "xhigh" if spec.effort == "max" else spec.effort
+            argv += ["-c", f"model_reasoning_effort={effort}"]
+        argv += no_nesting
+        argv += _parent_overrides(spec.job_id)
         argv.append("-")
 
         env = self.account_env(config, account)
         env["CLI_SUBAGENTS_DEPTH"] = str(spec.depth)
         env["CLI_SUBAGENTS_JOB_ID"] = spec.job_id
-        return Launch(argv=argv, env=env, stdin=WORKER_NOTE + prompt, session_id=spec.resume_session)
+        note = WORKER_NOTE.rstrip("]\n") + WORKER_TOOLS_NOTE + "]\n\n"
+        return Launch(argv=argv, env=env, stdin=note + ("" if spec.resume_session else parent_note(spec.parent, "codex")) + prompt, session_id=spec.resume_session)
 
     def interactive(self, config: RuntimeConfig, account: Account, setup: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
         command = self.find_binary(config)

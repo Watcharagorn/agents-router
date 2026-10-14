@@ -2,13 +2,14 @@
 
 Behaviour is chosen by environment variables:
   FAKE_CLAUDE_LIMITED   comma-separated account folder names that are "out of quota"
-  FAKE_CLAUDE_SCENARIO  success (default) | auth | slow | crash
+  FAKE_CLAUDE_SCENARIO  success (default) | auth | slow | crash | nostdin
   FAKE_CLAUDE_RECORD    file to append {"argv", "env", "stdin"} records to
 """
 
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 
@@ -20,14 +21,31 @@ def emit(event):
 
 def main():
     argv = sys.argv[1:]
+    if os.environ.get("FAKE_CLAUDE_SCENARIO") == "nostdin":
+        time.sleep(120)  # never reads its prompt, like a hung CLI
+        return 0
     prompt = sys.stdin.read()
     record = os.environ.get("FAKE_CLAUDE_RECORD")
     if record:
         with open(record, "a", encoding="utf-8") as handle:
             handle.write(json.dumps({"argv": argv, "env": dict(os.environ), "stdin": prompt}) + "\n")
 
-    account = Path(os.environ.get("CLAUDE_CONFIG_DIR", "default")).name
-    session = argv[argv.index("--session-id") + 1] if "--session-id" in argv else "resumed-session"
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", "default"))
+    account = config_dir.name
+    projects = config_dir / "projects"
+    if "--resume" in argv:
+        session = argv[argv.index("--resume") + 1]
+        if not list(projects.glob(f"*/{session}.jsonl")):
+            emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                  "result": f"No conversation found with session ID: {session}"})
+            return 1
+    else:
+        session = argv[argv.index("--session-id") + 1] if "--session-id" in argv else "new-session"
+    # Like the real CLI: one transcript per session, under the project's folder name.
+    folder = projects / re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(os.getcwd()))
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{session}.jsonl", "a", encoding="utf-8") as transcript:
+        transcript.write(json.dumps({"account": account, "prompt": prompt}) + "\n")
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "success")
     limited = [item for item in os.environ.get("FAKE_CLAUDE_LIMITED", "").split(",") if item]
 
@@ -44,6 +62,7 @@ def main():
     })
     if scenario == "slow":
         time.sleep(120)
+    time.sleep(float(os.environ.get("FAKE_CLAUDE_DELAY", "0") or 0))
     if account in limited:
         emit({"type": "rate_limit_event", "rate_limit_info": {
             "status": "rejected", "resetsAt": int(time.time()) + 3600, "rateLimitType": "five_hour",

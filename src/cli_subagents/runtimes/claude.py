@@ -28,9 +28,22 @@ from typing import Any
 import uuid
 
 from cli_subagents import sync
-from cli_subagents.config import Account, RuntimeConfig, cache_dir, state_dir
-from cli_subagents.fsutil import file_lock, read_json, same_path, write_json
+from cli_subagents.hosts import parent_note
+from cli_subagents.config import Account, RuntimeConfig, cache_dir, jobs_dir, state_dir
+from cli_subagents.fsutil import (
+    file_lock,
+    is_link,
+    link_target,
+    make_dir_link,
+    read_json,
+    replace_with_copy,
+    same_path,
+    write_json,
+)
 from cli_subagents.runtimes.base import (
+    PARENT_SERVER,
+    WORKER_TOOLS_NOTE,
+    parent_server,
     AUTH,
     ERROR,
     MAX_TURNS,
@@ -43,9 +56,10 @@ from cli_subagents.runtimes.base import (
 )
 
 SYNC_PLAN = sync.SyncPlan(
-    folders=("skills", "agents", "commands", "output-styles", "rules"),
+    whole=("agents", "commands", "output-styles", "rules"),
+    # Claude Code fills skills/synced per account, so skills are shared one by one.
+    folders=("skills",),
     files=("CLAUDE.md",),
-    # Claude Code fills skills/synced per account; never shadow it.
     skip=frozenset({("skills", "synced")}),
 )
 
@@ -59,8 +73,9 @@ DROP_SETTINGS = {
     "enabledPlugins",
     "extraKnownMarketplaces",
 }
-# `env` entries in shared settings that could pick a login, a gateway or a
-# provider for the worker. Model choices under ANTHROPIC_* are fine to share.
+# `env` entries in shared settings that could pick an Anthropic login, gateway or
+# provider for the worker. Model choices under ANTHROPIC_* and every other key
+# (tool API keys and the like) are shared.
 SHARED_ANTHROPIC_ENV = {
     "ANTHROPIC_MODEL",
     "ANTHROPIC_SMALL_FAST_MODEL",
@@ -68,15 +83,15 @@ SHARED_ANTHROPIC_ENV = {
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
-AUTH_ENV_PREFIXES = ("CLAUDE_CODE_USE_", "CLAUDE_CODE_SKIP_", "CLAUDE_CODE_OAUTH", "AWS_", "GOOGLE_", "VERTEX_", "AZURE_")
-AUTH_ENV_SUFFIXES = ("_TOKEN", "_API_KEY", "_SECRET", "_PASSWORD", "_CREDENTIALS")
+AUTH_ENV_PREFIXES = ("CLAUDE_CODE_USE_", "CLAUDE_CODE_SKIP_", "CLAUDE_CODE_OAUTH")
+AUTH_ENV_EXACT = {"AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CONFIG_DIR"}
 
 
 def is_auth_env(key: str) -> bool:
     upper = key.upper()
     if upper.startswith("ANTHROPIC_"):
         return upper not in SHARED_ANTHROPIC_ENV
-    return upper.startswith(AUTH_ENV_PREFIXES) or upper.endswith(AUTH_ENV_SUFFIXES)
+    return upper in AUTH_ENV_EXACT or upper.startswith(AUTH_ENV_PREFIXES)
 
 PERMISSION_MODES = {"read": "plan", "full": "bypassPermissions"}
 
@@ -95,6 +110,8 @@ LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 NOT_LIMIT_RE = re.compile(r"not your usage limit", re.IGNORECASE)
+# Weaker hint, trusted only together with a `rejected` rate-limit event.
+LIMIT_HINT_RE = re.compile(r"limit|\b429\b", re.IGNORECASE)
 AUTH_RE = re.compile(
     r"invalid api key|please run /login|not logged in|log in to|login expired|"
     r"oauth token has expired|authentication_error|invalid bearer token",
@@ -189,7 +206,6 @@ class ClaudeParser:
 
     def finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
         result = self.result or {}
-        text = str(result.get("result") or "") or self.last_text
         common = {
             "session_id": self.session_id,
             "cost_usd": result.get("total_cost_usd"),
@@ -197,19 +213,27 @@ class ClaudeParser:
             "num_turns": result.get("num_turns"),
         }
         if self.result and result.get("subtype") == "success" and not result.get("is_error"):
-            return AttemptResult(SUCCESS, text=text, **common)
+            return AttemptResult(SUCCESS, text=str(result.get("result") or "") or self.last_text, **common)
+        # From here on `result.result` is an error text, not an answer: keep the
+        # worker's last real message as the text for result.md and handoffs.
+        text = self.last_text
         if result.get("subtype") == "error_max_turns":
             return AttemptResult(MAX_TURNS, message="stopped at the max_turns limit", text=text, **common)
 
         # Only error text counts here: the model's own words may mention limits.
-        error_text = str(result.get("result") or "") if result.get("is_error") or not self.result else ""
+        is_error = bool(self.result and result.get("is_error"))
+        error_text = str(result.get("result") or "") if is_error or not self.result else ""
         haystack = "\n".join(part for part in (error_text, stderr_tail, self.last_retry_error or "") if part)
+        not_limit = bool(NOT_LIMIT_RE.search(haystack))
         rejected = bool(self.rate_limit and self.rate_limit.get("status") == "rejected")
-        resets_at = _timestamp(self.rate_limit.get("resetsAt")) if rejected and self.rate_limit else None
-        limited = rejected or result.get("api_error_status") == 429 or (
-            bool(LIMIT_RE.search(haystack)) and not NOT_LIMIT_RE.search(haystack)
-        )
+        status_429 = result.get("api_error_status") == 429
+        # A 429 or a `rejected` rate-limit event alone isn't enough (server throttling,
+        # an unrelated failure after a rejected window): it needs an error result that
+        # points at a limit as well.
+        names_limit = is_error and (status_429 or bool(LIMIT_HINT_RE.search(error_text)))
+        limited = not not_limit and (bool(LIMIT_RE.search(haystack)) or (rejected and names_limit))
         if limited:
+            resets_at = _timestamp(self.rate_limit.get("resetsAt")) if rejected and self.rate_limit else None
             return AttemptResult(USAGE_LIMIT, message=_first_line(haystack) or "usage limit reached", text=text, resets_at=resets_at, **common)
         if result.get("api_error_status") == 401 or AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=_first_line(haystack) or "authentication failed", text=text, **common)
@@ -309,6 +333,40 @@ class ClaudeRuntime:
             raise RuntimeError("claude binary not found; install Claude Code or set [claude] binary")
         return [*command, "auth", "login"], self.account_env(config, account)
 
+    def transfer_session(self, source: Account, target: Account, session_id: str, cwd: str) -> bool:
+        """Copy a session's transcript so `target` can `--resume` it. Copies only; never moves or deletes.
+
+        Verified with Claude Code 2.1.295: a transcript copied into another account
+        folder resumes there with its full history.
+        """
+
+        if not re.fullmatch(r"[0-9A-Za-z-]{8,64}", session_id):
+            return False
+        source_projects = source.home / "projects"
+        target_projects = target.home / "projects"
+        if same_path(source_projects, target_projects):
+            return True
+        if is_link(target_projects) or not source_projects.is_dir():
+            return False
+        candidates = [source_projects / _project_dir_name(cwd) / f"{session_id}.jsonl"]
+        candidates += sorted(source_projects.glob(f"*/{session_id}.jsonl"))
+        transcript = next((path for path in candidates if path.is_file() and not is_link(path)), None)
+        if transcript is None:
+            return False
+        destination = target_projects / transcript.parent.name
+        if is_link(destination) or is_link(destination / transcript.name):
+            return False
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            # Fresh temporary file plus rename: never writes through a link or a hard link.
+            replace_with_copy(transcript, destination / transcript.name)
+            sidecar = transcript.parent / session_id  # subagent transcripts and tool results
+            if sidecar.is_dir() and not is_link(sidecar) and not os.path.lexists(destination / session_id):
+                shutil.copytree(sidecar, destination / session_id, symlinks=True)
+        except OSError:
+            return False
+        return True
+
     # Shared setup ---------------------------------------------------------
 
     def prepare(self, config: RuntimeConfig, account: Account, spec: JobSpec) -> dict[str, Any]:
@@ -319,6 +377,7 @@ class ClaudeRuntime:
         if shared:
             with file_lock(state_dir() / "sync" / f"claude-{account.name}.lock", timeout=30):
                 sync.sync(config.primary, account.home, SYNC_PLAN, report)
+            self._share_memory(config.primary, account.home, spec.cwd, report)
         out = cache_dir() / "claude" / account.name
         settings = self._overlay_settings(config, report) if shared else {}
         if config.connectors == "off":
@@ -340,6 +399,32 @@ class ClaudeRuntime:
                 report["mcp_servers"] = sorted(servers)
             report["plugin_dirs"] = self._plugin_dirs(config.primary, report)
         return report
+
+    def _share_memory(self, primary: Path, home: Path, cwd: str, report: dict[str, Any]) -> None:
+        """Point the account's auto memory for this project at the primary's memory folder."""
+
+        name = _project_dir_name(cwd)
+        source = primary / "projects" / name / "memory"
+        destination = home / "projects" / name / "memory"
+        try:
+            if is_link(home / "projects") or is_link(home / "projects" / name):
+                report["conflicts"].append("projects folder in the account is a link; project memory not shared")
+                return
+            if is_link(destination):
+                if same_path(link_target(destination) or "", source):
+                    return
+                report["conflicts"].append(f"project memory for {name}: account has its own link, left in place")
+                return
+            if destination.exists():
+                if any(destination.iterdir()):
+                    report["conflicts"].append(f"project memory for {name}: account has its own memory, left in place")
+                    return
+                destination.rmdir()
+            source.mkdir(parents=True, exist_ok=True)
+            kind = make_dir_link(source, destination)
+            report["linked" if kind != "copy" else "copied"].append(f"projects/{name}/memory")
+        except OSError as exc:
+            report["warnings"].append(f"could not share project memory: {exc}")
 
     def _overlay_settings(self, config: RuntimeConfig, report: dict[str, Any]) -> dict[str, Any]:
         settings = read_json(config.primary / "settings.json", {}) or {}
@@ -412,13 +497,20 @@ class ClaudeRuntime:
             argv += ["--max-turns", str(spec.max_turns)]
         if setup.get("settings_path"):
             argv += ["--settings", setup["settings_path"]]
-        if setup.get("mcp_config_path"):
-            argv += ["--mcp-config", setup["mcp_config_path"]]
+        servers = dict((read_json(Path(setup["mcp_config_path"]), {}) or {}).get("mcpServers") or {}) if setup.get("mcp_config_path") else {}
+        servers[PARENT_SERVER] = parent_server(spec.job_id)
+        job_mcp = jobs_dir() / spec.job_id / "mcp.json"
+        write_json(job_mcp, {"mcpServers": servers})
+        argv += ["--mcp-config", str(job_mcp)]
         for directory in setup.get("plugin_dirs") or []:
             argv += ["--plugin-dir", directory]
         for directory in spec.add_dirs:
             argv += ["--add-dir", directory]
-        argv += ["--disallowedTools", SELF_TOOLS, "--append-system-prompt", WORKER_NOTE]
+        argv += [
+            "--disallowedTools", SELF_TOOLS,
+            "--allowedTools", f"mcp__{PARENT_SERVER}",
+            "--append-system-prompt", WORKER_NOTE + WORKER_TOOLS_NOTE,
+        ]
         if spec.resume_session:
             session_id = spec.resume_session
             argv += ["--resume", session_id]
@@ -431,7 +523,7 @@ class ClaudeRuntime:
         env["DISABLE_AUTOUPDATER"] = "1"
         env["CLI_SUBAGENTS_DEPTH"] = str(spec.depth)
         env["CLI_SUBAGENTS_JOB_ID"] = spec.job_id
-        return Launch(argv=argv, env=env, stdin=prompt, session_id=session_id)
+        return Launch(argv=argv, env=env, stdin=("" if spec.resume_session else parent_note(spec.parent, "claude")) + prompt, session_id=session_id)
 
     def interactive(self, config: RuntimeConfig, account: Account, setup: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
         """Command and environment for a normal interactive session on `account`."""
@@ -450,6 +542,12 @@ class ClaudeRuntime:
 
     def new_parser(self) -> ClaudeParser:
         return ClaudeParser()
+
+
+def _project_dir_name(cwd: str) -> str:
+    """Claude Code's folder name for a project: every non-alphanumeric character becomes '-'."""
+
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(cwd))
 
 
 def _project_key(cwd: str) -> str:

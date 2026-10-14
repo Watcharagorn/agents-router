@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import time
 from typing import Any, BinaryIO
 
 from cli_subagents.config import Account, RuntimeConfig, state_dir
-from cli_subagents.fsutil import file_lock, read_json, try_lock, unlock, write_json
+from cli_subagents.fsutil import file_lock, read_json, same_process, try_lock, unlock, write_json
 
 # Above this utilization (0..1) an account is only used when nothing else is free.
 NEARLY_FULL = 0.97
@@ -60,15 +61,29 @@ def record_rate_limit_event(runtime: str, account: str, info: dict[str, Any]) ->
             "utilization": _number(info.get("utilization")),
             "resets_at": _number(info.get("resetsAt")),
         }
-    fields: dict[str, Any] = {"status": info.get("status"), "windows": windows or None}
-    resets_at = _number(info.get("resetsAt"))
-    if info.get("status") == "rejected" and resets_at:
-        fields["cooldown_until"] = resets_at
-    update_usage(runtime, account, **fields)
+    # Only usage figures are stored here. A cooldown comes from the runner, and only
+    # when an attempt actually ended with a usage limit.
+    update_usage(runtime, account, status=info.get("status"), windows=windows or None)
 
 
 def set_cooldown(runtime: str, account: str, until: float, reason: str) -> None:
     update_usage(runtime, account, cooldown_until=until, cooldown_reason=reason)
+
+
+def clear_cooldown(runtime: str, account: str) -> bool:
+    """Forget an account's cooldown. Returns True if it had one."""
+
+    path = _usage_path(runtime)
+    with file_lock(path.with_suffix(".lock")):
+        data = load_usage(runtime)
+        record = data.get(account)
+        if not isinstance(record, dict) or "cooldown_until" not in record:
+            return False
+        record.pop("cooldown_until", None)
+        record.pop("cooldown_reason", None)
+        record["updated"] = time.time()
+        write_json(path, data)
+    return True
 
 
 def max_utilization(record: dict[str, Any] | None) -> float | None:
@@ -88,36 +103,89 @@ def cooldown_until(record: dict[str, Any] | None, now: float | None = None) -> f
     return float(until) if isinstance(until, (int, float)) and until > now else None
 
 
+def _owner_path(lock_path: Path) -> Path:
+    return lock_path.with_name(lock_path.stem + ".owner.json")
+
+
 @dataclass
 class Lease:
     runtime: str
     account: Account
     handle: BinaryIO
+    path: Path | None = None  # the slot's lock file
+
+    def set_owner(self, pid: int, started: int | None, job_id: str | None = None) -> None:
+        """Record the worker process, so the slot stays busy if the runner dies before it."""
+
+        if self.path is not None:
+            write_json(_owner_path(self.path), {"pid": pid, "started": started, "job_id": job_id})
 
     def release(self) -> None:
-        unlock(self.handle)
+        try:
+            if self.path is not None:
+                _owner_path(self.path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        finally:
+            unlock(self.handle)
+
+
+def _slot_path(runtime: RuntimeConfig, account: Account, slot: int) -> Path:
+    return state_dir() / "leases" / runtime.runtime / account.name / f"{slot}.lock"
+
+
+def _orphan_alive(lock_path: Path) -> bool:
+    """True if the slot's recorded worker still runs (its runner died without cleaning up)."""
+
+    owner = read_json(_owner_path(lock_path))
+    if not isinstance(owner, dict):
+        return False
+    try:
+        pid = int(owner.get("pid") or 0)
+        started = owner.get("started")
+        return same_process(pid, int(started) if started is not None else None)
+    except (TypeError, ValueError):
+        return False
+
+
+def _take_slot(lock_path: Path) -> BinaryIO | None:
+    """Lock a free slot. A slot whose recorded worker still runs counts as busy."""
+
+    handle = try_lock(lock_path)
+    if handle is None:
+        return None
+    if _orphan_alive(lock_path):
+        unlock(handle)
+        return None
+    try:
+        _owner_path(lock_path).unlink(missing_ok=True)  # stale record of a finished worker
+    except OSError:
+        pass
+    return handle
 
 
 def try_lease(runtime: RuntimeConfig, account: Account) -> Lease | None:
     """Take one of the account's job slots, or None if all are busy."""
 
     for slot in range(runtime.max_jobs_per_account):
-        path = state_dir() / "leases" / runtime.runtime / account.name / f"{slot}.lock"
-        handle = try_lock(path)
+        path = _slot_path(runtime, account, slot)
+        handle = _take_slot(path)
         if handle is not None:
-            return Lease(runtime.runtime, account, handle)
+            return Lease(runtime.runtime, account, handle, path)
     return None
 
 
 def busy_slots(runtime: RuntimeConfig, account: Account) -> int:
     busy = 0
     for slot in range(runtime.max_jobs_per_account):
-        path = state_dir() / "leases" / runtime.runtime / account.name / f"{slot}.lock"
+        path = _slot_path(runtime, account, slot)
         handle = try_lock(path)
         if handle is None:
             busy += 1
-        else:
-            unlock(handle)
+            continue
+        if _orphan_alive(path):
+            busy += 1
+        unlock(handle)
     return busy
 
 
@@ -126,6 +194,7 @@ def ranked_accounts(
     *,
     pinned: str | None = None,
     exclude: set[str] | None = None,
+    prefer: str | None = None,
     now: float | None = None,
 ) -> tuple[list[Account], float | None]:
     """Usable accounts best-first, plus the earliest cooldown end if none are usable."""
@@ -150,11 +219,13 @@ def ranked_accounts(
             continue
         usable.append(account)
 
-    def key(account: Account) -> tuple[bool, float, float]:
+    def key(account: Account) -> tuple[bool, bool, float, float]:
         record = usage.get(account.name) or {}
         utilization = max_utilization(record)
+        nearly_full = utilization is not None and utilization >= NEARLY_FULL
         return (
-            utilization is not None and utilization >= NEARLY_FULL,
+            nearly_full,
+            account.name != prefer,
             utilization if utilization is not None else 0.0,
             float(record.get("last_used") or 0.0),
         )
@@ -168,6 +239,7 @@ def acquire(
     *,
     pinned: str | None = None,
     exclude: set[str] | None = None,
+    prefer: str | None = None,
 ) -> tuple[Lease | None, float | None, bool]:
     """Lease the best free account.
 
@@ -175,7 +247,7 @@ def acquire(
     all_busy=True means accounts exist but every slot is taken right now.
     """
 
-    accounts, earliest = ranked_accounts(runtime, pinned=pinned, exclude=exclude)
+    accounts, earliest = ranked_accounts(runtime, pinned=pinned, exclude=exclude, prefer=prefer)
     for account in accounts:
         lease = try_lease(runtime, account)
         if lease is not None:

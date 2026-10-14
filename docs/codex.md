@@ -2,7 +2,7 @@
 
 CLI Subagents can run `codex exec` workers the same way it runs `claude -p` workers: in the background, on one of your accounts, with one shared setup. The host can be Claude Code (through the plugin) or any MCP host, Codex included.
 
-Read [provider terms](research/provider-terms.md) first. OpenAI's terms bar circumventing rate limits, so failover between Codex accounts is off by default and stays your decision.
+Every worker is the official `codex` CLI with your own ChatGPT login. See [provider terms](research/provider-terms.md) for what OpenAI publishes about this kind of use.
 
 ## Requirements
 
@@ -52,7 +52,7 @@ Pass `runtime: "codex"` to `subagent_start`, or `--runtime codex` to `csa run` a
 
 ## Limits
 
-`codex exec --json` doesn't report remaining quota, so CLI Subagents can't rank Codex accounts by usage the way it does for Claude. It recognizes a usage-limit failure from the error message, cools that account down (`cooldown_minutes`, default 60), and, if you enabled `failover = "on-limit"` under `[codex]`, retries the job on the next account with the partial output attached.
+`codex exec --json` doesn't report remaining quota, so CLI Subagents can't rank Codex accounts by usage the way it does for Claude. It recognizes a usage-limit failure from the error message, cools that account down (`cooldown_minutes`, default 60) and retries the job on the next account with the partial output attached. Set `failover = "off"` under `[codex]` to stop at the limit instead.
 
 ## Notes
 

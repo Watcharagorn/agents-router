@@ -23,9 +23,17 @@ INSTRUCTIONS = (
 )
 
 
+WORKER_INSTRUCTIONS = (
+    "Tools to talk to the main session that started you: send progress notes, ask a blocking question "
+    "when you can't decide something yourself, and read follow-up instructions it sent."
+)
+
+
 class Server:
-    def __init__(self, write: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(self, write: Callable[[dict[str, Any]], None], worker_job: str | None = None) -> None:
         self._write = write
+        self._worker_job = worker_job
+        self._client: str | None = None
 
     def handle(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -48,25 +56,36 @@ class Server:
 
     def _dispatch(self, method: str, params: dict[str, Any]) -> Any:
         if method == "initialize":
+            client = params.get("clientInfo")
+            self._client = str(client.get("name")) if isinstance(client, dict) and client.get("name") else None
             requested = params.get("protocolVersion")
             version = requested if requested in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[-1]
             return {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "cli-subagents", "version": __version__},
-                "instructions": INSTRUCTIONS,
+                "instructions": WORKER_INSTRUCTIONS if self._worker_job else INSTRUCTIONS,
             }
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {"tools": tools.definitions()}
+            return {"tools": tools.definitions(self._worker_job)}
         if method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}
             if not isinstance(arguments, dict):
                 raise _RpcError(-32602, "arguments must be an object")
+            token = (params.get("_meta") or {}).get("progressToken") if isinstance(params.get("_meta"), dict) else None
+            progress = None
+            if token is not None:
+                def progress(count: int, message: str) -> None:
+                    self._write({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {"progressToken": token, "progress": count, "message": message},
+                    })
             try:
-                value = tools.call(str(name), arguments)
+                value = tools.call(str(name), arguments, progress=progress, worker_job=self._worker_job, client=self._client)
                 is_error = False
             except tools.ToolError as exc:
                 value = {"error": str(exc)}
@@ -84,7 +103,7 @@ class _RpcError(Exception):
         self.code = code
 
 
-def serve(stdin=None, stdout=None) -> None:
+def serve(stdin=None, stdout=None, worker_job: str | None = None) -> None:
     stdin = stdin or sys.stdin.buffer
     stdout = stdout or sys.stdout.buffer
     lock = threading.Lock()
@@ -95,7 +114,7 @@ def serve(stdin=None, stdout=None) -> None:
             stdout.write(data)
             stdout.flush()
 
-    server = Server(write)
+    server = Server(write, worker_job)
     threads: list[threading.Thread] = []
     for raw in stdin:
         line = raw.strip()
@@ -117,7 +136,8 @@ def serve(stdin=None, stdout=None) -> None:
         thread.join(timeout=5)
 
 
-def main() -> int:
-    tools.startup()
-    serve()
+def main(worker_job: str | None = None) -> int:
+    if worker_job is None:
+        tools.startup()
+    serve(worker_job=worker_job)
     return 0

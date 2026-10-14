@@ -11,7 +11,7 @@ max_depth = 1                # 1 = workers can't start their own subagents
 [claude]
 primary = "~/.claude"        # the shared setup (default: CLAUDE_CONFIG_DIR or ~/.claude)
 include_primary = false      # also run workers on the primary account
-failover = "off"             # "off" or "on-limit"
+failover = "on-limit"        # continue on the next account at a usage limit; "off" to stop
 max_jobs_per_account = 1     # parallel workers per account folder
 connectors = "account"       # "account" keeps each account's claude.ai connectors; "off" hides them
 edit_permission_mode = "auto"  # permission mode for access="edit"
@@ -26,7 +26,7 @@ enabled = true
 
 [codex]
 primary = "~/.codex"        # default: CODEX_HOME or ~/.codex
-failover = "off"
+failover = "on-limit"
 
 [[codex.accounts]]
 name = "plus-2"

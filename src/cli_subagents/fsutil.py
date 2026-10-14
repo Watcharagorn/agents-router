@@ -29,11 +29,74 @@ def read_json(path: Path, default: Any = None) -> Any:
         return default
 
 
+def make_private_dir(path: Path) -> None:
+    """Create `path` and its missing parents with owner-only permissions (0o700).
+
+    `Path.mkdir(parents=True)` ignores the mode for parents, so each missing
+    level is created on its own. Existing folders are left as they are.
+    """
+
+    missing: list[Path] = []
+    current = Path(path)
+    while not os.path.lexists(current) and current.parent != current:
+        missing.append(current)
+        current = current.parent
+    for folder in reversed(missing):
+        try:
+            folder.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
+def open_private(path: Path, append: bool = True) -> BinaryIO:
+    """Open a log file for binary writing; a new file gets owner-only permissions (0o600)."""
+
+    make_private_dir(path.parent)
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    flags |= getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    return os.fdopen(os.open(path, flags, 0o600), "ab" if append else "wb")
+
+
+def temp_sibling(path: Path) -> Path:
+    """A random, unused-looking name next to `path` for write-then-rename."""
+
+    return path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+
+
+def copy_exclusive(source: Path, destination: Path) -> None:
+    """Copy a file to a path that must not exist yet (O_EXCL: never follows a link)."""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(destination, flags, 0o666)
+    try:
+        with os.fdopen(descriptor, "wb") as target, source.open("rb") as origin:
+            shutil.copyfileobj(origin, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(destination)
+        raise
+
+
+def replace_with_copy(source: Path, destination: Path) -> None:
+    """Put a copy of `source` at `destination` via a fresh temporary file and a rename.
+
+    A link already at `destination` is replaced, never written through.
+    """
+
+    temporary = temp_sibling(destination)
+    copy_exclusive(source, temporary)
+    try:
+        os.replace(temporary, destination)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
 def write_private(path: Path, data: bytes) -> None:
     """Write a file atomically with owner-only permissions where the OS supports it."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    make_private_dir(path.parent)
+    temporary = temp_sibling(path)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -84,7 +147,7 @@ def file_lock(path: Path, timeout: float = 10.0) -> Iterator[None]:
 def try_lock(path: Path, timeout: float = 0.0) -> BinaryIO | None:
     """Return an open, locked handle, or None if the lock is held elsewhere."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_private_dir(path.parent)
     deadline = time.monotonic() + timeout
     while True:
         handle = path.open("a+b")
@@ -223,6 +286,58 @@ def pid_alive(pid: int | None) -> bool:
         return False
 
 
+def process_start_time(pid: int | None) -> int | None:
+    """An opaque start-time stamp for a running process, to tell it from a later one with the same PID.
+
+    Windows: creation time from GetProcessTimes (100 ns units). Linux: field 22
+    of /proc/<pid>/stat (clock ticks since boot). Elsewhere, or when it can't be
+    read: None.
+    """
+
+    if not pid:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        process = kernel32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED_INFORMATION
+        if not process:
+            return None
+        try:
+            created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+            ok = kernel32.GetProcessTimes(
+                process, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+            )
+            if not ok:
+                return None
+            return (created.dwHighDateTime << 32) | created.dwLowDateTime
+        finally:
+            kernel32.CloseHandle(process)
+    try:  # pragma: no cover - Linux only
+        raw = Path(f"/proc/{int(pid)}/stat").read_text(encoding="ascii", errors="replace")
+        # The command name (field 2) may contain spaces or ')', so split after the last ')'.
+        fields = raw[raw.rindex(")") + 2 :].split()
+        return int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def same_process(pid: int | None, started: int | None) -> bool:
+    """True if `pid` is alive and is the process whose start stamp was recorded.
+
+    When either stamp is unknown (unsupported OS), an alive PID counts as a match.
+    """
+
+    if not pid or not pid_alive(int(pid)):
+        return False
+    if started is None:
+        return True
+    current = process_start_time(int(pid))
+    return current is None or current == int(started)
+
+
 def kill_tree(pid: int) -> None:
     """Terminate a process and all of its children."""
 
@@ -259,8 +374,7 @@ def spawn_detached(argv: list[str], log_path: Path, env: dict[str, str] | None =
     """Start a background process that outlives its parent. Returns its PID."""
 
     _SPAWNED[:] = [process for process in _SPAWNED if process.poll() is None]
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log = log_path.open("ab")
+    log = open_private(log_path)
     kwargs: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": log,
@@ -268,20 +382,22 @@ def spawn_detached(argv: list[str], log_path: Path, env: dict[str, str] | None =
         "close_fds": True,
         "env": env,
     }
-    if os.name == "nt":
-        base = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NO_WINDOW
-        )
-        try:
-            # Leave the host's job object so closing the host doesn't kill running jobs.
-            process = subprocess.Popen(argv, creationflags=base | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kwargs)
-        except OSError:
-            process = subprocess.Popen(argv, creationflags=base, **kwargs)
-    else:  # pragma: no cover
-        process = subprocess.Popen(argv, start_new_session=True, **kwargs)
-    log.close()
+    try:
+        if os.name == "nt":
+            base = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NO_WINDOW
+            )
+            try:
+                # Leave the host's job object so closing the host doesn't kill running jobs.
+                process = subprocess.Popen(argv, creationflags=base | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+            except OSError:
+                process = subprocess.Popen(argv, creationflags=base, **kwargs)
+        else:  # pragma: no cover
+            process = subprocess.Popen(argv, start_new_session=True, **kwargs)
+    finally:
+        log.close()
     _SPAWNED.append(process)
     return process.pid
 

@@ -1,32 +1,44 @@
-"""Mirror shared setup entries from a primary config folder into an account folder.
+"""Point an account folder at the primary setup, so every login uses one shared pool.
 
-Folders are linked (junction on Windows, symlink elsewhere) and files are
-copied. Every entry the sync creates is recorded in a manifest inside the
-account folder, so later runs can update or remove exactly those entries.
+Nothing is duplicated where the filesystem allows it:
+
+* whole folders (agents, commands, ...) become one link (junction on Windows,
+  symlink elsewhere) to the primary folder;
+* folders whose top level the CLI also fills per account (skills, which holds
+  `skills/synced`) get one link per entry instead;
+* single files (CLAUDE.md) become hard links to the primary file, so an edit
+  through any login changes the one shared file.
+
+Copies are only a fallback (a hard link across drives, a folder link refused by
+the OS). Every entry the sync creates is recorded in a manifest inside the
+account folder so later runs can update or remove exactly those entries.
 
 Safety rules, because the account folder is writable by the worker it serves:
-* manifest keys must have the shape `<folder>/<name>` or `<file>`; anything else is ignored;
-* nothing is touched unless its parent folder is a real folder inside the
-  account folder (not a link that leads somewhere else);
+* manifest keys must match the plan's shape; anything else is ignored;
+* nothing is touched unless its parent is a real folder inside the account folder;
 * links are only ever unlinked, never followed for deletion;
-* a copied folder is only deleted if it still matches what was copied.
+* copies are only deleted if they still match what was copied.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import shutil
 from typing import Any
 
 from cli_subagents.fsutil import (
+    copy_exclusive,
     is_link,
     link_target,
     make_dir_link,
+    make_private_dir,
     read_json,
     remove_link,
     same_path,
     sha256_file,
+    temp_sibling,
     tree_signature,
     write_json,
 )
@@ -36,10 +48,10 @@ MANIFEST = ".cli-subagents-managed.json"
 
 @dataclass(frozen=True)
 class SyncPlan:
-    folders: tuple[str, ...]  # folders whose entries are mirrored one by one
-    files: tuple[str, ...]  # top-level files that are copied
+    whole: tuple[str, ...] = ()  # folders linked as a whole
+    folders: tuple[str, ...] = ()  # folders mirrored entry by entry
+    files: tuple[str, ...] = ()  # top-level files, hard-linked
     skip: frozenset[tuple[str, str]] = frozenset()  # (folder, name) the account owns
-    overwrite: frozenset[str] = frozenset()  # managed files the CLI itself may rewrite
 
 
 def new_report() -> dict[str, Any]:
@@ -47,26 +59,31 @@ def new_report() -> dict[str, Any]:
 
 
 def _valid_name(name: str) -> bool:
-    return bool(name) and name not in (".", "..") and not name.startswith(".") and "/" not in name and "\\" not in name and ":" not in name
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and not name.startswith(".")
+        and not any(char in name for char in "/\\:")
+    )
 
 
 def _valid_key(key: str, plan: SyncPlan) -> bool:
-    if key in plan.files:
+    if key in plan.files or key in plan.whole:
         return True
     folder, _, name = key.partition("/")
-    return folder in plan.folders and _valid_name(name)
+    return (folder in plan.folders or folder in plan.whole) and _valid_name(name)
 
 
 def _inside(target: Path, relative: str) -> bool:
     """True if `target/relative`'s parent is a real folder at the expected place."""
 
     root = target.resolve()
-    parent = target / relative
-    parent = parent.parent
+    parent = (target / relative).parent
     if parent != target and is_link(parent):
         return False
     try:
-        return parent.resolve() == (root / Path(relative).parent).resolve() and parent.resolve().is_relative_to(root)
+        resolved = parent.resolve()
+        return resolved == (root / Path(relative).parent).resolve() and resolved.is_relative_to(root)
     except OSError:
         return False
 
@@ -75,7 +92,7 @@ def sync(primary: Path, target: Path, plan: SyncPlan, report: dict[str, Any]) ->
     if is_link(target):
         report["conflicts"].append("the account folder itself is a link; not syncing into it")
         return
-    target.mkdir(parents=True, exist_ok=True)
+    make_private_dir(target)  # the account folder holds a login
     manifest_path = target / MANIFEST
     if is_link(manifest_path):
         report["conflicts"].append(f"{MANIFEST} is a link; not syncing")
@@ -89,7 +106,16 @@ def sync(primary: Path, target: Path, plan: SyncPlan, report: dict[str, Any]) ->
     }
 
     desired: dict[str, Path] = {}
-    for folder in plan.folders:
+    per_entry = list(plan.folders)
+    for folder in plan.whole:
+        source = primary / folder
+        if not source.is_dir():
+            continue
+        if _can_link_whole(target, folder, items, report):
+            desired[folder] = source
+        else:
+            per_entry.append(folder)  # the account has its own content here; share entry by entry
+    for folder in per_entry:
         source_dir = primary / folder
         if not source_dir.is_dir():
             continue
@@ -101,7 +127,7 @@ def sync(primary: Path, target: Path, plan: SyncPlan, report: dict[str, Any]) ->
         if (primary / name).is_file():
             desired[name] = primary / name
 
-    for relative in sorted(set(items) - set(desired)):
+    for relative in sorted(set(items) - set(desired), key=len, reverse=True):
         info = items.pop(relative)
         try:
             if _remove(target, relative, info, report):
@@ -117,11 +143,32 @@ def sync(primary: Path, target: Path, plan: SyncPlan, report: dict[str, Any]) ->
             if source.is_dir():
                 _sync_dir(source, target / relative, relative, items, report)
             else:
-                _sync_file(source, target / relative, relative, items, report, relative in plan.overwrite)
+                _sync_file(source, target / relative, relative, items, report)
         except OSError as exc:
             report["warnings"].append(f"could not sync {relative}: {exc}")
 
-    write_json(manifest_path, {"version": 1, "primary": str(primary), "items": items})
+    write_json(manifest_path, {"version": 2, "primary": str(primary), "items": items})
+
+
+def _can_link_whole(target: Path, folder: str, items: dict, report: dict) -> bool:
+    """Make room for a whole-folder link; False if the account keeps its own content there."""
+
+    destination = target / folder
+    if is_link(destination) or not destination.exists():
+        return True
+    if not destination.is_dir():
+        report["conflicts"].append(f"{folder}: account has a file with this name, left in place")
+        return False
+    # Clear entries an earlier per-entry sync created, then take over the folder if it's empty.
+    for key in sorted((key for key in items if key.startswith(folder + "/")), key=len, reverse=True):
+        if _remove(target, key, items[key], report):
+            items.pop(key)
+    try:
+        next(destination.iterdir())
+    except StopIteration:
+        destination.rmdir()
+        return True
+    return False
 
 
 def _remove(target: Path, relative: str, info: dict[str, Any], report: dict[str, Any]) -> bool:
@@ -134,6 +181,10 @@ def _remove(target: Path, relative: str, info: dict[str, Any], report: dict[str,
         remove_link(destination)
         return True
     if not destination.exists():
+        return True
+    if kind == "hardlink" and destination.is_file():
+        # Unlinking one name of a hard link never touches the other names.
+        destination.unlink()
         return True
     if kind == "copy" and destination.is_file():
         if sha256_file(destination) == info.get("sha256"):
@@ -195,24 +246,44 @@ def _sync_dir(source: Path, destination: Path, relative: str, items: dict, repor
         report["linked"].append(relative)
 
 
-def _sync_file(source: Path, destination: Path, relative: str, items: dict, report: dict, overwrite: bool) -> None:
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def _sync_file(source: Path, destination: Path, relative: str, items: dict, report: dict) -> None:
     info = items.get(relative)
     if is_link(destination):
         report["conflicts"].append(f"{relative}: is a link in the account folder, left in place")
         return
+    if destination.exists() and _same_file(source, destination):
+        items[relative] = {"kind": "hardlink", "source": str(source)}
+        return
     wanted = sha256_file(source)
     if destination.exists():
         current = sha256_file(destination)
-        if not info and current != wanted:
+        recorded = info.get("sha256") if info else None
+        # A managed entry may be replaced if nobody changed it in the account folder:
+        # an old hard link (the primary file was saved as a new file) or an unchanged copy.
+        replaceable = info is not None and (info.get("kind") == "hardlink" or current in (wanted, recorded))
+        if not replaceable and current != wanted:
             report["conflicts"].append(f"{relative}: account has its own version, left in place")
             return
-        if info and current not in (wanted, info.get("sha256")) and not overwrite:
-            report["conflicts"].append(f"{relative}: edited in the account folder, left in place")
-            return
-    if not destination.exists() or sha256_file(destination) != wanted:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.cli-subagents.tmp")
-        shutil.copyfile(source, temporary)
-        temporary.replace(destination)
-        report["copied"].append(relative)
-    items[relative] = {"kind": "copy", "source": str(source), "sha256": wanted}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # A fresh random name, created exclusively: nothing already there is followed or reused.
+    temporary = temp_sibling(destination)
+    try:
+        try:
+            os.link(source, temporary)
+            kind = "hardlink"
+        except OSError:
+            copy_exclusive(source, temporary)  # different drive: fall back to a copy
+            kind = "copy"
+        os.replace(temporary, destination)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+    items[relative] = {"kind": kind, "source": str(source), "sha256": wanted}
+    report["linked" if kind == "hardlink" else "copied"].append(relative)

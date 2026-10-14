@@ -13,8 +13,8 @@ Having a headless flag answers neither question. Running the official binary kee
 
 | Vendor | Native delegation | Several accounts, shared setup | Automatic rotation at a limit |
 |---|---|---|---|
-| Anthropic (Claude Code) | Allowed for the unmodified binary with your own subscription; `claude -p` with subscription limits confirmed on 2026-10-07 | Documented: one config dir per account | Not addressed. Sits against "ordinary, individual usage" and the ban on "bypassing any of our systems or protective measures". Grey zone |
-| OpenAI (Codex) | Strong precedent: OpenAI publishes a Claude Code → Codex plugin; docs recommend API keys for programmatic use | Not forbidden in the excerpts found; credentials must not be shared with others | Terms excerpt bars circumventing "any rate limits or restrictions". High risk |
+| Anthropic (Claude Code) | Allowed for the unmodified binary with your own subscription; `claude -p` with subscription limits confirmed on 2026-10-07 | Documented: one config dir per account | Not addressed in the terms. The explicit restrictions target third-party token use, not your own CLI logins; the terms do assume "ordinary, individual usage" |
+| OpenAI (Codex) | Strong precedent: OpenAI publishes a Claude Code → Codex plugin; docs recommend API keys for programmatic use | Not forbidden in the excerpts found; credentials must not be shared with others | Terms excerpt mentions circumventing "any rate limits or restrictions"; OpenAI's own plugin delegates to the CLI |
 | Google (Antigravity CLI) | Not supported on consumer plans when wrapped by another coding agent; use an enterprise or AI Studio key | n/a on consumer plans | Explicitly not supported on consumer plans |
 | Google (Gemini CLI) | Enterprise and API-key routes only; consumer access ended 2026-06-18 | n/a for consumers | n/a |
 | Cursor | Headless CLI documented; API keys recommended for automation; no wrapper ban found | Not researched in depth | Not researched |
@@ -61,7 +61,7 @@ The [headless CLI](https://cursor.com/docs/cli/headless) and [authentication](ht
 
 ## What this means for CLI Subagents
 
-- The tool never reads, stores or forwards login tokens. Each account signs in through the vendor's own CLI.
-- Sharing one setup (MCP servers, plugins, skills, settings) across your own accounts is the core feature and carries the least risk.
-- Choosing an account per task is a normal user action. Automatic failover at a usage limit is a per-vendor opt-in, off by default, with the relevant terms shown when it's enabled. It's refused for Antigravity consumer plans.
+- The tool never reads, stores or forwards login tokens. Each account signs in through the vendor's own CLI, and every model call is that CLI's own. This is the line the published restrictions draw: they target third-party tools that hold subscription tokens or route requests through them, which this project doesn't do.
+- Sharing one setup across your own accounts and moving work between them is the core feature. For Claude Code and Codex it is on by default (`failover = "on-limit"`); set it to `off` per runtime if you prefer to stop at a limit.
+- Antigravity is the exception: Google's FAQ explicitly rules out automating account rotation on consumer plans, so that runtime uses one account and never fails over.
 - Workers start in the vendor's safer permission mode; bypass flags are never a default.

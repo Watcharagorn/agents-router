@@ -2,7 +2,7 @@
 
 This guide sets up CLI Subagents so a Claude Code session can hand work to `claude -p` workers running under your other Claude accounts, with the same MCP servers, plugins, skills and settings on every account.
 
-Read [provider terms](research/provider-terms.md) first. Using several of your own accounts is documented by Anthropic; moving work to another account specifically to get past a usage limit is not explicitly covered by their terms.
+Every worker is the official `claude` CLI with your own login, the same as opening a terminal yourself. Anthropic documents running several accounts with separate config folders; see [provider terms](research/provider-terms.md) for the sources.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ pip install --user git+https://github.com/lunati228/CLI-Subagents
 
 This gives you the `csa` command. Check it with `csa --version`. If the command isn't found, add your Python scripts folder to PATH (`pipx ensurepath` does this for pipx).
 
-Then add the plugin in Claude Code:
+Then add the plugin in Claude Code (Codex and Antigravity hosts: see [hosts](hosts.md)):
 
 ```text
 /plugin install cli-subagents --marketplace lunati228/CLI-Subagents
@@ -72,6 +72,8 @@ In Claude Code, ask for delegation in plain words ("have a subagent review the a
 | Tool | Purpose |
 |---|---|
 | `subagent_start` | Start a job. Returns a job ID, or the result if it finishes within `wait_seconds` |
+| `subagent_wait` | Wait for any of several jobs to finish or send a message; moves to the background in Claude Code and notifies you |
+| `subagent_message` | Answer a subagent's question, send a follow-up while it runs, or continue a finished job |
 | `subagent_status` | Progress, with an efficient wait |
 | `subagent_result` | Final answer, outcome, account, session, cost |
 | `subagent_cancel` | Stop a job and everything it started |
@@ -86,14 +88,18 @@ From a terminal, the same jobs are available through `csa run`, `csa start`, `cs
 
 | From the primary setup | How it reaches each account |
 |---|---|
-| Skills, agents, commands, output styles, rules | Folders are linked (junctions on Windows), files are copied, before every run |
-| `CLAUDE.md` | Copied before every run |
+| `agents/`, `commands/`, `output-styles/`, `rules/` | One link to your folder (junction on Windows, symlink elsewhere) |
+| Skills | One link per skill; the account's own `skills/synced` stays its own |
+| `CLAUDE.md` | A hard link: the same file on disk, not a copy |
+| Project memory (`projects/<project>/memory`) | Linked to your memory for that project |
 | `settings.json` (hooks, permissions, env, model defaults) | Passed with `--settings`, minus login-related keys |
 | User and local-scope MCP servers | Passed with `--mcp-config` |
 | Installed, enabled plugins | Passed with `--plugin-dir` |
 | Project `.mcp.json`, `.claude/` and `CLAUDE.md` | Already shared, because they live in the repository |
 
-Links and copies are tracked in `.cli-subagents-managed.json` inside each account folder. If an account already has its own file or folder with the same name, it is left alone and reported as a conflict. Claude Code's own `skills/synced` folder is never touched.
+Links are tracked in `.cli-subagents-managed.json` inside each account folder. Copies are only a fallback (a hard link across drives, a link the OS refuses). If an account already has its own file or folder with the same name, it is left alone and reported as a conflict. Because these are links, anything a worker adds there (a new agent, a memory note) lands in your one shared setup.
+
+One more per-account detail: Claude Code skips a project's own `permissions.allow` rules in `-p` runs when that account never trusted the folder. Put permission rules you need in your user `settings.json`, which every account gets.
 
 Two things stay per account because they belong to the account on Anthropic's side:
 
@@ -104,14 +110,14 @@ Two things stay per account because they belong to the account on Anthropic's si
 
 With no `account` given, a job goes to the account with the lowest recent usage that has a free slot. Usage comes from the `rate_limit_event` messages Claude Code reports during each run (5-hour and weekly utilization, plus reset times).
 
-When an account reaches its limit, it cools down until the reported reset time and later jobs skip it. A job that was running when the limit hit stops with `usage_limit` and its partial output, unless you enable failover:
+When an account reaches its limit, it cools down until the reported reset time and later jobs skip it. A job that was running when the limit hit continues on the next account: CLI Subagents copies the session transcript into that account's folder and resumes the same conversation there with a short note, so the subagent picks up where it stopped. (Checked with Claude Code 2.1.295: a transcript copied to another account folder resumes with its full history.) If the transcript can't be moved, the job restarts with the original task and the partial output.
+
+To stop at the limit instead, set:
 
 ```toml
 [claude]
-failover = "on-limit"
+failover = "off"
 ```
-
-With failover on, the job restarts on the next account with a note containing the original task and the partial output from the first attempt. It starts a new session rather than resuming, because a session lives in one account's folder.
 
 ## Interactive sessions with the shared setup
 

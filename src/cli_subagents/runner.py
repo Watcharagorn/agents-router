@@ -6,6 +6,7 @@ job keeps running if the MCP server or the host restarts.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import queue
@@ -14,9 +15,9 @@ import threading
 import time
 from typing import Any
 
-from cli_subagents import accounts
-from cli_subagents.config import Account, RuntimeConfig, load_config
-from cli_subagents.fsutil import kill_tree, new_group_kwargs, write_text
+from cli_subagents import accounts, messages
+from cli_subagents.config import SINGLE_ACCOUNT, Account, RuntimeConfig, load_config
+from cli_subagents.fsutil import kill_tree, new_group_kwargs, open_private, process_start_time, write_text
 from cli_subagents.jobs import job_dir, read_spec, update_status
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import (
@@ -31,7 +32,15 @@ from cli_subagents.runtimes.base import (
 )
 
 QUEUE_TIMEOUT_SECONDS = 15 * 60
+MAX_FOLLOW_UP_TURNS = 5
 STATUS_INTERVAL = 2.0
+FINAL_STATUS_RETRY_SECONDS = 5.0
+
+CONTINUE_NOTE = (
+    "Note from CLI Subagents: the account this conversation ran on reached its usage limit, so the "
+    "conversation moved to another account. Continue the task from where you stopped. Check the "
+    "current state of the files before redoing anything that may already be done."
+)
 
 
 def handoff_prompt(original: str, previous: AttemptResult, account: str) -> str:
@@ -67,15 +76,24 @@ class Runner:
     def cancelled(self) -> bool:
         return (self.folder / "cancel").exists()
 
-    def status(self, **fields: Any) -> None:
+    def _write_status(self, **fields: Any) -> None:
         update_status(self.job_id, runner_pid=os.getpid(), attempts=self.attempts, warnings=self.warnings, **fields)
+
+    def status(self, **fields: Any) -> bool:
+        """Best-effort heartbeat or progress write: a locked or busy status file must not end the job."""
+
+        try:
+            self._write_status(**fields)
+            return True
+        except OSError:
+            return False
 
     def finish(self, outcome: str, message: str = "", result: AttemptResult | None = None) -> int:
         text = result.text if result else ""
         if text:
             write_text(self.folder / "result.md", text)
         total_cost = sum(float(item.get("cost_usd") or 0) for item in self.attempts) or None
-        self.status(
+        fields = dict(
             state="done",
             outcome=outcome,
             message=message,
@@ -83,7 +101,18 @@ class Runner:
             session_id=result.session_id if result else None,
             cost_usd=total_cost,
             child_pid=None,
+            child_started=None,
         )
+        # The final write is the one that matters, so it keeps trying for a while.
+        deadline = time.monotonic() + FINAL_STATUS_RETRY_SECONDS
+        while True:
+            try:
+                self._write_status(**fields)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.2)
         return 0 if outcome == SUCCESS else 1
 
     # Main loop -------------------------------------------------------------
@@ -94,11 +123,15 @@ class Runner:
         excluded: set[str] = set()
         last: AttemptResult | None = None
         failover = self.runtime_config.failover == "on-limit" and not self.spec.account
+        # The conversation to continue and the account folder that holds it.
+        session = self.spec.resume_session
+        owner = self.spec.resume_account
+        follow_ups = 0
 
         while True:
             if self.cancelled():
                 return self.finish(CANCELLED, "cancelled", last)
-            lease = self._wait_for_account(excluded)
+            lease = self._wait_for_account(excluded, prefer=owner)
             if lease is None:
                 if self.cancelled():
                     return self.finish(CANCELLED, "cancelled", last)
@@ -106,19 +139,36 @@ class Runner:
                     return self.finish(last.outcome, last.message, last)
                 return self.finish(NO_ACCOUNT, self._no_account_message(excluded))
             try:
-                last = self._attempt(lease.account, prompt)
+                fallback = handoff_prompt(self.spec.prompt, last, owner or "another account") if last else self.spec.prompt
+                last = self._attempt(lease, prompt, session, owner, fallback)
             finally:
                 lease.release()
 
+            if last.outcome == SUCCESS and last.session_id and follow_ups < MAX_FOLLOW_UP_TURNS:
+                pending = messages.take_for_worker(self.job_id)
+                if pending:
+                    # Follow-ups sent while the worker was busy: continue the same conversation.
+                    follow_ups += 1
+                    session, owner = last.session_id, lease.account.name
+                    prompt = "Follow-up from the main session:\n\n" + "\n\n".join(item["text"] for item in pending)
+                    self.status(follow_up_turns=follow_ups)
+                    continue
             if last.outcome != USAGE_LIMIT:
                 return self.finish(last.outcome, last.message, last)
-            until = last.resets_at or time.time() + self.runtime_config.cooldown_minutes * 60
-            accounts.set_cooldown(self.spec.runtime, lease.account.name, until, last.message or USAGE_LIMIT)
-            if not failover or self.spec.resume_session:
+            if self.spec.runtime not in SINGLE_ACCOUNT:
+                # With one account there is nothing to fail over to; a cooldown would only block later jobs.
+                until = last.resets_at or time.time() + self.runtime_config.cooldown_minutes * 60
+                accounts.set_cooldown(self.spec.runtime, lease.account.name, until, last.message or USAGE_LIMIT)
+            if not failover:
                 return self.finish(USAGE_LIMIT, f"{lease.account.name}: {last.message}", last)
             excluded.add(lease.account.name)
-            prompt = handoff_prompt(self.spec.prompt, last, lease.account.name)
-            self.warnings.append(f"{lease.account.name} hit its usage limit; moving the task to another account")
+            if last.session_id and hasattr(self.runtime, "transfer_session"):
+                # Continue the same conversation on the next account.
+                session, owner, prompt = last.session_id, lease.account.name, CONTINUE_NOTE
+            else:
+                session, owner = None, None
+                prompt = handoff_prompt(self.spec.prompt, last, lease.account.name)
+            self.warnings.append(f"{lease.account.name} hit its usage limit; continuing on another account")
 
     def _no_account_message(self, excluded: set[str]) -> str:
         usage = accounts.load_usage(self.spec.runtime)
@@ -135,12 +185,12 @@ class Runner:
             return "the job ran out of time before an account was free"
         return f"no {self.spec.runtime} account was free within {QUEUE_TIMEOUT_SECONDS // 60} minutes"
 
-    def _wait_for_account(self, excluded: set[str]) -> accounts.Lease | None:
+    def _wait_for_account(self, excluded: set[str], prefer: str | None = None) -> accounts.Lease | None:
         queued_since = time.time()
         while True:
             try:
                 lease, _earliest, all_busy = accounts.acquire(
-                    self.runtime_config, pinned=self.spec.account, exclude=excluded
+                    self.runtime_config, pinned=self.spec.account, exclude=excluded, prefer=prefer
                 )
             except ValueError as exc:
                 self.warnings.append(str(exc))
@@ -158,11 +208,28 @@ class Runner:
             self.status(state="queued", message="waiting for a free account slot")
             time.sleep(3)
 
-    def _attempt(self, account: Account, prompt: str) -> AttemptResult:
+    def _attempt(
+        self,
+        lease: accounts.Lease,
+        prompt: str,
+        session: str | None = None,
+        owner: str | None = None,
+        fallback_prompt: str | None = None,
+    ) -> AttemptResult:
+        account = lease.account
         attempt: dict[str, Any] = {"account": account.name, "started_at": time.time()}
         self.attempts.append(attempt)
+        if session and owner and owner != account.name:
+            source = self.runtime_config.find(owner)
+            moved = bool(source) and self.runtime.transfer_session(source, account, session, self.spec.cwd)
+            if moved:
+                attempt["continued_from"] = owner
+            else:
+                self.warnings.append(f"could not move the session from {owner}; starting a new one with a summary")
+                session, prompt = None, fallback_prompt or prompt
+        spec = dataclasses.replace(self.spec, resume_session=session)
         try:
-            setup = self.runtime.prepare(self.runtime_config, account, self.spec)
+            setup = self.runtime.prepare(self.runtime_config, account, spec)
         except Exception as exc:  # setup problems must not kill the job silently
             setup = {}
             self.warnings.append(f"shared setup for {account.name} failed: {type(exc).__name__}: {exc}")
@@ -170,7 +237,12 @@ class Runner:
             for message in setup.get(key) or []:
                 if message not in self.warnings:
                     self.warnings.append(message)
-        launch = self.runtime.launch(self.runtime_config, account, self.spec, prompt, setup)
+        try:
+            launch = self.runtime.launch(self.runtime_config, account, spec, prompt, setup)
+        except Exception as exc:
+            result = AttemptResult(ERROR, message=f"could not start the worker: {exc}", session_id=session)
+            attempt.update(ended_at=time.time(), outcome=result.outcome, message=result.message)
+            return result
         attempt["session_id"] = launch.session_id
         parser = self.runtime.new_parser()
         time_limit = max(1.0, min(float(self.spec.timeout_seconds), self.deadline - time.time()))
@@ -179,7 +251,7 @@ class Runner:
         stderr_path = self.folder / f"stderr-{len(self.attempts)}.log"
         stop_reason: str | None = None
         exit_code: int | None = None
-        with events_path.open("ab") as events, stderr_path.open("wb") as stderr:
+        with open_private(events_path) as events, open_private(stderr_path, append=False) as stderr:
             process = subprocess.Popen(
                 launch.argv,
                 cwd=self.spec.cwd,
@@ -190,7 +262,15 @@ class Runner:
                 **new_group_kwargs(),
             )
             try:
-                self.status(state="running", account=account.name, child_pid=process.pid, session_id=launch.session_id, message=None)
+                started = process_start_time(process.pid)
+                try:
+                    lease.set_owner(process.pid, started, self.job_id)
+                except OSError as exc:
+                    self.warnings.append(f"could not record the worker in its account slot: {exc}")
+                self.status(
+                    state="running", account=account.name, child_pid=process.pid, child_started=started,
+                    session_id=launch.session_id, message=None,
+                )
                 stop_reason = self._pump(process, launch.stdin, parser, account, events, time_limit)
                 try:
                     exit_code = process.wait(timeout=30)
@@ -207,7 +287,7 @@ class Runner:
                         pass
                 if process.stdout:
                     process.stdout.close()
-                self.status(child_pid=None)
+                self.status(child_pid=None, child_started=None)
 
         stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:] if stderr_path.exists() else ""
         if stop_reason == CANCELLED:
@@ -223,7 +303,7 @@ class Runner:
             try:
                 result = parser.finish(exit_code, stderr_tail)
             except Exception as exc:
-                result = AttemptResult(ERROR, message=f"could not read the result: {exc}")
+                result = AttemptResult(ERROR, message=f"could not read the result: {exc}", text=parser.last_text)
         if result.session_id is None:
             result.session_id = launch.session_id
         attempt.update(
@@ -242,12 +322,22 @@ class Runner:
         """Feed the prompt, stream events until the worker exits; return a stop reason or None."""
 
         assert process.stdin is not None and process.stdout is not None
-        try:
-            process.stdin.write(stdin_text.encode("utf-8"))
-            process.stdin.close()
-        except OSError:
-            pass
+        stdin = process.stdin
 
+        def writer() -> None:
+            # A separate thread: a worker that doesn't read its stdin must not block the
+            # timeout and cancel checks below.
+            try:
+                stdin.write(stdin_text.encode("utf-8"))
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    stdin.close()
+                except (OSError, ValueError):
+                    pass
+
+        threading.Thread(target=writer, daemon=True).start()
         lines: queue.Queue[bytes | None] = queue.Queue()
 
         def reader() -> None:

@@ -27,11 +27,41 @@ HOST_ENV_PREFIXES = ("CLAUDE", "ANTHROPIC_", "CODEX_COMPANION_", "CODEX_THREAD",
 HOST_ENV_EXACT = {
     "CODEX_HOME",
     "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
     "CODEX_API_KEY",
     "MCP_CONNECTION_NONBLOCKING",
     "MCP_SERVER_CONNECTION_BATCH_SIZE",
 }
 KEEP_ENV = {"CLAUDE_CODE_GIT_BASH_PATH", "CLI_SUBAGENTS_HOME"}
+
+
+PARENT_SERVER = "csa-parent"
+
+
+def parent_server(job_id: str) -> dict[str, Any]:
+    """MCP server entry that gives a worker message_parent, ask_parent and check_parent_messages."""
+
+    import sys
+    from pathlib import Path
+
+    from cli_subagents.config import home
+
+    package_root = str(Path(__file__).resolve().parents[2])
+    return {
+        "command": sys.executable,
+        "args": ["-m", "cli_subagents", "mcp", "--worker", job_id],
+        "env": {"PYTHONPATH": package_root, "CLI_SUBAGENTS_HOME": str(home())},
+    }
+
+
+WORKER_TOOLS_NOTE = (
+    " You can talk to the main session with the csa-parent tools: message_parent for short progress "
+    "notes or early findings, ask_parent only when you truly can't decide something from the task and "
+    "the files, and check_parent_messages between major steps to pick up follow-up instructions."
+)
 
 
 def clean_environment(source: dict[str, str] | None = None) -> dict[str, str]:
@@ -64,6 +94,8 @@ class JobSpec:
     timeout_seconds: int = 1800
     add_dirs: list[str] = field(default_factory=list)
     resume_session: str | None = None
+    resume_account: str | None = None  # account folder that holds resume_session
+    parent: dict[str, Any] | None = None  # host CLI of the main session and its context paths
     depth: int = 1
     created: float = 0.0
 

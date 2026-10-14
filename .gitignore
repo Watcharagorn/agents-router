@@ -39,3 +39,6 @@ work/
 *.egg-info/
 build/
 dist/
+
+# Private planning notes
+plans.md
