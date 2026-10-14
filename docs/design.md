@@ -175,7 +175,7 @@ Each is a short experiment with real CLIs, recorded in `docs/research/` with the
 3. Partly verified: every run emits `rate_limit_event` with `status`, `utilization`, `resetsAt`, `rateLimitType` and `unifiedWindows.five_hour` / `seven_day`. The exact output at a real limit is still unobserved; detection uses `status: rejected`, HTTP 429 and the "hit your ... limit" text.
 4. Open: resuming a transcript under another account. Failover starts a new session with a handoff note instead.
 5. Partly open: `skills/` and `plugins/` entries are linked into Codex account homes, but whether the real Codex follows junctions is not verified yet. `config.toml` is written as a file, not linked, because Codex may rewrite it.
-6. Open: `agy` stream-json without ConPTY.
+6. Verified: AGY 1.3.5 on Windows streams `--output-format stream-json` through a plain pipe (`init`, `step_update` text deltas, `result` with `status` and `response`), so the core runtime needs no PTY. `--mode auto` reports "not available for this account" and falls back to `request-review`, so `edit` uses `accept-edits`.
 
 Two findings from the live tests changed the design:
 
@@ -191,7 +191,7 @@ Two findings from the live tests changed the design:
 | 2 | Claude Code plugin and marketplace, usage skill | Done; the plugin loads its MCP server, skill and command in a live session |
 | 3 | Failover (opt-in), cooldowns, `subagent_accounts` | Done; tested with a fake CLI, a real limit not yet observed |
 | 4 | Codex adapter and Codex account profiles | Done; live job on the primary Codex login, account sync and failover tested with a fake CLI |
-| 5 | Move the Antigravity adapter onto the core, keep its reviewer for Windows | Old tool names kept as aliases for one release |
+| 5 | Antigravity runtime in the core | Done; live job through a plain pipe. The standalone adapter stays for reviewed shell commands on Windows |
 | 6 | Cursor and further runtimes, compatibility matrix, CI | Each runtime has a recorded live test |
 
 ## Target layout

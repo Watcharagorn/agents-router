@@ -7,7 +7,7 @@ Let your coding agent hand work to the other agent CLIs you already have, each r
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 
-CLI Subagents is a Claude Code plugin and MCP server. Your main session starts subagents as separate `claude -p` or `codex exec` processes, each on one of your accounts. The main session hands over a task and keeps working, and the subagent's result comes back when it's done.
+CLI Subagents is a Claude Code plugin and MCP server. Your main session starts subagents as separate `claude -p`, `codex exec` or `agy` (Gemini) processes, each on one of your accounts. The main session hands over a task and keeps working, and the subagent's result comes back when it's done.
 
 Nothing in between translates one vendor's API into another's, and the tool never reads or forwards login tokens. Every model call comes from the vendor's own unmodified CLI, the same as if you had opened a terminal and typed the task yourself.
 
@@ -41,7 +41,7 @@ flowchart LR
 |---|---|---|
 | Claude Code (`claude -p`) | Works, v0.1 | Account pool, shared setup, failover, plugin. Tested on Windows |
 | Codex (`codex exec`) | Works, v0.1 | Same account model through `CODEX_HOME`; see the [Codex guide](docs/codex.md) |
-| Antigravity CLI (`agy`) | Works on Windows, separate | Standalone [adapter](adapters/antigravity/) with its own command reviewer; joins the core next |
+| Antigravity CLI (`agy`, Gemini) | Works, v0.1 | Signed-in account only, as Google's terms require; see the [Gemini guide](docs/gemini.md) |
 | Cursor, Gemini CLI, Copilot, OpenCode, others | Researched | See the [CLI comparison](docs/research/cli-permissions-and-headless.md) |
 
 ## Quick start (Claude Code)
@@ -97,11 +97,12 @@ Running the vendor's own CLI keeps authentication where the vendor put it, but e
 src/cli_subagents/      Core: jobs, account pool, shared setup, MCP server, csa CLI
   runtimes/claude.py    Claude Code adapter
   runtimes/codex.py     Codex adapter
+  runtimes/antigravity.py  Antigravity (Gemini) adapter
 .claude-plugin/         Plugin manifest and marketplace entry
 skills/cli-subagents/   Usage skill for the host agent
 commands/               /cli-subagents:delegate
 tests/                  Unit and end-to-end tests with a fake claude binary
-adapters/antigravity/   Standalone Antigravity MCP server and command reviewer
+adapters/antigravity/   Original standalone AGY server with ConPTY and a command reviewer
 docs/                   Guides, design and research
 ```
 
@@ -111,6 +112,7 @@ docs/                   Guides, design and research
 |---|---|
 | [Claude Code guide](docs/claude-code.md) | Install, accounts, what is shared, failover, troubleshooting |
 | [Codex guide](docs/codex.md) | Codex accounts, what is shared, access levels |
+| [Gemini guide](docs/gemini.md) | Gemini through Antigravity CLI |
 | [Configuration](docs/configuration.md) | `config.toml`, files, environment |
 | [Design](docs/design.md) | Architecture, decisions and what was verified |
 | [CLI comparison](docs/research/cli-permissions-and-headless.md) | Which CLIs have built-in auto-review, hooks and headless output |

@@ -33,7 +33,7 @@ name = "plus-2"
 home = "~/.cli-subagents/homes/codex/plus-2"
 ```
 
-The `[codex]` section takes the same keys as `[claude]`; `connectors` and `edit_permission_mode` only apply to Claude.
+The `[codex]` section takes the same keys as `[claude]`; `connectors` only applies to Claude. `[antigravity]` takes `binary`, `default_model` and `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it); it can't have extra accounts or failover.
 
 When no extra accounts are configured, workers run on the primary account. That is still useful from another host (for example Codex delegating to Claude Code), and with `include_primary = true` the primary account joins the pool.
 

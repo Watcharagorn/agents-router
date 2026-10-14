@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from cli_subagents import __version__, accounts, jobs, tools
-from cli_subagents.config import NAME_RE, Account, homes_dir, load_config, save_config
+from cli_subagents.config import NAME_RE, SINGLE_ACCOUNT, Account, homes_dir, load_config, save_config
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from cli_subagents.runtimes.base import ACCESS_LEVELS, JobSpec
 
@@ -73,6 +73,9 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 2
 
     if action == "add":
+        if args.runtime in SINGLE_ACCOUNT:
+            print(f"{args.runtime} runs on its signed-in account only; extra accounts aren't supported.")
+            return 1
         if runtime_config.find(args.name):
             print(f"{args.runtime} account '{args.name}' already exists.")
             return 1

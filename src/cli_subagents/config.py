@@ -12,7 +12,9 @@ from typing import Any
 
 from cli_subagents.fsutil import write_text
 
-RUNTIMES = ("claude", "codex")
+RUNTIMES = ("claude", "codex", "antigravity")
+# Runtimes that run on their single signed-in account only (no extra accounts, no failover).
+SINGLE_ACCOUNT = ("antigravity",)
 FAILOVER_MODES = ("off", "on-limit")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -51,6 +53,8 @@ def default_primary(runtime: str) -> Path:
     if runtime == "codex":
         configured = os.environ.get("CODEX_HOME")
         return Path(configured).expanduser() if configured else Path.home() / ".codex"
+    if runtime == "antigravity":
+        return Path.home() / ".gemini" / "antigravity-cli"
     raise ValueError(f"unknown runtime: {runtime}")
 
 
@@ -129,6 +133,8 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     failover = str(data.get("failover", "off"))
     if failover not in FAILOVER_MODES:
         raise ValueError(f"[{name}] failover must be one of {FAILOVER_MODES}")
+    if name in SINGLE_ACCOUNT and (accounts or failover != "off"):
+        raise ValueError(f"[{name}] runs on its signed-in account only; remove extra accounts and failover")
     connectors = str(data.get("connectors", "account"))
     if connectors not in ("account", "off"):
         raise ValueError(f"[{name}] connectors must be 'account' or 'off'")
@@ -140,7 +146,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         failover=failover,
         max_jobs_per_account=max(1, int(data.get("max_jobs_per_account", 1))),
         connectors=connectors,
-        edit_permission_mode=str(data.get("edit_permission_mode", "auto")),
+        edit_permission_mode=str(data.get("edit_permission_mode", "accept-edits" if name == "antigravity" else "auto")),
         default_model=data.get("default_model") or None,
         cooldown_minutes=max(1, int(data.get("cooldown_minutes", 60))),
         accounts=accounts,

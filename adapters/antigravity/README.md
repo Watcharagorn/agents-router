@@ -1,6 +1,8 @@
 # Antigravity adapter
 
-An MCP server that runs [Antigravity CLI](https://www.antigravity.google/docs/cli/) (`agy`) as a subagent. The host sends a task; AGY works on it in its own harness with its own login; the host gets back a summary and the path to the full answer.
+The original, standalone MCP server for [Antigravity CLI](https://www.antigravity.google/docs/cli/) (`agy`). The core of CLI Subagents now runs AGY directly as `runtime: "antigravity"` ([guide](../../docs/gemini.md)); this adapter remains for Windows setups that want shell commands approved by its own reviewer, and for AGY versions that print nothing to a pipe.
+
+It runs AGY as a subagent. The host sends a task; AGY works on it in its own harness with its own login; the host gets back a summary and the path to the full answer.
 
 Status: works on Windows; last checked against AGY 1.2.5. Python 3.11+, FastMCP, ConPTY via `pywinpty`.
 
