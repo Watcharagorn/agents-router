@@ -10,7 +10,7 @@ Check Google's terms first. The [Antigravity FAQ](https://antigravity.google/doc
 2. Install `csa` (see the [Claude Code guide](claude-code.md#1-install)).
 3. Check: `csa accounts --runtime antigravity` lists the binary, its version and whether it can list models.
 
-There is nothing else to configure. Antigravity runs on its one signed-in account: it has no setting to move its config folder, and rotation is ruled out by the terms above, so extra accounts and failover are refused for this runtime.
+There is nothing else to configure. Antigravity runs on its one signed-in account today: it has no setting to move its config folder, and the terms above rule out rotation on consumer plans, so extra accounts and failover are refused for this runtime. Multi-account rotation is planned as an opt-in feature, clearly marked as use at your own risk; see [design](design.md#build-order).
 
 ## Using it
 
@@ -28,7 +28,7 @@ From a host, pass `runtime: "antigravity"` to `subagent_start`. `agy models` lis
 
 Antigravity's own auto mode (a reviewer agent for commands) isn't available on every account or on Windows. Where your account has it, set `edit_permission_mode = "auto"` under `[antigravity]` in the config; AGY falls back to its default mode with a warning when it isn't available.
 
-The prompt travels as a command-line argument, so it's limited to about 24,000 characters. Point to files instead of pasting them.
+The prompt travels as a command-line argument, so it's limited to 24,000 characters. Point to files instead of pasting them. The job's `timeout_seconds` is passed to `agy` as `--print-timeout`.
 
 ## The standalone adapter
 

@@ -6,7 +6,7 @@ After `codex plugin add cli-subagents@cli-subagents` (or a `[mcp_servers.cli-sub
 
 ## Waiting
 
-Codex ends a single MCP call after a few minutes, so `subagent_wait` returns after at most about four minutes. If jobs are still running, do other work and call `subagent_wait` again. Nothing is lost between calls; messages and results wait for you.
+Codex ends a single MCP call after a few minutes, so `subagent_wait` returns after at most 240 seconds, and `wait_seconds` on `subagent_start` and `subagent_status` is capped at the same value. If jobs are still running, do other work and call `subagent_wait` again. Nothing is lost between calls; messages and results wait for you.
 
 ## Where the shared setup lives
 
@@ -20,7 +20,7 @@ Subagents on the user's other ChatGPT accounts get the setup of the main Codex h
 | A plugin | `codex plugin add <plugin>@<marketplace>` |
 | Model defaults, features, profiles | `~/.codex/config.toml` |
 
-Don't edit files inside `~/.cli-subagents/homes/codex/`; they're rebuilt from the main home before each run. Each account keeps its own login (`auth.json`) and session history.
+Don't edit files inside `~/.cli-subagents/homes/codex/`; they're rebuilt from the main home before each run. Each account keeps its own login (`auth.json`), session history, and its own `[projects.*]`, `[hooks.state.*]` and `[notice.*]` tables in `config.toml`; the rest of that file comes from the main home.
 
 ## Mixing CLIs
 

@@ -28,12 +28,12 @@ flowchart LR
 
 ## What you get
 
-- Subagents that feel built in. Start one, keep working, and get the result back when it's done. In Claude Code a waiting call moves to the background and you're notified when it finishes.
-- Two-way messages. A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works.
+- Subagents that feel built in. Start one, keep working, and get the result back when it's done. In Claude Code the plugin wakes an idle session when a subagent finishes or asks a question, and lists any uncollected results after you resume.
+- Two-way messages. A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works, and each message is delivered once.
 - One setup for every account. Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder through links and launch flags, not copied. Only the login differs per account.
-- Automatic account switching. Each run reports the account's 5-hour and weekly usage. New work goes to the account with the most room; if an account hits its limit mid-task, the same conversation continues on the next account.
+- Automatic account switching. Claude Code reports each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude or Codex account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off.
 - Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity), and the subagent is told where your instructions and skills live.
-- The vendors' own safety checks. `read` jobs can't edit, and `edit` jobs run in each CLI's own auto-review mode. Skipping permissions is an explicit choice per job.
+- The vendors' own safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Skipping permissions is an explicit choice per job.
 - No tokens touched. Every model call comes from the vendor's own CLI with your own login. Nothing reads, copies or forwards credentials.
 - Nothing to install besides Python 3.11. Pure standard library, with its own small MCP server.
 
@@ -82,9 +82,10 @@ Your normal config folder (`~/.claude`, `~/.codex`) is the one pool. Each extra 
 - folders such as `agents/` and `commands/` become one link to yours, and each skill is linked by name;
 - `CLAUDE.md` and `AGENTS.md` are hard links to your files, so it's the same file on disk;
 - project memory is linked to your main project memory;
-- your settings, MCP servers and plugins are passed to the worker as launch flags, minus anything that would pick a different login.
+- your settings, MCP servers and plugins are passed to the worker as launch flags (`--settings`, `--mcp-config`, `--plugin-dir`), minus anything that would pick a different login;
+- for Codex, your `config.toml` is written into the account folder, which keeps its own trust and notice tables.
 
-Nothing in your own folders is moved or rewritten. `csa doctor --live` starts a tiny job on each account and compares exactly what each one loaded.
+Nothing in your own folders is moved or rewritten. One limit: tools built into the Claude desktop app itself (its browser or terminal panes, for example) belong to the app, not to your config, so CLI workers can't have them. Everything in your config folders and plugins is shared. `csa doctor --live` starts a tiny job on each account and compares exactly what each one loaded.
 
 ## Using your accounts
 

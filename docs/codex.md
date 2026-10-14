@@ -17,7 +17,7 @@ With no extra Codex accounts configured, workers run on your normal Codex login 
 csa accounts add plus-2 --runtime codex
 ```
 
-This creates `~/.cli-subagents/homes/codex/plus-2`, copies in your shared setup, and opens `codex login` for that folder. Every command CLI Subagents runs for an extra account passes `cli_auth_credentials_store=file`, so each login lives in that account's own `auth.json` and never in a shared keyring entry. The tool never reads it.
+This creates `~/.cli-subagents/homes/codex/plus-2`, links in your shared setup, and opens `codex login` for that folder. Every command CLI Subagents runs for an extra account passes `cli_auth_credentials_store=file`, so each login lives in that account's own `auth.json` and never in a shared keyring entry. The tool never reads it.
 
 Check everything with:
 
@@ -30,11 +30,13 @@ csa doctor --runtime codex
 
 | From the primary `CODEX_HOME` | How it reaches each account |
 |---|---|
-| `config.toml` (MCP servers, model defaults, features, profiles) | Written into the account folder before every run, without this tool's own MCP server |
-| `skills/`, `plugins/` entries | Linked (junctions on Windows) |
-| `AGENTS.md` | Copied |
+| `config.toml` (MCP servers, model defaults, features, profiles) | Written into the account folder before every run, table by table |
+| `skills/`, `plugins/` entries | Linked one by one (junctions on Windows) |
+| `AGENTS.md` | A hard link to your file |
 
-Logins, sessions, history and the state databases stay per account. If an account folder already had its own `config.toml` the first time, it is kept as `config.toml.before-cli-subagents`.
+The account's own `config.toml` keeps three kinds of tables that Codex writes per home: `[projects.*]` (folder trust), `[hooks.state.*]` and `[notice.*]`. Everything else comes from your primary file. Logins, sessions, history and the state databases stay per account. If an account folder already had its own `config.toml` the first time, it is kept as `config.toml.before-cli-subagents`.
+
+This tool's own MCP server stays in the copied config, but every Codex worker, on the primary account too, is started with `-c mcp_servers.<name>.enabled=false` for it, so workers can't start subagents of their own. Instead each worker gets the `csa-parent` tools (`message_parent`, `ask_parent`, `check_parent_messages`) through `-c` overrides.
 
 Workers start without `OPENAI_API_KEY`, `CODEX_API_KEY` or the host's `CODEX_HOME`, so they always use the account's own ChatGPT login.
 
@@ -44,15 +46,15 @@ Pass `runtime: "codex"` to `subagent_start`, or `--runtime codex` to `csa run` a
 
 | `access` | Codex flags |
 |---|---|
-| `read` | `-s read-only` |
-| `edit` | `--approve-for-me` (workspace-write sandbox, Codex's auto-review approves or denies escalations) |
+| `read` | `-s read-only` (`sandbox_mode=read-only` when resuming) |
+| `edit` | `--approve-for-me` (workspace-write sandbox, Codex's auto-review approves or denies escalations; the same settings as `-c` overrides when resuming) |
 | `full` | `--dangerously-bypass-approvals-and-sandbox` |
 
-`model` maps to `-m` and `effort` to `model_reasoning_effort`. `resume_job` continues a Codex thread with `codex exec resume` on the same account.
+`model` maps to `-m` and `effort` to `model_reasoning_effort` (`max` is sent as `xhigh`, Codex's highest level). `resume_job` continues a Codex thread with `codex exec resume` on the same account.
 
 ## Limits
 
-`codex exec --json` doesn't report remaining quota, so CLI Subagents can't rank Codex accounts by usage the way it does for Claude. It recognizes a usage-limit failure from the error message, cools that account down (`cooldown_minutes`, default 60) and retries the job on the next account with the partial output attached. Set `failover = "off"` under `[codex]` to stop at the limit instead.
+`codex exec --json` doesn't report remaining quota, so CLI Subagents can't rank Codex accounts by usage the way it does for Claude. It recognizes a usage-limit failure from the error message and cools that account down until the `Retry-After` value or reported reset time in the error, or else for `cooldown_minutes` (default 60), never more than 7 days. The job then restarts on the next account with the partial output attached; a Codex thread isn't moved between accounts. Failover is on by default. `csa accounts reset <name> --runtime codex` clears a cooldown. Set `failover = "off"` under `[codex]` to stop at the limit instead.
 
 ## Notes
 

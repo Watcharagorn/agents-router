@@ -9,17 +9,17 @@ These tools are your subagent tool. Use them the way you would use a built-in "s
 
 ## The loop
 
-1. Start: `subagent_start` with a complete task (`prompt`), the project folder (`cwd`, absolute) and `access` (`read` for analysis and review, `edit` for changes). Start several jobs before waiting if the work is independent.
+1. Start: `subagent_start` with a complete task (`prompt`), the project folder (`cwd`, absolute) and `access` (`read` for analysis and review, `edit` for changes). Claude workers on `read` can use read-only tools and shell commands only. Start several jobs before waiting if the work is independent.
 2. Wait: `subagent_wait` with the job IDs. It returns when a job finishes or a subagent sends a message or question. Call it again for the jobs still running.
-3. Answer: if a result shows `open_questions`, reply with `subagent_message` and `reply_to` set to the question id. To give a running subagent new instructions, send `subagent_message` without `reply_to`.
-4. Collect and check: finished jobs come back with `outcome` and `result`. `success` means the subagent finished; still read the diff, run the tests and confirm the files exist before relying on it.
+3. Answer: if a result shows `open_questions`, reply with `subagent_message` and `reply_to` set to the question id. To give a running subagent new instructions, send `subagent_message` without `reply_to`. In Claude Code a hook also wakes an idle session when a job finishes or asks something, so you can end your turn after starting jobs.
+4. Collect and check: finished jobs come back with `outcome` and `result`. `success` means the subagent finished. Each result is delivered once, so keep what you need from it. Still read the diff, run the tests and confirm the files exist before relying on it.
 5. Follow up: `subagent_message` to a finished job continues the same conversation as a new job.
 
 ## Writing the task
 
 The subagent can't see this conversation. State the goal, the files or folders involved, what it must not touch, decisions already made, how to verify the result, and what to report back. Point to files instead of pasting them.
 
-Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when a specific agent or a second opinion from another vendor helps; `model`; `effort`; `max_turns`; `timeout_seconds` (default 1800); `account` to pin one account; `add_dirs`.
+Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when a specific agent or a second opinion from another vendor helps; `model`; `effort`; `max_turns`; `timeout_seconds` (default 1800); `resume_job` to continue an earlier job's conversation; `account` to pin one account; `add_dirs`.
 
 `access: "full"` skips the CLI's own permission checks. Use it only when the user asked for that.
 
@@ -39,10 +39,11 @@ Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when
 Read the note for the CLI you are running in once: [Claude Code](hosts/claude-code.md), [Codex](hosts/codex.md) or [Antigravity](hosts/antigravity.md). It covers how waiting works there and where to put new skills, MCP servers and instructions so every subagent shares them.
 
 - Claude Code: `subagent_wait` can run for up to an hour; Claude Code moves it to the background and notifies you when it returns.
-- Codex and Antigravity: waits end after a few minutes; call `subagent_wait` again until the jobs finish.
+- Codex: waits end after 240 seconds; call `subagent_wait` again until the jobs finish.
+- Antigravity: keep waits to a few minutes and call again.
 
 ## What subagents get
 
-Subagents in the same CLI as you load the same setup you have. Subagents in another CLI get a short note listing your instruction files and skill folders to read. Every subagent can send you progress notes, ask you a question (it waits for your answer), and read follow-ups you send. Subagents can't start subagents of their own.
+Subagents in the same CLI as you load the same setup you have. Subagents in another CLI get a short note listing your instruction files and skill folders to read. Every subagent has `message_parent` (progress notes), `ask_parent` (a question; it waits for your answer) and `check_parent_messages` (follow-ups you send). Subagents can't start subagents of their own. Tools built into the Claude desktop app itself (its browser or terminal panes, for example) aren't available to them; everything in your config folders and plugins is.
 
 Never put secrets or credentials in a prompt.

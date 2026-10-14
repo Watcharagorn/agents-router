@@ -16,7 +16,7 @@ pipx install git+https://github.com/lunati228/CLI-Subagents
 
 On older Claude Code versions: `/plugin marketplace add lunati228/CLI-Subagents`, then `/plugin install cli-subagents@cli-subagents`.
 
-You get the MCP server, the `cli-subagents` skill and `/cli-subagents:delegate`. A `subagent_wait` call that runs longer than about two minutes moves to the background on its own (Claude Code 2.1.212+), and Claude gets a notification when it returns, so waiting doesn't block the session.
+You get the MCP server, the `cli-subagents` skill, `/cli-subagents:delegate` and two hooks that call `csa` (so `csa` must be on PATH). The hooks wake an idle session when a subagent finishes or asks a question, and list uncollected results after a resume or compact; see [Claude Code](claude-code.md#messages-and-wake-ups). A `subagent_wait` call that runs longer than about two minutes moves to the background on its own (Claude Code 2.1.212+), and Claude gets a notification when it returns, so waiting doesn't block the session.
 
 ## Codex
 
@@ -35,7 +35,7 @@ args = ["mcp"]
 tool_timeout_sec = 300
 ```
 
-Codex ends a single MCP call after a few minutes (300 seconds in the 0.162.1 source; older docs say 60), so CLI Subagents caps waits from Codex at 240 seconds. Call `subagent_wait` again until the jobs finish.
+Codex ends a single MCP call after a few minutes (300 seconds in the 0.162.1 source; older docs say 60), so CLI Subagents caps waits from Codex at 240 seconds. Call `subagent_wait` again until the jobs finish. `wait_seconds` on `subagent_start` and `subagent_status` is capped the same way.
 
 ## Antigravity
 
@@ -43,7 +43,7 @@ Codex ends a single MCP call after a few minutes (300 seconds in the 0.162.1 sou
 agy plugin install https://github.com/lunati228/CLI-Subagents
 ```
 
-The repository root has the Antigravity plugin files (`plugin.json`, `mcp_config.json`) next to the shared skill; `agy plugin validate` accepts them and converts `/delegate` into a skill. Keep waits short, as with Codex.
+The repository root has the Antigravity plugin files (`plugin.json`, `mcp_config.json`) next to the shared skill; `agy plugin validate` accepts them and converts `/delegate` into a skill. Keep waits short, as with Codex. The plugin hooks are Claude Code only.
 
 ## Any other MCP client
 

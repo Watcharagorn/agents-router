@@ -63,7 +63,7 @@ csa accounts
 csa doctor --live
 ```
 
-`csa accounts` shows each account's login state, plan, last known usage and cooldown without using quota. `doctor --live` runs one tiny Haiku job per account and prints what each one loaded (model, permission mode, MCP servers, plugins, skills, agents), then lists any differences between accounts.
+`csa accounts` shows each account's login state, plan, last known usage and cooldown without using quota. `doctor --live` runs one tiny job per account (on Haiku for Claude) and prints what each one loaded (model, permission mode, MCP servers, plugins, skills, agents), then lists any differences between accounts.
 
 ## 4. Use it
 
@@ -72,27 +72,44 @@ In Claude Code, ask for delegation in plain words ("have a subagent review the a
 | Tool | Purpose |
 |---|---|
 | `subagent_start` | Start a job. Returns a job ID, or the result if it finishes within `wait_seconds` |
-| `subagent_wait` | Wait for any of several jobs to finish or send a message; moves to the background in Claude Code and notifies you |
+| `subagent_wait` | Wait for any of several jobs to finish or send a message (up to an hour; 240 s from a Codex host). Moves to the background in Claude Code and notifies you |
 | `subagent_message` | Answer a subagent's question, send a follow-up while it runs, or continue a finished job |
 | `subagent_status` | Progress, with an efficient wait |
-| `subagent_result` | Final answer, outcome, account, session, cost |
+| `subagent_result` | Final answer, outcome, account, session, cost (`max_chars` up to 80000, default 20000) |
 | `subagent_cancel` | Stop a job and everything it started |
 | `subagent_list` | Recent jobs |
 | `subagent_accounts` | Accounts, logins, usage and cooldowns |
 
-From a terminal, the same jobs are available through `csa run`, `csa start`, `csa status`, `csa result`, `csa cancel` and `csa jobs`.
+From a terminal, the same jobs are available through `csa run`, `csa start`, `csa status`, `csa result`, `csa cancel`, `csa jobs`, `csa wait` and `csa message`. `csa --home <folder>` uses a different CLI Subagents folder for one command.
 
-`access` controls permissions. `read` runs the worker in plan mode (no edits), `edit` uses Claude Code's auto mode (edits allowed, with Claude's own classifier checking risky actions), and `full` skips permission checks and is only for when you ask for it.
+`access` controls permissions:
+
+- `read` runs the worker in `dontAsk` mode with an allowlist of read-only tools (`Read`, `Grep`, `Glob`, web search and fetch, native subagents) and read-only shell commands (`git status`, `git diff`, `git log`, `ls`, `cat`, `grep`, `rg` and a few more). Anything else is refused. Plan mode isn't used because it blocks every MCP call, including the channel to the main session.
+- `edit` uses Claude Code's auto mode by default (edits allowed, with Claude's own classifier checking risky actions). Change it with `edit_permission_mode`.
+- `full` skips permission checks and is only for when you ask for it.
+
+## Messages and wake-ups
+
+Workers get three extra tools from a small built-in MCP server: `message_parent` (a progress note, no reply expected), `ask_parent` (a question that waits for your answer, 10 to 1800 seconds, default 600) and `check_parent_messages` (follow-ups sent while the worker runs).
+
+Follow-ups reach a Claude worker in two ways. A `PostToolUse` hook that CLI Subagents adds to the worker shows new follow-ups after its next tool call. Because hook text is only a hint to the model, anything the worker hasn't read with `check_parent_messages` is sent again by the runner as a follow-up turn once the worker finishes (up to five times).
+
+The plugin also ships two hooks for the main session (`hooks/hooks.json`):
+
+- After `subagent_start`, an async `PostToolUse` hook (`csa hook await`) waits for the job. When it finishes or the worker asks a question or sends a note, the hook wakes an idle Claude Code session with a summary.
+- On resume or compact, a `SessionStart` hook (`csa hook pending`) lists finished jobs in the current project whose result nobody collected.
+
+Each result is delivered once. Whichever of `subagent_wait`, `subagent_result` or the hook gets it first claims it, so you don't see it twice.
 
 ## What every account shares
 
 | From the primary setup | How it reaches each account |
 |---|---|
-| `agents/`, `commands/`, `output-styles/`, `rules/` | One link to your folder (junction on Windows, symlink elsewhere) |
+| `agents/`, `commands/`, `output-styles/`, `rules/`, `workflows/` | One link to your folder (junction on Windows, symlink elsewhere) |
 | Skills | One link per skill; the account's own `skills/synced` stays its own |
 | `CLAUDE.md` | A hard link: the same file on disk, not a copy |
 | Project memory (`projects/<project>/memory`) | Linked to your memory for that project |
-| `settings.json` (hooks, permissions, env, model defaults) | Passed with `--settings`, minus login-related keys |
+| `settings.json` (hooks, permissions, env, model defaults) | Passed with `--settings`, minus login, gateway and plugin-install keys (`apiKeyHelper`, `forceLoginMethod`, `enabledPlugins`, `ANTHROPIC_*` credentials and similar) |
 | User and local-scope MCP servers | Passed with `--mcp-config` |
 | Installed, enabled plugins | Passed with `--plugin-dir` |
 | Project `.mcp.json`, `.claude/` and `CLAUDE.md` | Already shared, because they live in the repository |
@@ -100,6 +117,8 @@ From a terminal, the same jobs are available through `csa run`, `csa start`, `cs
 Links are tracked in `.cli-subagents-managed.json` inside each account folder. Copies are only a fallback (a hard link across drives, a link the OS refuses). If an account already has its own file or folder with the same name, it is left alone and reported as a conflict. Because these are links, anything a worker adds there (a new agent, a memory note) lands in your one shared setup.
 
 One more per-account detail: Claude Code skips a project's own `permissions.allow` rules in `-p` runs when that account never trusted the folder. Put permission rules you need in your user `settings.json`, which every account gets.
+
+Tools built into the Claude desktop app itself (its browser or terminal panes, for example) belong to the app, not to your config, so CLI workers can't have them.
 
 Two things stay per account because they belong to the account on Anthropic's side:
 
@@ -110,7 +129,9 @@ Two things stay per account because they belong to the account on Anthropic's si
 
 With no `account` given, a job goes to the account with the lowest recent usage that has a free slot. Usage comes from the `rate_limit_event` messages Claude Code reports during each run (5-hour and weekly utilization, plus reset times).
 
-When an account reaches its limit, it cools down until the reported reset time and later jobs skip it. A job that was running when the limit hit continues on the next account: CLI Subagents copies the session transcript into that account's folder and resumes the same conversation there with a short note, so the subagent picks up where it stopped. (Checked with Claude Code 2.1.295: a transcript copied to another account folder resumes with its full history.) If the transcript can't be moved, the job restarts with the original task and the partial output.
+When an account reaches its limit, it cools down and later jobs skip it. The cooldown ends at the first of these that is available: a `Retry-After` value in the error, the reset time Claude Code reported, or `cooldown_minutes` (default 60). It is never longer than 7 days. `csa accounts reset <name>` clears a cooldown early.
+
+Failover is on by default. A job that was running when the limit hit continues on the next account: CLI Subagents copies the session transcript into that account's folder (`transfer_session`) and resumes the same conversation there with a short note, so the subagent picks up where it stopped. (Checked with Claude Code 2.1.295: a transcript copied to another account folder resumes with its full history.) If the transcript can't be moved, the job restarts with the original task and the partial output. A job pinned to one account with `account` doesn't fail over.
 
 To stop at the limit instead, set:
 
@@ -136,6 +157,6 @@ csa launch --account max-3 -- --model opus
 | `auth` outcome | Run `csa accounts login <name>` |
 | An account loads different tools | Run `csa doctor --live` and read the differences; `csa accounts sync <name>` re-links the shared setup |
 | Wrong organization after login | Log out with `claude auth logout` in that account (`CLAUDE_CONFIG_DIR` set to its folder), switch organization on claude.ai, log in again |
-| `no_account` | Every account is cooling down or busy; `csa accounts` shows when the earliest resets |
+| `no_account` | Every account is cooling down or busy; `csa accounts` shows when the earliest resets, and `csa accounts reset <name>` clears a cooldown you know is over |
 | Job state `lost` | The background runner stopped (for example the computer slept). Start the job again |
 | Need to see everything a worker did | `events_path` in the result points to the raw event log |

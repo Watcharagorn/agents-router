@@ -15,7 +15,7 @@ failover = "on-limit"        # continue on the next account at a usage limit; "o
 max_jobs_per_account = 1     # parallel workers per account folder
 connectors = "account"       # "account" keeps each account's claude.ai connectors; "off" hides them
 edit_permission_mode = "auto"  # permission mode for access="edit"
-cooldown_minutes = 60        # cooldown when a limit is hit without a reset time
+cooldown_minutes = 60        # cooldown when the limit error has no Retry-After or reset time (any cooldown is capped at 7 days)
 # binary = "C:/path/to/claude.exe"   # only if auto-detection fails
 # default_model = "sonnet"
 
@@ -45,7 +45,7 @@ When no extra accounts are configured, workers run on the primary account. That 
 |---|---|
 | `config.toml` | The configuration above |
 | `homes/<runtime>/<account>/` | Account folders (login, state, sessions, linked shared setup) |
-| `jobs/<job_id>/` | `spec.json`, `status.json`, `events.jsonl`, `result.md`, `stderr-*.log`, `runner.log` |
+| `jobs/<job_id>/` | `spec.json`, `status.json`, `events.jsonl`, `result.md`, `stderr-*.log`, `runner.log`, the message logs `inbox.jsonl` and `outbox.jsonl`, and for Claude workers the `mcp.json` and `settings.json` they launch with |
 | `state/<runtime>-usage.json` | Last known usage, cooldowns and last use per account |
 | `state/leases/` | Lock files for per-account job slots |
 | `cache/claude/<account>/` | Generated `settings.json` overlay and MCP config passed to workers |
@@ -56,7 +56,7 @@ Job records and generated files contain your prompts, results and MCP server set
 
 | Variable | Effect |
 |---|---|
-| `CLI_SUBAGENTS_HOME` | Use a different root folder |
+| `CLI_SUBAGENTS_HOME` | Use a different root folder (`csa --home <folder>` sets it for one command) |
 | `CLI_SUBAGENTS_DEPTH` | Set by CLI Subagents in workers; used to refuse nested delegation |
 | `CLAUDE_CONFIG_DIR` | Default for `[claude] primary` when the config doesn't set it |
 | `CODEX_HOME` | Default for `[codex] primary` when the config doesn't set it |

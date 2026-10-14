@@ -58,7 +58,7 @@ DEFINITIONS = [
                     "type": "string",
                     "enum": list(ACCESS_LEVELS),
                     "default": "edit",
-                    "description": "read: no edits (plan mode). edit: edits with the CLI's own safety checks (auto mode). full: skip all permission checks; only when the user asked for it.",
+                    "description": "read: no edits (read-only tools and commands only). edit: edits with the CLI's own safety checks (auto mode). full: skip all permission checks; only when the user asked for it.",
                 },
                 "max_turns": {"type": "integer", "minimum": 1},
                 "timeout_seconds": {"type": "integer", "minimum": 30, "maximum": 21600, "default": 1800},
@@ -205,7 +205,9 @@ def summarize(status: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_codex(client: str | None) -> bool:
-    return "codex" in (client or "").lower()
+    """Hosts whose MCP calls time out after a few minutes (Codex, Antigravity)."""
+
+    return detect_host(client, {}) in ("codex", "antigravity")
 
 
 def _wait(arguments: dict[str, Any], client: str | None = None) -> float:
