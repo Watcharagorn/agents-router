@@ -1,0 +1,41 @@
+# Machine-local secrets, generated config and runtime state
+.local/
+.env
+.env.*
+!.env.example
+broker-secret.bin
+runtime-secret.txt
+broker-tokens.json
+approvals/
+token-leases/
+runs/
+*.pem
+*.key
+credentials.json
+.credentials.json
+oauth_creds.json
+/settings.json
+.claude/settings.local.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Agent scratch folders and local test output
+.codex-agy-*/
+.test-audit/
+work/
+*.log
+*.tmp
+
+# Browser automation scratch
+.playwright-cli/
+
+# Packaging output
+*.egg-info/
+build/
+dist/

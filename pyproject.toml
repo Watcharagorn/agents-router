@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cli-subagents"
+version = "0.1.0"
+description = "Let your coding agent delegate tasks to other installed agent CLIs, each in its own harness under your own login, with one shared setup across accounts."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "lunati" }]
+keywords = ["mcp", "subagents", "claude-code", "codex", "coding-agents", "multi-account"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/lunati228/CLI-Subagents"
+
+[project.scripts]
+csa = "cli_subagents.cli:main"
+cli-subagents-mcp = "cli_subagents.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

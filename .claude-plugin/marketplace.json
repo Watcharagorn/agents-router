@@ -1,0 +1,15 @@
+{
+  "name": "cli-subagents",
+  "description": "CLI Subagents: run subagents in other agent CLIs under your own accounts, with one shared setup.",
+  "owner": {
+    "name": "lunati",
+    "url": "https://github.com/lunati228"
+  },
+  "plugins": [
+    {
+      "name": "cli-subagents",
+      "source": "./",
+      "description": "Subagents in other agent CLIs under your own accounts, with one shared setup across all of them."
+    }
+  ]
+}

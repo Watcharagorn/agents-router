@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use or build on this project, please credit it as below."
+title: "CLI Subagents"
+abstract: "Let your coding agent delegate tasks to other installed agent CLIs, each running in its own native harness under your own login."
+authors:
+  - alias: "lunati"
+    website: "https://github.com/lunati228"
+repository-code: "https://github.com/lunati228/CLI-Subagents"
+license: Apache-2.0
+keywords:
+  - mcp
+  - subagents
+  - claude-code
+  - codex
+  - antigravity
+  - coding-agents
