@@ -1,0 +1,30 @@
+# Installing CLI Subagents (for AI agents)
+
+CLI Subagents is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer and has no dependencies.
+
+1. Install the `csa` command:
+
+   ```bash
+   pipx install git+https://github.com/lunati228/CLI-Subagents
+   ```
+
+   Without pipx: `pip install --user git+https://github.com/lunati228/CLI-Subagents`, then make sure the Python scripts folder is on PATH. Check with `csa --version`.
+
+2. Install the plugin into the installed host CLIs and register any extra account folders the user named:
+
+   ```bash
+   csa setup --dry-run --account <name>=<folder>
+   csa setup --account <name>=<folder>
+   ```
+
+3. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
+
+4. Check with `csa doctor`. To update later, run `csa update`.
+
+For an MCP client without a plugin system (Cline, Cursor and others), add a stdio server instead of step 2:
+
+```json
+{ "mcpServers": { "cli-subagents": { "command": "csa", "args": ["mcp"] } } }
+```
+
+Then copy `skills/cli-subagents/SKILL.md` into the client's rules so the agent knows how to use the tools. The full steps and the manual commands per host are in the README's "For AI agents" section and in [AGENTS.md](AGENTS.md).

@@ -34,7 +34,7 @@ Then add the plugin in Claude Code (Codex and Antigravity hosts: see [hosts](hos
 /plugin install cli-subagents --marketplace lunati228/CLI-Subagents
 ```
 
-On older Claude Code versions, run `/plugin marketplace add lunati228/CLI-Subagents` and then `/plugin install cli-subagents@cli-subagents`. The plugin brings the MCP server, the `cli-subagents` skill and the `/cli-subagents:delegate` command.
+On older Claude Code versions, run `/plugin marketplace add lunati228/CLI-Subagents` and then `/plugin install cli-subagents@cli-subagents`. From a terminal, `csa setup --host claude` does the same through `claude plugin marketplace add lunati228/CLI-Subagents` and `claude plugin install cli-subagents@cli-subagents`; see [hosts](hosts.md#claude-code). The plugin brings the MCP server, the `cli-subagents` skill and the `/cli-subagents:delegate` command.
 
 Without the plugin (or in another MCP host), register the server yourself with the command `csa` and the argument `mcp`, for example in a project `.mcp.json`:
 
@@ -96,7 +96,7 @@ Follow-ups reach a Claude worker in two ways. A `PostToolUse` hook that CLI Suba
 
 The plugin also ships two hooks for the main session (`hooks/hooks.json`):
 
-- After `subagent_start`, an async `PostToolUse` hook (`csa hook await`) waits for the job. When it finishes or the worker asks a question or sends a note, the hook wakes an idle Claude Code session with a summary.
+- After `subagent_start`, an async `PostToolUse` hook (`csa hook await`) waits for the job. When it finishes or the worker asks a question or sends a note, the hook wakes an idle Claude Code session with a summary. The same hook runs after `subagent_message`, so once you answer a question it waits for the job again, or for the new job when you continued a finished one.
 - On resume or compact, a `SessionStart` hook (`csa hook pending`) lists finished jobs in the current project whose result nobody collected.
 
 Each result is delivered once. Whichever of `subagent_wait`, `subagent_result` or the hook gets it first claims it, so you don't see it twice.
@@ -148,6 +148,10 @@ csa launch --account max-3 -- --model opus
 ```
 
 `csa launch` opens a normal interactive Claude Code session on the account with the most room left (or the one you name), with the same shared setup. Anything after `--` goes to `claude`.
+
+An interactive session doesn't take one of the account's job slots, so workers can still be sent to that account while it is open. Don't run `csa launch` on an account that workers are using at the same time.
+
+The pool only moves workers between accounts. Your main Claude Code session keeps running on its own account, and its model usage is never spread across the other accounts.
 
 ## Troubleshooting
 

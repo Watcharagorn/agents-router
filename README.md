@@ -49,7 +49,7 @@ flowchart LR
 
    | Host | Command |
    |---|---|
-   | Claude Code | `/plugin install cli-subagents --marketplace lunati228/CLI-Subagents` |
+   | Claude Code | `/plugin install cli-subagents --marketplace lunati228/CLI-Subagents` in a session, or `claude plugin install cli-subagents --marketplace lunati228/CLI-Subagents` in a terminal |
    | Codex | `codex plugin marketplace add lunati228/CLI-Subagents` then `codex plugin add cli-subagents@cli-subagents` |
    | Antigravity | `agy plugin install https://github.com/lunati228/CLI-Subagents` |
    | Any MCP client | Server command `csa` with argument `mcp` |
@@ -62,52 +62,68 @@ flowchart LR
    csa doctor --live
    ```
 
+`csa setup` can do step 2 for every installed CLI and register account folders that are already logged in; see [For AI agents](#for-ai-agents).
+
 That's it. Ask your main session to use a subagent, or use `/cli-subagents:delegate <task>` in Claude Code. Details per host are in [docs/hosts.md](docs/hosts.md).
 
 ## For AI agents
 
-If a user asked you to install CLI Subagents, do the steps below. You don't need slash commands.
+To have your agent (Claude Code, Codex, Antigravity or another) install this for you, paste a prompt like this:
 
-1. Install the `csa` command, then check it with `csa --version`:
+```text
+Install CLI Subagents from https://github.com/lunati228/CLI-Subagents. Follow the
+"For AI agents" section of its README: install the csa command, run csa setup,
+and register my other account folders: <name>=<folder>, <name>=<folder>.
+Then tell me exactly what I still have to do myself.
+```
+
+If you're the agent, do this. No slash commands are needed.
+
+1. Install the `csa` command and check it with `csa --version`:
 
    ```bash
    pipx install git+https://github.com/lunati228/CLI-Subagents
    ```
 
-   No pipx? Use `pip install --user git+https://github.com/lunati228/CLI-Subagents` and make sure its scripts folder is on PATH.
+   Without pipx, use `pip install --user git+https://github.com/lunati228/CLI-Subagents` and make sure its scripts folder is on PATH.
 
-2. Add the plugin to the user's CLI from the terminal:
-
-   | Host | Commands |
-   |---|---|
-   | Claude Code | `claude plugin marketplace add lunati228/CLI-Subagents` then `claude plugin install cli-subagents@cli-subagents` |
-   | Codex | `codex plugin marketplace add lunati228/CLI-Subagents` then `codex plugin add cli-subagents@cli-subagents` |
-   | Antigravity | `agy plugin install https://github.com/lunati228/CLI-Subagents` |
-
-   If `claude` isn't on PATH (common with the Claude desktop app), merge this into `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`). Keep every key that's already there. Claude Code installs the plugin on its next start:
-
-   ```json
-   {
-     "extraKnownMarketplaces": {
-       "cli-subagents": { "source": { "source": "github", "repo": "lunati228/CLI-Subagents" } }
-     },
-     "enabledPlugins": { "cli-subagents@cli-subagents": true }
-   }
-   ```
-
-3. Register the user's other accounts. A folder that is already logged in needs no new login:
+2. Run setup. Add one `--account` per extra account folder the user named; folders that are already logged in need no new login:
 
    ```bash
-   csa accounts add <name> --home <path to that account's config folder> --no-login
+   csa setup --dry-run --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
+   csa setup --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
    ```
 
-   For a new account, `csa accounts add <name>` opens the vendor's login, which the user completes in the browser.
+   `csa setup` finds the installed hosts, installs the plugin into each with the host's own terminal commands, registers and syncs the account folders, and ends with a list of what the user still has to do. It skips anything already in place, so running it twice is safe. It never starts a login and never reads credential files. Use `--host claude`, `--host codex` or `--host antigravity` to limit it. The runtime of an account folder is guessed from its contents; a `codex:` or `claude:` prefix sets it.
 
-4. Check: `csa doctor` (no model calls), or `csa doctor --live` (one tiny job per account).
+3. Show the user the "Still needed from you" list from the output. Typical items: browser logins for accounts that aren't logged in (`csa accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code) so the plugin loads, and putting `csa` on PATH.
 
-5. Tell the user what's left: browser logins for new accounts, and restarting their CLI (or `/reload-plugins` in Claude Code) so the plugin loads.
+4. Check with `csa doctor` (no model calls). `csa doctor --live` runs one tiny job per account and uses a little quota.
 
-Never read or copy credential files, and never edit files inside `~/.cli-subagents/homes/`; those folders are managed by `csa`.
+If `csa setup` fails for a host, these are the commands it runs, so you can run them yourself:
+
+| Host | Commands |
+|---|---|
+| Claude Code | `claude plugin marketplace add lunati228/CLI-Subagents` then `claude plugin install cli-subagents@cli-subagents` |
+| Codex | `codex plugin marketplace add lunati228/CLI-Subagents` then `codex plugin add cli-subagents@cli-subagents` |
+| Antigravity | `agy plugin install https://github.com/lunati228/CLI-Subagents` |
+
+When the `claude` command can't be found (common with the Claude desktop app) or the plugin commands fail, `csa setup` declares the plugin in Claude Code's `settings.json` instead (`~/.claude/settings.json`, or the one in `$CLAUDE_CONFIG_DIR`). It keeps every other key and saves a backup next to the file. Claude Code installs the plugin on its next start, so the user has to restart it. `csa setup --claude-route settings` takes this route directly. By hand, merge this into the file:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "cli-subagents": { "source": { "source": "github", "repo": "lunati228/CLI-Subagents" } }
+  },
+  "enabledPlugins": { "cli-subagents@cli-subagents": true }
+}
+```
+
+To update later, run `csa update` (`--dry-run` shows the plan first). It reinstalls `csa` from GitHub with the tool that installed it (pipx, uv or pip) and updates the plugin in every host that has it, then lists the restarts. On Windows it prints the package command for you to run instead, because `csa` can't replace itself while running. By hand: `pipx install --force git+https://github.com/lunati228/CLI-Subagents`, then `claude plugin marketplace update cli-subagents` and `claude plugin update cli-subagents@cli-subagents`, `codex plugin marketplace upgrade cli-subagents` and `codex plugin add cli-subagents@cli-subagents`, or `agy plugin install https://github.com/lunati228/CLI-Subagents` again.
+
+To register an account folder by hand: `csa accounts add <name> --home <folder> --no-login`. For a new account, `csa accounts add <name>` opens the vendor's login, which the user completes in the browser.
+
+Never read or copy credential files, and never edit files inside `~/.cli-subagents/homes/`; `csa` manages those folders. More for agents working in this repository is in [AGENTS.md](AGENTS.md).
 
 ## Status
 

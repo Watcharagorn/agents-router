@@ -2,7 +2,7 @@
 
 ## Tools
 
-After `agy plugin install https://github.com/lunati228/CLI-Subagents` (or a `cli-subagents` entry in `~/.gemini/config/mcp_config.json` with command `csa` and argument `mcp`), the `subagent_*` tools are available from the `cli-subagents` server, and `/delegate` is available as a skill.
+After `csa setup` or `agy plugin install https://github.com/lunati228/CLI-Subagents` from a terminal (or a `cli-subagents` entry in `~/.gemini/config/mcp_config.json` with command `csa` and argument `mcp`), the `subagent_*` tools are available from the `cli-subagents` server, and `/delegate` is available as a skill.
 
 ## Waiting
 
@@ -17,7 +17,7 @@ Antigravity itself runs as one account today (Google's terms rule out automated 
 | Instructions | `~/.gemini/GEMINI.md`, `<project>/GEMINI.md`, `<project>/AGENTS.md` |
 | Rules, workflows, skills | `<project>/.agents/rules/`, `.agents/workflows/`, `.agents/skills/` |
 | MCP servers | `~/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` |
-| Plugins | `agy plugin install ...`, stored under `~/.gemini/antigravity-cli/plugins/` |
+| Plugins | `agy plugin install <folder, URL or plugin@marketplace>` from a terminal, stored under `~/.gemini/antigravity-cli/plugins/` |
 
 ## Mixing CLIs
 

@@ -2,7 +2,7 @@
 
 ## Tools
 
-After `codex plugin add cli-subagents@cli-subagents` (or a `[mcp_servers.cli-subagents]` entry with `command = "csa"`, `args = ["mcp"]`), the tools are `subagent_start`, `subagent_wait`, `subagent_message`, `subagent_status`, `subagent_result`, `subagent_cancel`, `subagent_list` and `subagent_accounts` on the `cli-subagents` server.
+After `csa setup`, or `codex plugin marketplace add lunati228/CLI-Subagents` and `codex plugin add cli-subagents@cli-subagents` from a terminal (or a `[mcp_servers.cli-subagents]` entry with `command = "csa"`, `args = ["mcp"]`), the tools are `subagent_start`, `subagent_wait`, `subagent_message`, `subagent_status`, `subagent_result`, `subagent_cancel`, `subagent_list` and `subagent_accounts` on the `cli-subagents` server.
 
 ## Waiting
 

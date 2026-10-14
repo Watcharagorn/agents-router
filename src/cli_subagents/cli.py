@@ -11,8 +11,8 @@ import sys
 import time
 from typing import Any
 
-from cli_subagents import __version__, accounts, jobs, sync, tools
-from cli_subagents.config import NAME_RE, SINGLE_ACCOUNT, Account, homes_dir, load_config, save_config
+from cli_subagents import __version__, accounts, jobs, setup, sync, tools
+from cli_subagents.config import NAME_RE, Account, homes_dir, load_config, save_config
 from cli_subagents.fsutil import make_private_dir
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from cli_subagents.runtimes.base import ACCESS_LEVELS, JobSpec
@@ -83,22 +83,21 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 2
 
     if action == "add":
-        if args.runtime in SINGLE_ACCOUNT:
-            print(f"{args.runtime} runs on its signed-in account only; extra accounts aren't supported.")
-            return 1
         if runtime_config.find(args.name):
             print(f"{args.runtime} account '{args.name}' already exists.")
             return 1
         home = Path(args.home).expanduser().resolve() if args.home else homes_dir() / args.runtime / args.name
-        if os.path.normcase(str(home)) == os.path.normcase(str(runtime_config.primary.resolve())):
-            print("That folder is the primary setup. Extra accounts need their own folder.")
+        try:
+            status, account = setup.register_account(config, args.runtime, args.name, home)
+        except ValueError as exc:
+            print(exc)
+            return 1
+        if status == "exists":
+            print(f"That folder already belongs to {args.runtime} account '{account.name}'.")
             return 1
         make_private_dir(home)
-        runtime_config.accounts.append(Account(name=args.name, home=home))
         save_config(config)
         print(f"Added {args.runtime} account '{args.name}' with folder {home}")
-        account = runtime_config.find(args.name)
-        assert account is not None
         report = runtime.prepare(runtime_config, account, _probe_spec(args.runtime))
         _print_setup(report)
         if args.no_login:
@@ -151,6 +150,25 @@ def _login(runtime_config, runtime, account: Account) -> int:
     argv, env = runtime.login_command(runtime_config, account)
     print(f"Opening the {runtime.name} login for '{account.name}'. Sign in with the account this profile should use.")
     return subprocess.call(argv, env=env)
+
+
+# Setup -----------------------------------------------------------------------
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    code, report = setup.run_setup(
+        load_config(), args.host or ["auto"], args.account, dry_run=args.dry_run, claude_route=args.claude_route,
+    )
+    print()
+    print(setup.format_report(report))
+    return code
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    code, report = setup.run_update(load_config(), args.host or ["auto"], dry_run=args.dry_run, package=not args.no_package)
+    print()
+    print(setup.format_report(report, "update"))
+    return code
 
 
 # Doctor ----------------------------------------------------------------------
@@ -320,6 +338,38 @@ def build_parser() -> argparse.ArgumentParser:
     accounts_parser.add_argument("--no-login", action="store_true")
     accounts_parser.add_argument("--cwd", default=os.getcwd(), help="Project used to resolve local MCP servers for sync.")
 
+    setup_parser = sub.add_parser(
+        "setup", help="Install the plugin into Claude Code, Codex and Antigravity and register existing account folders.",
+        description="Installs the cli-subagents plugin through each host's own terminal commands, registers "
+        "existing logged-in account folders, and lists what is left for you (logins, restarts). "
+        "It never runs a login and never reads credential files.",
+    )
+    setup_parser.add_argument(
+        "--host", action="append", choices=("claude", "codex", "antigravity", "auto"),
+        help="Host to install into; repeat for several (default auto: every host that is installed).",
+    )
+    setup_parser.add_argument(
+        "--account", action="append", default=[], metavar="[RUNTIME:]NAME=FOLDER",
+        help="Register an existing, logged-in account folder and sync it, e.g. max-2=~/.claude-2 or "
+        "codex:plus-2=~/.codex-2 (the runtime is guessed from the folder when left out). Repeatable.",
+    )
+    setup_parser.add_argument("--dry-run", action="store_true", help="Print the plan; change nothing (read-only checks still run).")
+    setup_parser.add_argument(
+        "--claude-route", choices=("auto", "cli", "settings"), default="auto",
+        help="auto: `claude plugin ...`, or settings.json when the claude command is missing or fails. "
+        "settings: only declare the plugin in settings.json (Claude Code installs it on its next start).",
+    )
+
+    update_parser = sub.add_parser(
+        "update", help="Reinstall csa from GitHub and update the plugin in every host that has it.",
+        description="Reinstalls the csa package with the tool that installed it (pipx, uv or pip) and updates "
+        "the cli-subagents plugin through each host's own terminal commands.",
+    )
+    update_parser.add_argument("--host", action="append", choices=("claude", "codex", "antigravity", "auto"),
+                               help="Host to update; repeat for several (default auto: every host that has the plugin).")
+    update_parser.add_argument("--no-package", action="store_true", help="Only update the plugins, not the csa package.")
+    update_parser.add_argument("--dry-run", action="store_true", help="Print the plan; change nothing (read-only checks still run).")
+
     doctor = sub.add_parser("doctor", help="Check binaries, logins and shared setup.")
     doctor.add_argument("--runtime", default="claude", choices=RUNTIMES)
     doctor.add_argument("--live", action="store_true", help="Run one tiny job per account (uses a little quota).")
@@ -392,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_job(args.job_id)
         handlers = {
             "accounts": cmd_accounts,
+            "setup": cmd_setup,
+            "update": cmd_update,
             "doctor": cmd_doctor,
             "run": cmd_run,
             "start": cmd_start,

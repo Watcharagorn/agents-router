@@ -2,6 +2,8 @@
 
 ## Tools
 
+The plugin is installed from a terminal with `csa setup`, or with `claude plugin marketplace add lunati228/CLI-Subagents` and `claude plugin install cli-subagents@cli-subagents`; no slash command is needed. It loads after a restart or `/reload-plugins`.
+
 The plugin's tools appear as `mcp__plugin_cli-subagents_cli-subagents__subagent_start` and so on (or `mcp__cli-subagents__...` if the server was added by hand). `/cli-subagents:delegate <task>` runs the whole loop.
 
 ## Waiting
@@ -23,7 +25,7 @@ Subagents on the user's other Claude accounts get everything from the main confi
 | Rules | `~/.claude/rules/` or `<project>/.claude/rules/` |
 | Instructions | `~/.claude/CLAUDE.md` (all projects) or `<project>/CLAUDE.md` |
 | An MCP server | `claude mcp add --scope user ...` (all projects) or `<project>/.mcp.json` |
-| A plugin | `/plugin install ...` in the main session |
+| A plugin | `claude plugin install <plugin>@<marketplace>` from a terminal (after `claude plugin marketplace add <owner/repo>`), or `/plugin install ...` in the main session |
 | Settings, hooks, env, permissions | `~/.claude/settings.json` |
 
 Never edit files inside `~/.cli-subagents/homes/`; those account folders are links to the setup above and are rebuilt before each run. Things that stay per account: the claude.ai login, claude.ai connectors, and browser logins for remote MCP servers (`/mcp` once per account). Tools built into the Claude desktop app itself (browser or terminal panes) belong to the app and aren't available to workers.
