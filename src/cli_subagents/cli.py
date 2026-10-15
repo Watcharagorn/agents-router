@@ -98,6 +98,8 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         make_private_dir(home)
         save_config(config)
         print(f"Added {args.runtime} account '{args.name}' with folder {home}")
+        if getattr(runtime, "add_note", None):
+            print(runtime.add_note)
         report = runtime.prepare(runtime_config, account, _probe_spec(args.runtime))
         _print_setup(report)
         if args.no_login:
@@ -149,7 +151,10 @@ def _print_setup(report: dict[str, Any]) -> None:
 def _login(runtime_config, runtime, account: Account) -> int:
     argv, env = runtime.login_command(runtime_config, account)
     print(f"Opening the {runtime.name} login for '{account.name}'. Sign in with the account this profile should use.")
-    return subprocess.call(argv, env=env)
+    if hasattr(runtime, "login_instructions"):
+        print(runtime.login_instructions(account))
+    cwd = runtime.login_cwd(account) if hasattr(runtime, "login_cwd") else None
+    return subprocess.call(argv, env=env, cwd=cwd)
 
 
 # Setup -----------------------------------------------------------------------
@@ -181,19 +186,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     report = tools.account_report(args.runtime)
     _print(report)
     problems = 0
-    for account in runtime_config.worker_accounts():
-        copies = sync.fallback_copies(account.home)
+    for account in runtime_config.pool_accounts():
+        copies = runtime.fallback_copies(account) if hasattr(runtime, "fallback_copies") else sync.fallback_copies(account.home)
         if copies and not account.is_primary:
             print(f"Note: account '{account.name}' has copies instead of links (they don't follow later edits "
                   f"until the next sync): {', '.join(copies)}")
+    if args.runtime == "codex" and os.name == "nt":
+        from cli_subagents.runtimes.codex import windows_sandbox_summary
+        print(windows_sandbox_summary(runtime_config))
     if not report["binary"]:
         print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in the config.")
         return 1
     for entry in report["accounts"]:
         auth = entry.get("auth") or {}
-        if not auth.get("loggedIn"):
+        if not auth.get("loggedIn") and entry.get("enabled", True):
             problems += 1
-            print(f"Problem: account '{entry['name']}' is not logged in. Run: csa accounts login {entry['name']}")
+            flag = "" if args.runtime == "claude" else f" --runtime {args.runtime}"
+            how = f"run: csa accounts login {entry['name']}{flag}"
+            if args.runtime == "antigravity" and entry["name"] == "primary":
+                how = "run agy in a terminal and sign in"
+            print(f"Problem: account '{entry['name']}' is not logged in. To fix it, {how}")
     if not args.live:
         print("\nAdd --live to start one tiny job per account and compare what each one loads.")
         return 1 if problems else 0
@@ -202,7 +214,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # Claude's cheapest model is a known alias; other runtimes use their default unless asked.
     model = args.model or ("haiku" if args.runtime == "claude" else None)
     started = []
-    for account in runtime_config.worker_accounts():
+    for account in runtime_config.pool_accounts():
         status = jobs.create_job(
             runtime=args.runtime,
             prompt="Reply with exactly: OK",

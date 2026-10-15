@@ -13,9 +13,12 @@ from typing import Any
 from cli_subagents.fsutil import write_text
 
 RUNTIMES = ("claude", "codex", "antigravity")
-# Runtimes that run on their single signed-in account only (no extra accounts, no failover).
-SINGLE_ACCOUNT = ("antigravity",)
+# Runtimes whose extra accounts and failover are opt-in: failover is "off" by default,
+# and then unpinned jobs run on the primary account only (Antigravity: Google's FAQ
+# says consumer plans don't support automated account rotation).
+OPT_IN_FAILOVER = ("antigravity",)
 FAILOVER_MODES = ("off", "on-limit")
+WINDOWS_SANDBOX_MODES = ("unelevated", "elevated", "off")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -78,18 +81,35 @@ class RuntimeConfig:
     edit_permission_mode: str = "auto"
     default_model: str | None = None
     cooldown_minutes: int = 60
+    windows_sandbox: str = "unelevated"  # [codex] only
     accounts: list[Account] = field(default_factory=list)
 
     def primary_account(self) -> Account:
         return Account(name="primary", home=self.primary, is_primary=True)
 
     def worker_accounts(self) -> list[Account]:
-        """Accounts that may run workers, in configuration order."""
+        """Accounts that unpinned jobs may use, in configuration order."""
 
+        if self.runtime in OPT_IN_FAILOVER and self.failover == "off":
+            return [self.primary_account()]
         accounts = [account for account in self.accounts if account.enabled]
         if self.include_primary or not accounts:
             accounts.insert(0, self.primary_account())
         return accounts
+
+    def pool_accounts(self) -> list[Account]:
+        """Accounts that may run workers, pinned or not (doctor --live checks these)."""
+
+        if self.runtime in OPT_IN_FAILOVER:
+            return [self.primary_account(), *(account for account in self.accounts if account.enabled)]
+        return self.worker_accounts()
+
+    def listed_accounts(self) -> list[Account]:
+        """Accounts shown in reports: for opt-in runtimes the primary and every extra account, disabled ones too."""
+
+        if self.runtime in OPT_IN_FAILOVER:
+            return [self.primary_account(), *self.accounts]
+        return self.worker_accounts()
 
     def find(self, name: str) -> Account | None:
         if name == "primary":
@@ -130,25 +150,29 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
                 enabled=bool(item.get("enabled", True)),
             )
         )
-    failover = str(data.get("failover", "off" if name in SINGLE_ACCOUNT else "on-limit"))
+    opt_in = name in OPT_IN_FAILOVER
+    failover = str(data.get("failover", "off" if opt_in else "on-limit"))
     if failover not in FAILOVER_MODES:
         raise ValueError(f"[{name}] failover must be one of {FAILOVER_MODES}")
-    if name in SINGLE_ACCOUNT and (accounts or failover != "off"):
-        raise ValueError(f"[{name}] runs on its signed-in account only; remove extra accounts and failover")
     connectors = str(data.get("connectors", "account"))
     if connectors not in ("account", "off"):
         raise ValueError(f"[{name}] connectors must be 'account' or 'off'")
+    windows_sandbox = str(data.get("windows_sandbox", "unelevated"))
+    if windows_sandbox not in WINDOWS_SANDBOX_MODES:
+        raise ValueError(f"[{name}] windows_sandbox must be one of {WINDOWS_SANDBOX_MODES}")
     return RuntimeConfig(
         runtime=name,
         primary=_path(data.get("primary"), default_primary(name)),
         binary=data.get("binary") or None,
-        include_primary=bool(data.get("include_primary", False)),
+        # Opt-in runtimes rotate through the primary account too, unless told otherwise.
+        include_primary=bool(data.get("include_primary", opt_in)),
         failover=failover,
         max_jobs_per_account=max(1, int(data.get("max_jobs_per_account", 1))),
         connectors=connectors,
         edit_permission_mode=str(data.get("edit_permission_mode", "accept-edits" if name == "antigravity" else "auto")),
         default_model=data.get("default_model") or None,
         cooldown_minutes=max(1, int(data.get("cooldown_minutes", 60))),
+        windows_sandbox=windows_sandbox,
         accounts=accounts,
     )
 
@@ -200,6 +224,8 @@ def dump_config(config: Config) -> str:
             lines.append(f"binary = {_toml_value(runtime.binary)}")
         if runtime.default_model:
             lines.append(f"default_model = {_toml_value(runtime.default_model)}")
+        if name == "codex" and runtime.windows_sandbox != "unelevated":
+            lines.append(f"windows_sandbox = {_toml_value(runtime.windows_sandbox)}")
         for account in runtime.accounts:
             lines += [
                 "",

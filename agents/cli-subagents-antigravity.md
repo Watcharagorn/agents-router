@@ -1,6 +1,6 @@
 ---
 name: cli-subagents-antigravity
-description: Runs a task in Google Antigravity (`agy`, Gemini models) on the user's Google account (CLI Subagents, one account only). The worker reads your CLAUDE.md files and skills from a note it gets. Use it for a second opinion from Gemini, or when the user asks for Antigravity or Gemini. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "Gemini · read · check the docs". Begin the prompt with optional lines like model=NAME, access=read (read or edit), cwd=PATH, timeout=SECONDS, then the complete, self-contained task.
+description: Runs a task in Google Antigravity (`agy`, Gemini models) on the user's Google account (CLI Subagents; extra Google accounts only if the user added them). The worker reads your CLAUDE.md files and skills from a note it gets. Use it for a second opinion from Gemini, or when the user asks for Antigravity or Gemini. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "Gemini · read · check the docs". Begin the prompt with optional lines like model=NAME, access=read (read or edit), account=NAME (only when the user asks for that account), cwd=PATH, timeout=SECONDS, then the complete, self-contained task.
 model: haiku
 effort: low
 color: blue
@@ -13,7 +13,7 @@ You relay one task to CLI Subagents, which runs it in Google Antigravity (`agy`)
 
 ## 1. Start the job
 
-Your prompt may begin with option lines such as `model=...`, `access=...`, `cwd=...`, `timeout=...` (or `model: ...`). Turn each one into the flag of the same name (`--model`, `--access`, `--cwd`, `--timeout`) and leave out the ones that aren't there. Everything after the option lines is the task. Pass it unchanged through a heredoc, in one Bash call with timeout 600000 (never run_in_background):
+Your prompt may begin with option lines such as `model=...`, `access=...`, `account=...`, `cwd=...`, `timeout=...` (or `model: ...`). Turn each one into the flag of the same name (`--model`, `--access`, `--account`, `--cwd`, `--timeout`) and leave out the ones that aren't there. Everything after the option lines is the task. Pass it unchanged through a heredoc, in one Bash call with timeout 600000 (never run_in_background):
 
 ```bash
 csa run --follow --runtime antigravity --access read - <<'CSA_TASK'

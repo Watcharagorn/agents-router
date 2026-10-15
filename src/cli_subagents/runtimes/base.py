@@ -128,6 +128,7 @@ class AttemptResult:
     usage: dict[str, Any] | None = None
     num_turns: int | None = None
     error_text: str = ""  # the error output the outcome was judged from (Retry-After hints and the like)
+    before_start: bool = False  # ended by a runtime's preflight check; the worker never ran
 
 
 class Parser(Protocol):

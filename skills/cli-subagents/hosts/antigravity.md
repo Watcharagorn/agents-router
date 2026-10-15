@@ -10,7 +10,7 @@ Keep each `subagent_wait` short (a few minutes) and call it again while jobs run
 
 ## Where the shared setup lives
 
-Antigravity itself runs as one account today (Google's terms rule out automated account rotation on consumer plans; an opt-in rotation is planned), so there is nothing to sync between Antigravity accounts. Your Antigravity setup lives in:
+Antigravity workers run on the signed-in account. Extra Google accounts are opt-in and at the user's own risk (Google's terms rule out automated account rotation on consumer plans); each extra account gets the setup below through links, and `account` pins a job to one. Your Antigravity setup lives in:
 
 | What | Where |
 |---|---|

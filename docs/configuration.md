@@ -16,6 +16,7 @@ max_jobs_per_account = 1     # parallel workers per account folder
 connectors = "account"       # "account" keeps each account's claude.ai connectors; "off" hides them
 edit_permission_mode = "auto"  # permission mode for access="edit"
 cooldown_minutes = 60        # cooldown when the limit error has no Retry-After or reset time (any cooldown is capped at 7 days)
+# windows_sandbox = "unelevated"   # [codex] on Windows: "unelevated", "elevated" or "off" (see docs/codex.md)
 # binary = "C:/path/to/claude.exe"   # only if auto-detection fails
 # default_model = "sonnet"
 
@@ -33,7 +34,18 @@ name = "plus-2"
 home = "~/.cli-subagents/homes/codex/plus-2"
 ```
 
-The `[codex]` section takes the same keys as `[claude]`; `connectors` only applies to Claude. `[antigravity]` takes `binary`, `default_model` and `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it); it can't have extra accounts or failover.
+The `[codex]` section takes the same keys as `[claude]`; `connectors` only applies to Claude. `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `[antigravity]` takes `binary`, `default_model` and `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it), plus the account keys below.
+
+Extra Antigravity accounts are opt-in and at your own risk (Google's FAQ says consumer plans don't support automated account switching; see [Gemini](gemini.md#more-than-one-google-account)). For `[antigravity]`, `failover` is `"off"` by default: jobs without `account` then run on the primary account only, and an extra account is used only when a job pins it. `"on-limit"` rotates through the primary and the enabled extra accounts (`include_primary` is `true` by default here). An Antigravity account folder stands in for a home folder: it gets its own `.gemini`.
+
+```toml
+[antigravity]
+failover = "off"            # "on-limit" rotates between the accounts (use at your own risk)
+
+[[antigravity.accounts]]
+name = "google-2"
+home = "~/.cli-subagents/homes/antigravity/google-2"
+```
 
 When no extra accounts are configured, workers run on the primary account. That is still useful from another host (for example Codex delegating to Claude Code), and with `include_primary = true` the primary account joins the pool.
 

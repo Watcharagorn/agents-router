@@ -132,6 +132,48 @@ def self_server_overrides(files: list[Path]) -> list[str]:
     return overrides
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def configured_windows_sandbox(home: Path) -> str | None:
+    """The `[windows] sandbox` value in the account home's config.toml, or None when it sets none."""
+
+    try:
+        data = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    table = data.get("windows")
+    value = table.get("sandbox") if isinstance(table, dict) else None
+    return str(value) if value is not None else None
+
+
+def windows_sandbox_args(config: RuntimeConfig, home: Path, access: str) -> list[str]:
+    """`-c windows.sandbox=...` for sandboxed jobs on Windows when the user's Codex config has none.
+
+    Without a `[windows] sandbox` setting Codex 0.162.1 has no sandbox backend and refuses
+    every command in a sandboxed run. "unelevated" works without admin rights.
+    """
+
+    if access == "full" or not _is_windows() or config.windows_sandbox == "off":
+        return []
+    if configured_windows_sandbox(home) is not None:
+        return []
+    return ["-c", f'windows.sandbox="{config.windows_sandbox}"']
+
+
+def windows_sandbox_summary(config: RuntimeConfig) -> str:
+    """One line for `csa doctor` on Windows: which sandbox Codex read/edit jobs will use."""
+
+    configured = configured_windows_sandbox(config.primary)
+    if configured is not None:
+        return f'Codex sandbox on Windows: "{configured}" (from {config.primary / "config.toml"})'
+    if config.windows_sandbox == "off":
+        return "Codex sandbox on Windows: none set; CLI Subagents adds nothing ([codex] windows_sandbox = \"off\"), so read and edit jobs can't run commands"
+    return (f'Codex sandbox on Windows: "{config.windows_sandbox}" (set by CLI Subagents for read and edit jobs; '
+            "no [windows] sandbox in your Codex config)")
+
+
 def _toml_literal(value: str) -> str:
     return "'" + value + "'" if "'" not in value else json.dumps(value)
 
@@ -454,6 +496,7 @@ class CodexRuntime:
             # Codex has no "max"; its highest level is "xhigh".
             effort = "xhigh" if spec.effort == "max" else spec.effort
             argv += ["-c", f"model_reasoning_effort={effort}"]
+        argv += windows_sandbox_args(config, account.home, spec.access)
         argv += no_nesting
         argv += _parent_overrides(spec.job_id)
         argv.append("-")

@@ -60,7 +60,9 @@ Updating Codex alone won't fix this; the setting has to be there.
 ## What it means for CLI Subagents
 
 - With the sandbox unset, Codex `read` and `edit` jobs can't run commands on Windows. Only `full` (`--dangerously-bypass-approvals-and-sandbox`) works, with the user's normal rights and no checks.
-- To do: `csa doctor --runtime codex` should read the `doctor` sandbox line and say what to set, and Codex `read`/`edit` jobs on Windows should warn up front instead of failing quietly.
+- Verified 2026-10-16 (Windows, Codex 0.162.1): `-c windows.sandbox=unelevated` fixes it with no admin rights. Under `codex sandbox`, commands run, writes inside the workspace work, and writes outside the workspace (and outside Temp) are denied.
+- So CLI Subagents adds `-c windows.sandbox="unelevated"` to `read` and `edit` jobs on Windows, also when resuming, unless the Codex config the run reads already sets `[windows] sandbox`. `full` jobs get nothing. The `[codex] windows_sandbox` key (`"unelevated"` default, `"elevated"`, `"off"`) changes this.
+- `csa doctor --runtime codex` prints one line on Windows saying which sandbox jobs will use.
 
 ## Sources
 

@@ -16,11 +16,12 @@ import time
 from typing import Any
 
 from cli_subagents import accounts, messages
-from cli_subagents.config import SINGLE_ACCOUNT, Account, RuntimeConfig, load_config
+from cli_subagents.config import OPT_IN_FAILOVER, Account, RuntimeConfig, load_config
 from cli_subagents.fsutil import kill_tree, new_group_kwargs, open_private, process_start_time, write_text
 from cli_subagents.jobs import job_dir, mark_pending, read_spec, update_status
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import (
+    AUTH,
     CANCELLED,
     ERROR,
     NO_ACCOUNT,
@@ -34,6 +35,8 @@ from cli_subagents.runtimes.base import (
 QUEUE_TIMEOUT_SECONDS = 15 * 60
 MAX_FOLLOW_UP_TURNS = 5
 STATUS_INTERVAL = 2.0
+STDERR_WINDOW = 8000  # characters of recent stderr a runtime's check_stderr sees
+EARLY_STOP = "early_stop"
 FINAL_STATUS_RETRY_SECONDS = 5.0
 
 CONTINUE_NOTE = (
@@ -70,6 +73,7 @@ class Runner:
         self.deadline = self.spec.created + self.spec.timeout_seconds + QUEUE_TIMEOUT_SECONDS
         self.attempts: list[dict[str, Any]] = []
         self.warnings: list[str] = []
+        self._early: AttemptResult | None = None  # set when check_stderr stops a worker early
 
     # Helpers ---------------------------------------------------------------
 
@@ -161,10 +165,15 @@ class Runner:
                     )
                     self.status(follow_up_turns=follow_ups)
                     continue
+            if last.outcome == AUTH and failover and last.before_start:
+                # The account has no login yet and nothing ran: try the next account.
+                excluded.add(lease.account.name)
+                self.warnings.append(f"{lease.account.name}: {last.message}")
+                continue
             if last.outcome != USAGE_LIMIT:
                 return self.finish(last.outcome, last.message, last)
-            if self.spec.runtime not in SINGLE_ACCOUNT:
-                # With one account there is nothing to fail over to; a cooldown would only block later jobs.
+            if self.spec.runtime not in OPT_IN_FAILOVER or self.runtime_config.failover == "on-limit":
+                # Without failover an opt-in runtime runs on one account; a cooldown would only block later jobs.
                 until = accounts.cooldown_end(
                     "\n".join(part for part in (last.message, last.error_text) if part),
                     last.resets_at,
@@ -240,6 +249,13 @@ class Runner:
                 self.warnings.append(f"could not move the session from {owner}; starting a new one with a summary")
                 session, prompt = None, fallback_prompt or prompt
         spec = dataclasses.replace(self.spec, resume_session=session)
+        preflight = getattr(self.runtime, "preflight", None)
+        blocked = preflight(self.runtime_config, account) if preflight else None
+        if blocked is not None:
+            # A problem the runtime can see before starting (e.g. no login yet): end at once.
+            blocked.before_start = True
+            attempt.update(ended_at=time.time(), outcome=blocked.outcome, message=blocked.message)
+            return blocked
         try:
             setup = self.runtime.prepare(self.runtime_config, account, spec)
         except Exception as exc:  # setup problems must not kill the job silently
@@ -286,7 +302,7 @@ class Runner:
                     state="running", account=account.name, child_pid=process.pid, child_started=started,
                     session_id=launch.session_id, message=None,
                 )
-                stop_reason = self._pump(process, launch.stdin, parser, account, events, time_limit)
+                stop_reason = self._pump(process, launch.stdin, parser, account, events, time_limit, stderr_path)
                 try:
                     exit_code = process.wait(timeout=30)
                 except subprocess.TimeoutExpired:
@@ -307,6 +323,11 @@ class Runner:
         stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:] if stderr_path.exists() else ""
         if stop_reason == CANCELLED:
             result = AttemptResult(CANCELLED, message="cancelled", text=parser.last_text, session_id=parser.session_id)
+        elif stop_reason == EARLY_STOP and self._early is not None:
+            result = dataclasses.replace(
+                self._early, text=self._early.text or parser.last_text, session_id=self._early.session_id or parser.session_id
+            )
+            self._early = None
         elif stop_reason == TIMEOUT:
             result = AttemptResult(
                 TIMEOUT,
@@ -333,7 +354,10 @@ class Runner:
         self.status(progress=parser.progress(), init=getattr(parser, "init", None))
         return result
 
-    def _pump(self, process: subprocess.Popen, stdin_text: str, parser: Any, account: Account, events, time_limit: float) -> str | None:
+    def _pump(
+        self, process: subprocess.Popen, stdin_text: str, parser: Any, account: Account, events, time_limit: float,
+        stderr_path: Any = None,
+    ) -> str | None:
         """Feed the prompt, stream events until the worker exits; return a stop reason or None."""
 
         assert process.stdin is not None and process.stdout is not None
@@ -366,11 +390,28 @@ class Runner:
         threading.Thread(target=reader, daemon=True).start()
         started = time.monotonic()
         last_status = 0.0
+        check_stderr = getattr(self.runtime, "check_stderr", None) if stderr_path is not None else None
+        stderr_offset = 0
+        stderr_recent = ""
         while True:
             try:
                 raw = lines.get(timeout=0.5)
             except queue.Empty:
                 raw = b""
+            if check_stderr is not None:
+                # Some CLIs print a problem on stderr and then wait (agy asks for a login code
+                # until its timeout). The runtime decides from the new stderr text whether to stop.
+                stderr_offset, fresh = _read_from(stderr_path, stderr_offset)
+                if fresh:
+                    stderr_recent = (stderr_recent + fresh)[-STDERR_WINDOW:]
+                    try:
+                        early = check_stderr(stderr_recent, account)
+                    except Exception:
+                        early = None
+                    if early is not None:
+                        self._early = early
+                        kill_tree(process.pid)
+                        return EARLY_STOP
             if raw is None:
                 return None
             if raw:
@@ -397,6 +438,18 @@ class Runner:
         except Exception:
             # One malformed event must not end the job or orphan the worker.
             return
+
+
+def _read_from(path: Any, offset: int) -> tuple[int, str]:
+    """New text in a file from `offset` on, and the new offset."""
+
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            data = handle.read(1_000_000)
+    except OSError:
+        return offset, ""
+    return offset + len(data), data.decode("utf-8", errors="replace")
 
 
 def main(job_id: str) -> int:

@@ -406,9 +406,9 @@ def account_report(runtime_name: str) -> dict[str, Any]:
     }
     usage = accounts.load_usage(runtime_name)
     now = time.time()
-    for account in config.worker_accounts():
+    for account in config.listed_accounts():
         record = usage.get(account.name) or {}
-        entry: dict[str, Any] = {"name": account.name, "home": str(account.home)}
+        entry: dict[str, Any] = {"name": account.name, "home": str(account.home), "enabled": account.enabled}
         if binary:
             entry["auth"] = runtime.auth_status(config, account)
         until = accounts.cooldown_until(record, now)

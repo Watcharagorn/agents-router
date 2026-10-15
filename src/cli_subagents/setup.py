@@ -19,7 +19,7 @@ import sysconfig
 import time
 from typing import Any
 
-from cli_subagents.config import NAME_RE, SINGLE_ACCOUNT, Account, Config, save_config
+from cli_subagents.config import NAME_RE, Account, Config, save_config
 from cli_subagents.fsutil import same_path, write_json
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import JobSpec, clean_environment
@@ -284,13 +284,16 @@ def register_account(config: Config, runtime: str, name: str, home: Path) -> tup
     Raises ValueError when it can't be added.
     """
 
-    if runtime in SINGLE_ACCOUNT:
-        raise ValueError(f"{runtime} runs on its signed-in account only; extra accounts aren't supported.")
     if not NAME_RE.match(name) or name == "primary":
         raise ValueError("Give the account a short name: letters, digits, dot, dash or underscore ('primary' is reserved).")
     runtime_config = config.runtime(runtime)
     if same_path(home, runtime_config.primary.expanduser().resolve()):
         raise ValueError(f"{home} is the primary {runtime} setup. Extra accounts need their own folder.")
+    if runtime == "antigravity":
+        # An Antigravity account folder stands in for a home folder (it gets its own .gemini).
+        primary_root = runtime_config.primary.expanduser().resolve()
+        if any(same_path(home, folder) for folder in (Path.home(), primary_root.parent, primary_root.parent.parent)):
+            raise ValueError(f"{home} is your own home or .gemini folder. An extra Antigravity account needs its own folder.")
     existing = runtime_config.find(name)
     if existing is not None:
         if same_path(existing.home, home):
@@ -305,8 +308,10 @@ def register_account(config: Config, runtime: str, name: str, home: Path) -> tup
 
 
 def guess_runtime(folder: Path) -> str:
-    """claude or codex, from marker files in the folder, then from its name."""
+    """claude, codex or antigravity, from marker files in the folder, then from its name."""
 
+    if (folder / ".gemini" / "antigravity-cli").is_dir():
+        return "antigravity"
     scores = {runtime: sum((folder / marker).exists() for marker in markers) for runtime, markers in MARKERS.items()}
     if scores["codex"] > scores["claude"]:
         return "codex"
@@ -322,8 +327,8 @@ def parse_account(value: str) -> tuple[str | None, str, Path]:
     if not sep or not left or not folder:
         raise ValueError(f"--account takes NAME=FOLDER (or codex:NAME=FOLDER), got '{value}'")
     runtime, colon, name = left.rpartition(":")
-    if colon and runtime not in ("claude", "codex"):
-        raise ValueError(f"unknown runtime '{runtime}' in --account '{value}' (use claude or codex)")
+    if colon and runtime not in HOSTS:
+        raise ValueError(f"unknown runtime '{runtime}' in --account '{value}' (use claude, codex or antigravity)")
     return (runtime or None), name, Path(os.path.expandvars(folder)).expanduser().resolve()
 
 
@@ -374,6 +379,8 @@ def setup_accounts(config: Config, values: list[str], report: Report) -> None:
             report.failed.append(f"{runtime} account '{account.name}': syncing the shared setup failed: {exc}")
             continue
         report.done.append(f"{runtime} account '{account.name}': shared setup synced")
+        if getattr(adapter, "add_note", None):
+            report.notes.append(f"{runtime} account '{account.name}': {adapter.add_note}")
         for message in (setup.get("conflicts") or []) + (setup.get("warnings") or []):
             report.notes.append(f"{runtime} account '{account.name}': {message}")
         if adapter.find_binary(runtime_config) is None:

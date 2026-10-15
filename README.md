@@ -131,7 +131,7 @@ Never read or copy credential files, and never edit files inside `~/.cli-subagen
 |---|---|---|
 | Claude Code (`claude -p`) | Works | [Claude Code](docs/claude-code.md) |
 | Codex (`codex exec`) | Works | [Codex](docs/codex.md) |
-| Antigravity (`agy`, Gemini) | Works, single account | [Gemini](docs/gemini.md) |
+| Antigravity (`agy`, Gemini) | Works; extra accounts opt-in, at your own risk | [Gemini](docs/gemini.md) |
 | Cursor, Gemini CLI, Copilot, OpenCode, others | Researched | [CLI comparison](docs/research/cli-permissions-and-headless.md) |
 
 Tested live on Windows with Claude Code 2.1.295, Codex 0.162.1 and Antigravity 1.3.5; the test suite also runs on macOS and Linux in CI.
@@ -150,7 +150,7 @@ Nothing in your own folders is moved or rewritten. One limit: tools built into t
 
 ## Using your accounts
 
-All of this runs through each vendor's official CLI with your own login: the same thing you'd get by opening a terminal and typing the task yourself. Anthropic documents running several accounts side by side with separate config folders, and OpenAI ships its own plugin that runs Codex from Claude Code. Google's Antigravity FAQ rules out wrapping `agy` on consumer plans and automating account rotation, so the Antigravity runtime uses a single account. The details and quotes are in [provider terms](docs/research/provider-terms.md); each vendor's terms apply to your accounts.
+All of this runs through each vendor's official CLI with your own login: the same thing you'd get by opening a terminal and typing the task yourself. Anthropic documents running several accounts side by side with separate config folders, and OpenAI ships its own plugin that runs Codex from Claude Code. Google's Antigravity FAQ rules out wrapping `agy` on consumer plans and automating account rotation, so the Antigravity runtime uses your one signed-in account unless you add more yourself. That option is off by default and marked use at your own risk. The details and quotes are in [provider terms](docs/research/provider-terms.md); each vendor's terms apply to your accounts.
 
 ## Repository layout
 
