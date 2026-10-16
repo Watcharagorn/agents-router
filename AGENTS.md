@@ -16,6 +16,8 @@ csa doctor
 
 `csa setup` installs the plugin into every installed host (`--host claude|codex|antigravity` limits it), registers and syncs account folders that are already logged in, and prints a "Still needed from you" list. It is safe to run again. Use a `codex:` or `claude:` prefix on `--account` when the folder's runtime is ambiguous.
 
+After setup, offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room. Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, run `csa rules --show` with their values, then install; otherwise skip it. Example: `csa rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"`. Use their host and models. Nothing installs the rules without `--install`.
+
 What it runs per host, if you need to do it by hand:
 
 - Claude Code: `claude plugin marketplace add lunati228/CLI-Subagents`, then `claude plugin install cli-subagents@cli-subagents`. Check with `claude plugin list`.

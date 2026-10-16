@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from cli_subagents import accounts, jobs, limits, messages, plans, usage_view
+from cli_subagents import accounts, jobs, limits, messages, plans, quota, usage_view
 from cli_subagents.config import load_config
 from cli_subagents.hosts import detect_host
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
@@ -422,6 +422,10 @@ def runtime_limits(config: Any) -> dict[str, Any]:
     data: dict[str, Any] = {"usage_ceiling": config.usage_ceiling, "when_full": config.when_full}
     if config.max_jobs:
         data["max_jobs"] = config.max_jobs
+    if config.max_jobs_by_room:
+        cap, left = quota.room_cap(config, time.time())
+        data.update(max_jobs_by_room=config.max_jobs_by_room, room_cap=cap, remaining_percent=left)
+        data["effective_max_jobs"] = min(cap, config.max_jobs) if config.max_jobs is not None else cap
     return data
 
 
@@ -440,9 +444,11 @@ def account_report(runtime_name: str) -> dict[str, Any]:
     }
     if runtime_name == "codex":
         usage_view.refresh_codex(load_config())
+    report["limits"] = runtime_limits(config)
     counts = limits.count_active()
     usage = accounts.load_usage(runtime_name)
     now = time.time()
+    pool_state = quota.pool_state(config, counts, now)
     for account in config.listed_accounts():
         record = usage.get(account.name) or {}
         entry: dict[str, Any] = {"name": account.name, "home": str(account.home), "enabled": account.enabled}
@@ -461,6 +467,8 @@ def account_report(runtime_name: str) -> dict[str, Any]:
         entry["busy_slots"] = accounts.busy_slots(config, account)
         entry["running_jobs"] = counts.on_account(runtime_name, account.name)
         entry["limits"] = account_limit_report(config, account)
+        if config.pools:
+            entry["pools"] = quota.pool_report(config, account.name, pool_state, record, now)
         report["accounts"].append(entry)
     return report
 

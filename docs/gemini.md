@@ -132,6 +132,16 @@ Under `[antigravity]` in `config.toml`: `reviewer` (`"agy"`, `"claude"` or `"off
 - `csa launch` on an extra account opens `agy` in a folder that has the gate's hook; outside a job the hook stays out of the way and `agy` asks you as usual.
 - Jobs on your primary account keep their conversations in their folder, not in your own `agy` history.
 
+## Quota pools and Argon
+
+On Google AI Pro and Ultra, Gemini 4 Argon has a separate quota that resets weekly. Gemini 3.8 Flash uses the normal Gemini bucket, which refills every 5 hours until its weekly limit. An Argon limit should therefore leave Flash available on the same account.
+
+agy reports no remaining quota. csa knows only recorded job starts and usage-limit failures. Configure separate `argon` and `flash` pools to cap concurrency and track a rolling weekly job budget; see the [pool example](configuration.md#model-pools). These controls are off until configured. A pooled quota failure cools down only that account's pool, using a reported reset time or its configured cooldown. With failover enabled, the job moves to another account that has room in the pool.
+
+The example matches `gemini-4-argon-*` and budgets 3 Argon jobs per account in 7 days, with at most 1 running on each account and 2 across accounts. Flash allows 6 across accounts. These are example caps, not Google's published job allowances. The assumed Argon IDs are `gemini-4-argon-low`, `gemini-4-argon-medium` and `gemini-4-argon-high`; use the IDs your agy version lists. They have not been tested live here.
+
+`csa accounts --runtime antigravity`, `subagent_accounts`, doctor and the `Room:` line show each pool's running jobs, weekly count and cooldown. When every eligible account has used its Argon budget, the refusal names `weekly_jobs in pool argon` and suggests an available alternative.
+
 ## The standalone adapter
 
 [`adapters/antigravity/`](../adapters/antigravity/) is the original Windows MCP server for AGY. It runs `agy` through ConPTY (older versions printed nothing to a pipe) and routed shell commands through its own reviewer and a signed approval broker. The review gate above replaces that reviewer, and current `agy` versions print to a pipe, so the core runtime is the one to use.

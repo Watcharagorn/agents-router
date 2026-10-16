@@ -28,6 +28,7 @@ folders without network unless the reviewer lets one out. Full jobs skip both.
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -261,6 +262,24 @@ def has_file_login(home: Path) -> bool:
     return False
 
 
+def _reset_time(result: dict[str, Any], error: Any, text: str) -> float | None:
+    values = []
+    for source in (result, error if isinstance(error, dict) else {}):
+        values.extend(source.get(key) for key in ("resets_at", "resetsAt", "reset_time", "resetTime"))
+    match = re.search(r"reset(?:s)?(?: at| time)?[\s:=]+(\d{4}-\d\d-\d\d[T ][\d:.]+(?:Z|[+-]\d\d:\d\d)?)", text, re.IGNORECASE)
+    if match:
+        values.append(match.group(1))
+    for value in values:
+        try:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str) and value:
+                return float(value) if value.replace(".", "", 1).isdigit() else datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, OverflowError):
+            continue
+    return None
+
+
 class AntigravityParser:
     def __init__(self, review_log: Path | None = None) -> None:
         self.session_id: str | None = None
@@ -321,7 +340,8 @@ class AntigravityParser:
         message = next((line.strip() for line in haystack.splitlines() if line.strip()), "")[:300]
         if LIMIT_RE.search(haystack):
             return AttemptResult(
-                USAGE_LIMIT, message=message or "quota reached", text=text, error_text=haystack[-4000:], **common
+                USAGE_LIMIT, message=message or "quota reached", text=text, error_text=haystack[-4000:],
+                resets_at=_reset_time(result, error, haystack), **common
             )
         if AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=message or "Antigravity needs a login", text=text, **common)

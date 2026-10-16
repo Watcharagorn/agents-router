@@ -61,3 +61,9 @@ A preset sets the job cap and, where the plan offers fewer efforts, the highest 
 Codex plus (4) and free (1) are the project owner's numbers. The rest scale with the plan's published usage multiple and are guesses. Raise or lower any of them with `max_jobs`.
 
 Claude Code also reports each account's 5-hour and weekly usage in its `rate_limit_event`. Codex writes a `rate_limits` snapshot into its rollout files. csa reads those two sources and nothing else. Antigravity exposes no usage; see plans.md 3f.
+
+## Model pools and quota steps (2026-10-16)
+
+The owner supplied the Argon quota split: Google AI Pro and Ultra give Gemini 4 Argon a separate weekly-only quota. Gemini 3.8 Flash uses the normal 5-hour and weekly bucket. agy exposes no remaining-quota figures, so pool controls use local job starts and usage-limit errors. The `gemini-4-argon-*` model IDs are assumed and have not been tested live. See plans.md 3i.
+
+`max_jobs_by_room` uses the existing Codex rollout snapshots and Claude rate-limit windows, ignoring reset windows. Pool budgets count job records over 7 days; pool slots use the same file locks and orphan-owner records as account slots. No vendor API calls or third-party code are needed. The account-rotation comparisons above informed the admission and cooldown design; these controls are opt-in and are not vendor concurrency limits.

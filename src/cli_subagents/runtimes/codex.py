@@ -623,6 +623,8 @@ class CodexRuntime:
             # Codex has no "max"; its highest level is "xhigh".
             effort = "xhigh" if spec.effort == "max" else spec.effort
             argv += ["-c", f"model_reasoning_effort={effort}"]
+        if config.web_search is not None:
+            argv += ["-c", f"web_search={json.dumps(config.web_search)}"]
         argv += windows_sandbox_args(config, account.home, spec.access)
         argv += no_nesting
         argv += _parent_overrides(spec.job_id)

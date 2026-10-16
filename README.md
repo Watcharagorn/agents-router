@@ -33,6 +33,7 @@ flowchart LR
 - One setup for every account. Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder through links and launch flags, not copied. Only the login differs per account.
 - Automatic account switching. Claude Code reports each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude or Codex account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off.
 - Limits handled for you. Set your plan once and csa refuses a start that would go over it, with one line that says what to do instead. Nothing is capped until you set it.
+- Optional delegation rules. Preview a template with model tiers with `csa rules`, then choose whether to install it. See [Delegation rules](docs/delegation.md).
 - Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity), and the subagent is told where your instructions and skills live.
 - The vendors' own safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Skipping permissions is an explicit choice per job.
 - No tokens touched. Every model call comes from the vendor's own CLI with your own login. Nothing reads, copies or forwards credentials.
@@ -97,9 +98,20 @@ If you're the agent, do this. No slash commands are needed.
 
    `csa setup` finds the installed hosts, installs the plugin into each with the host's own terminal commands, registers and syncs the account folders, and ends with a list of what the user still has to do. It skips anything already in place, so running it twice is safe. It never starts a login and never reads credential files. Use `--host claude`, `--host codex` or `--host antigravity` to limit it. The runtime of an account folder is guessed from its contents; a `codex:` or `claude:` prefix sets it.
 
-3. Show the user the "Still needed from you" list from the output. Typical items: browser logins for accounts that aren't logged in (`csa accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code) so the plugin loads, and putting `csa` on PATH.
+3. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier, keeps work projects with the home vendor, and sets helper limits. Personal projects can try another CLI first and fall back to the home model when there is no room.
 
-4. Check with `csa doctor` (no model calls). `csa doctor --live` runs one tiny job per account and uses a little quota.
+   Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, preview and install with their choices; otherwise skip it. For example:
+
+   ```bash
+   csa rules --show --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
+   csa rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
+   ```
+
+   Use the user's models and the host they want. Ask for work folders if the user wants to list them with `--work-folder`. Nothing installs these rules without `--install`.
+
+4. Show the user the "Still needed from you" list from the output. Typical items: browser logins for accounts that aren't logged in (`csa accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code) so the plugin loads, and putting `csa` on PATH.
+
+5. Check with `csa doctor` (no model calls). `csa doctor --live` runs one tiny job per account and uses a little quota.
 
 If `csa setup` fails for a host, these are the commands it runs, so you can run them yourself:
 
@@ -177,6 +189,7 @@ docs/                   Guides, design and research
 | [Claude Code](docs/claude-code.md) | Accounts, what is shared, switching, troubleshooting |
 | [Codex](docs/codex.md) and [Gemini](docs/gemini.md) | The other subagent CLIs |
 | [Configuration](docs/configuration.md) | `config.toml`, files, environment |
+| [Delegation rules](docs/delegation.md) | Optional model tiers, work folders and helper limits |
 | [Design](docs/design.md) | Architecture, decisions and what was verified |
 | [Research](docs/research/) | CLI comparison, prior art, multi-account tools, provider terms |
 

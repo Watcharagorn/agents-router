@@ -164,7 +164,7 @@ failover = "off"
 
 ## Limits
 
-csa counts the running jobs on the machine and refuses a start when your cap for that account or runtime is reached. It replies with one line, for example `Claude is at its limit: 2 of 2 subagents running (plan preset pro: 2 per account; change with max_jobs). Start this with runtime codex, or wait for one to finish.` Follow the suggestion; there is nothing to calculate. Caps exist only where you set `plan` or `max_jobs` in `config.toml`. If you set `plan = "auto"`, csa reads your plan from the account's login info. See [Configuration](configuration.md#limits).
+csa counts the running jobs on the machine and refuses a start when your cap for that account or runtime is reached. It replies with one line, for example `Claude is at its limit: 2 of 2 subagents running (plan preset pro: 2 per account; change with max_jobs). Start this with runtime codex, or wait for one to finish.` Follow the suggestion; there is nothing to calculate. Set `plan`, `max_jobs`, optional `max_jobs_by_room` steps or model `pools` in `config.toml` to cap new starts. Pools can also set `per_account`, `total`, `weekly_jobs` and `cooldown_minutes` for model globs; other models keep working during a pool cooldown. If you set `plan = "auto"`, csa reads your plan from the account's login info. See [Configuration](configuration.md#limits).
 
 ## Interactive sessions with the shared setup
 

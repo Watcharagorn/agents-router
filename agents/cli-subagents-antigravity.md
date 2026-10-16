@@ -1,6 +1,6 @@
 ---
 name: cli-subagents-antigravity
-description: Runs a task in Google Antigravity (`agy`, Gemini models) on the user's Google account (CLI Subagents; extra Google accounts only if the user added them). The worker reads your CLAUDE.md files and skills from a note it gets. Use it for a second opinion from Gemini, or when the user asks for Antigravity or Gemini. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "Gemini · read · check the docs". Begin the prompt with optional lines like model=NAME, access=read (read or edit), account=NAME (only when the user asks for that account), cwd=PATH, timeout=SECONDS, then the complete, self-contained task.
+description: Runs a task in Google Antigravity (`agy`, Gemini models) on the user's Google account (CLI Subagents; extra Google accounts only if the user added them). The worker reads your CLAUDE.md files and skills from a note it gets. Use it for a second opinion from Gemini, or when the user asks for Antigravity or Gemini. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "Gemini 4 Argon · read · check the docs". Begin the prompt with optional lines like model=NAME, access=read (read or edit), account=NAME (only when the user asks for that account), cwd=PATH, timeout=SECONDS, then the complete, self-contained task.
 model: haiku
 effort: low
 color: blue

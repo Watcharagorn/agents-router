@@ -22,7 +22,7 @@ import subprocess
 import time
 from typing import Any
 
-from cli_subagents import limits
+from cli_subagents import limits, quota
 from cli_subagents.config import jobs_dir, load_config, state_dir
 from cli_subagents.fsutil import (
     file_lock,
@@ -86,7 +86,7 @@ def _create_job(
     start: bool = True,
 ) -> dict[str, Any]:
     config = load_config()
-    config.runtime(runtime)
+    runtime_config = config.runtime(runtime)
     depth = int(os.environ.get("CLI_SUBAGENTS_DEPTH", "0") or 0)
     if depth >= config.max_depth:
         raise ValueError(
@@ -134,6 +134,8 @@ def _create_job(
     if admission is not None:
         effort = admission.effort
 
+    model = model or runtime_config.default_model
+    pool = quota.pool_for(runtime_config, model)
     spec = JobSpec(
         job_id=new_job_id(),
         runtime=runtime,
@@ -163,6 +165,8 @@ def _create_job(
         "outcome": None,
         "cwd": spec.cwd,
         "account": None,
+        "assigned_account": admission.account if admission else account,
+        "pool": pool.name if pool else None,
         "created_at": spec.created,
         "updated_at": spec.created,
         "attempts": [],
@@ -356,6 +360,9 @@ def list_jobs(limit: int = 20) -> list[dict[str, Any]]:
 
 
 def clean_old_jobs(days: int) -> int:
+    config = load_config()
+    if any(pool.weekly_jobs is not None for runtime in config.runtimes.values() for pool in runtime.pools):
+        days = max(days, 7)  # weekly budgets must keep the records they count
     folder = jobs_dir()
     if not folder.is_dir():
         return 0

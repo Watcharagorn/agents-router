@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any
 
-from cli_subagents import __version__, accounts, jobs, setup, sync, tools
+from cli_subagents import __version__, accounts, jobs, rules, setup, sync, tools
 from cli_subagents.config import NAME_RE, Account, homes_dir, load_config, save_config
 from cli_subagents.fsutil import make_private_dir
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
@@ -197,6 +197,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"\nEffective limits ({args.runtime}): when_full={runtime_config.when_full}, usage_ceiling={runtime_config.usage_ceiling}"
           + (f", runtime max_jobs={runtime_config.max_jobs}" if runtime_config.max_jobs else "")
           + (f", global max_jobs={config.max_jobs}" if config.max_jobs else ""))
+    if "room_cap" in report.get("limits", {}):
+        shown = report["limits"]
+        left = shown["remaining_percent"]
+        detail = f"{left:g}% left" if left is not None else "no usage data"
+        print(f"  max_jobs_by_room: {shown['room_cap']} jobs at a time, {detail}; effective runtime cap {shown['effective_max_jobs']}")
     for entry in report["accounts"]:
         shown = entry.get("limits") or {}
         text = f"  {entry['name']}: up to {shown.get('max_jobs')} jobs ({shown.get('max_jobs_from')})"
@@ -207,6 +212,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if shown.get("suggested_plan"):
             text += f"; suggested plan {shown['suggested_plan']}"
         print(text)
+        for pool in entry.get("pools", []):
+            print(f"    {pool['state']}")
     if not report["binary"]:
         print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in the config.")
         return 1
@@ -366,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"cli-subagents {__version__}")
     parser.add_argument("--home", dest="csa_home", help="Use this folder instead of ~/.cli-subagents (sets CLI_SUBAGENTS_HOME).")
     sub = parser.add_subparsers(dest="command", required=True)
+    rules.add_parser(sub)
 
     mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
     mcp_parser.add_argument("--worker", help=argparse.SUPPRESS)
@@ -499,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
 
             return run_job(args.job_id)
         handlers = {
+            "rules": rules.command,
             "accounts": cmd_accounts,
             "setup": cmd_setup,
             "update": cmd_update,

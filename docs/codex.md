@@ -72,6 +72,19 @@ Servers that sign in through a browser (OAuth) have no token to pass on; log eac
 
 After each attempt, CLI Subagents reads the last `rate_limits` snapshot from the thread's rollout file (`sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl` in the account's folder) and nothing else from it. The 5-hour and weekly percentages show in `csa accounts --runtime codex` and rank accounts like Claude ones. When a job hits the limit, the snapshot's reset time sets the cooldown unless the error carries a Retry-After value.
 
+Set optional `max_jobs_by_room` steps under `[codex]` to lower concurrency as the remaining 5-hour or weekly quota falls. Other caps still apply, and running jobs continue. See [Configuration](configuration.md#quota-scaled-caps).
+
+## Web search
+
+Codex workers use OpenAI's web search. Set its mode in CLI Subagents:
+
+```toml
+[codex]
+web_search = "live"
+```
+
+Allowed values are `"disabled"`, `"cached"`, `"indexed"` and `"live"`. csa passes `-c web_search="<value>"` on both new runs and resumes. Leave the key unset to keep Codex's own default (`"cached"`).
+
 ## Using it
 
 Pass `runtime: "codex"` to `subagent_start`, or `--runtime codex` to `csa run` and `csa start`.

@@ -20,6 +20,7 @@ OPT_IN_FAILOVER = ("antigravity",)
 FAILOVER_MODES = ("off", "on-limit")
 WHEN_FULL_MODES = ("refuse", "queue")
 REVIEWERS = ("agy", "claude", "off")
+WEB_SEARCH_MODES = ("disabled", "cached", "indexed", "live")
 WINDOWS_SANDBOX_MODES = ("unelevated", "elevated", "off")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -78,6 +79,16 @@ class Account:
 
 
 @dataclass
+class QuotaPool:
+    name: str
+    models: list[str]
+    per_account: int | None = None
+    total: int | None = None
+    weekly_jobs: int | None = None
+    cooldown_minutes: int | None = None
+
+
+@dataclass
 class RuntimeConfig:
     runtime: str
     primary: Path
@@ -104,6 +115,9 @@ class RuntimeConfig:
     max_jobs: int | None = None  # runtime-wide cap on running jobs
     usage_ceiling: float = 0.95  # accounts at or above this share of a usage window get no new jobs
     when_full: str = "refuse"
+    max_jobs_by_room: list[list[float | int]] = field(default_factory=list)
+    pools: list[QuotaPool] = field(default_factory=list)
+    web_search: str | None = None  # [codex] only; unset preserves Codex's default
     accounts: list[Account] = field(default_factory=list)
 
     def primary_account(self) -> Account:
@@ -176,6 +190,52 @@ def _opt_models(value: Any) -> list[str] | None:
     return [str(item).strip() for item in items if str(item).strip()] or None
 
 
+def _room_steps(name: str, value: Any) -> list[list[float | int]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"[{name}] max_jobs_by_room needs descending [percent, jobs] steps")
+    previous, previous_cap = 101.0, None
+    steps = []
+    for step in value:
+        if (not isinstance(step, list) or len(step) != 2
+                or type(step[0]) not in (int, float) or not 0 <= step[0] <= 100
+                or type(step[1]) is not int or step[1] < 0
+                or step[0] >= previous or (previous_cap is not None and step[1] > previous_cap)):
+            raise ValueError(f"[{name}] max_jobs_by_room needs descending percentages and nonnegative job caps")
+        steps.append(list(step))
+        previous, previous_cap = step
+    if steps[-1][0] != 0:
+        raise ValueError(f"[{name}] max_jobs_by_room must end with a 0 percent step")
+    return steps
+
+
+def _quota_pools(name: str, value: Any) -> list[QuotaPool]:
+    if not isinstance(value, list):
+        raise ValueError(f"[{name}] pools must be an array of tables")
+    pools = []
+    names = set()
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not NAME_RE.fullmatch(item["name"]):
+            raise ValueError(f"[{name}] pool entries need a simple name")
+        pool_name = item["name"]
+        if pool_name in names:
+            raise ValueError(f"[{name}] duplicate pool name '{pool_name}'")
+        names.add(pool_name)
+        models = item.get("models")
+        if not isinstance(models, list) or not models or any(not isinstance(m, str) or not m.strip() for m in models):
+            raise ValueError(f"[{name}] pool '{pool_name}' needs a nonempty models glob list")
+        fields = {}
+        for key in ("per_account", "total", "weekly_jobs", "cooldown_minutes"):
+            value = item.get(key)
+            if value is not None:
+                if type(value) is not int or value < 1:
+                    raise ValueError(f"[{name}] pool '{pool_name}' {key} must be a positive integer")
+                fields[key] = value
+        pools.append(QuotaPool(pool_name, [m.strip() for m in models], **fields))
+    return pools
+
+
 def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     accounts: list[Account] = []
     for item in data.get("accounts", []) or []:
@@ -212,6 +272,9 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     reviewer = str(data.get("reviewer", "agy"))
     if reviewer not in REVIEWERS:
         raise ValueError(f"[{name}] reviewer must be one of {REVIEWERS}")
+    web_search = data.get("web_search")
+    if web_search is not None and (name != "codex" or web_search not in WEB_SEARCH_MODES):
+        raise ValueError(f"[{name}] web_search must be under [codex] and one of {WEB_SEARCH_MODES}")
     ceiling = float(data.get("usage_ceiling", 0.95))
     if not 0 < ceiling <= 1:
         raise ValueError(f"[{name}] usage_ceiling must be above 0 and at most 1")
@@ -240,6 +303,9 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         max_jobs=_opt_int(data.get("max_jobs")),
         usage_ceiling=ceiling,
         when_full=when_full,
+        max_jobs_by_room=_room_steps(name, data.get("max_jobs_by_room")),
+        pools=_quota_pools(name, data.get("pools", [])),
+        web_search=web_search,
         accounts=accounts,
     )
 
@@ -318,6 +384,16 @@ def dump_config(config: Config) -> str:
             lines.append(f"usage_ceiling = {runtime.usage_ceiling}")
         if runtime.when_full != "refuse":
             lines.append(f"when_full = {_toml_value(runtime.when_full)}")
+        if runtime.max_jobs_by_room:
+            lines.append(f"max_jobs_by_room = {json.dumps(runtime.max_jobs_by_room)}")
+        if name == "codex" and runtime.web_search is not None:
+            lines.append(f"web_search = {_toml_value(runtime.web_search)}")
+        for pool in runtime.pools:
+            lines += ["", f"[[{name}.pools]]", f"name = {_toml_value(pool.name)}", f"models = {json.dumps(pool.models)}"]
+            for key in ("per_account", "total", "weekly_jobs", "cooldown_minutes"):
+                value = getattr(pool, key)
+                if value is not None:
+                    lines.append(f"{key} = {value}")
         for account in runtime.accounts:
             lines += [
                 "",

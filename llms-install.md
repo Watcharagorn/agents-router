@@ -17,9 +17,19 @@ CLI Subagents is an MCP server with a plugin for Claude Code, Codex and Antigrav
    csa setup --account <name>=<folder>
    ```
 
-3. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
+3. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room.
 
-4. Check with `csa doctor`. To update later, run `csa update`.
+   Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, preview with `csa rules --show` and their values, then install. Otherwise skip it. For example:
+
+   ```bash
+   csa rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
+   ```
+
+   Use their host and models. Add `--work-folder` for each work folder they want listed. Nothing installs these rules without `--install`.
+
+4. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
+
+5. Check with `csa doctor`. To update later, run `csa update`.
 
 For an MCP client without a plugin system (Cline, Cursor and others), add a stdio server instead of step 2:
 

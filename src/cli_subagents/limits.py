@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any
 
-from cli_subagents import accounts
+from cli_subagents import accounts, quota
 from cli_subagents.config import Config, RUNTIMES, jobs_dir
 from cli_subagents.fsutil import pid_alive, read_json
 from cli_subagents.plans import Limits, account_limits, cap_effort, model_allowed
@@ -38,6 +38,8 @@ class Counts:
     by_runtime: dict[str, int] = field(default_factory=dict)
     running: dict[tuple[str, str], int] = field(default_factory=dict)  # (runtime, account) -> jobs
     unassigned: dict[str, int] = field(default_factory=dict)  # runtime -> unpinned jobs still waiting for an account
+
+    records: list[tuple[dict, dict]] = field(default_factory=list)
 
     def on_account(self, runtime: str, account: str) -> int:
         return self.running.get((runtime, account), 0)
@@ -73,10 +75,11 @@ def count_active(now: float | None = None) -> Counts:
         runtime = str(status.get("runtime") or "")
         counts.total += 1
         counts.by_runtime[runtime] = counts.by_runtime.get(runtime, 0) + 1
-        account = status.get("account")
-        if not account:
-            spec = read_json(path / "spec.json")
-            account = spec.get("account") if isinstance(spec, dict) else None
+        spec = read_json(path / "spec.json", {})
+        spec = spec if isinstance(spec, dict) else {}
+        status.setdefault("job_id", path.name)
+        counts.records.append((status, spec))
+        account = status.get("account") or status.get("assigned_account") or spec.get("account")
         if account:
             key = (runtime, str(account))
             counts.running[key] = counts.running.get(key, 0) + 1
@@ -93,7 +96,7 @@ def utilization(record: dict[str, Any] | None, now: float) -> float | None:
         if not isinstance(window, dict) or not isinstance(window.get("utilization"), (int, float)):
             continue
         resets = window.get("resets_at")
-        if isinstance(resets, (int, float)) and resets < now:
+        if isinstance(resets, (int, float)) and resets <= now:
             continue  # that window has reset since the figure was recorded
         values.append(float(window["utilization"]))
     return max(values) if values else None
@@ -113,6 +116,11 @@ class Room:
     allowed_models: list[str] = field(default_factory=list)
     models_source: str = ""
     full: bool = False
+    pool: Any = None
+    pool_total_hit: bool = False
+    pool_full: bool = False
+    pool_budget_hit: bool = False
+    pool_budget_used: int = 0
 
 
 def _source(limits: Limits) -> str:
@@ -127,7 +135,11 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
     runtime = config.runtime(runtime_name)
     usage = accounts.load_usage(runtime_name)
     ranked, earliest = accounts.ranked_accounts(runtime, pinned=pinned, now=now)
-    result = Room(cooldown_end=earliest)
+    pool = quota.pool_for(runtime, model)
+    state = quota.pool_state(runtime, counts, now)
+    result = Room(cooldown_end=earliest, pool=pool)
+    if pool and pool.total is not None and state.totals.get(pool.name, 0) >= pool.total:
+        result.pool_total_hit = True
     allowed = []
     for account in ranked:
         limits = account_limits(runtime, account)
@@ -139,8 +151,24 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
     if ranked and not allowed:
         result.model_blocked = True
         return result
+    if pool and allowed and pool.weekly_jobs is not None:
+        budget_counts = [state.budget_used(account.name, pool.name) for account, _ in allowed]
+        result.pool_budget_hit = all(used >= pool.weekly_jobs for used in budget_counts)
+        result.pool_budget_used = min(budget_counts)
     free_total = 0
     for account, limits in allowed:
+        if pool:
+            if pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
+                continue
+            until = accounts.pool_cooldown_until(usage.get(account.name), pool.name, now)
+            if until:
+                result.cooldown_end = min(result.cooldown_end or until, until)
+                continue
+            if pool.per_account is not None and state.running.get((account.name, pool.name), 0) >= pool.per_account:
+                result.pool_full = True
+                continue
+            if result.pool_total_hit:
+                continue
         used = utilization(usage.get(account.name), now)
         if used is not None and used >= runtime.usage_ceiling:
             result.ceiling_hit = max(result.ceiling_hit or 0.0, used)
@@ -184,6 +212,9 @@ def _alternatives(config: Config, runtime_name: str, counts: Counts, now: float)
             continue
         runtime = config.runtime(other)
         if runtime.max_jobs and counts.by_runtime.get(other, 0) >= runtime.max_jobs:
+            continue
+        cap, _left = quota.room_cap(runtime, now)
+        if cap is not None and counts.by_runtime.get(other, 0) >= cap:
             continue
         try:
             if room(config, other, counts, pinned=None, model=None, now=now).accounts:
@@ -253,6 +284,14 @@ def admit(
                 f"{name} is at its limit: {running} of {runtime.max_jobs} subagents running "
                 f"(max_jobs under [{runtime_name}]). {_tail(found, WAIT)}"
             )
+    cap, left = quota.room_cap(runtime, now, model)
+    running = counts.by_runtime.get(runtime_name, 0)
+    if cap is not None and running >= cap:
+        found = _alternatives(config, runtime_name, counts, now)
+        detail = f"has {left:g}% of its quota left" if left is not None else "has no quota data"
+        tail = (f"Run this on {' or '.join(NAMES[other] for other in found)}, or {WAIT}."
+                if found else "Wait for quota to reset or a running job to finish.")
+        raise _refusal(config, f"{name} {detail}, so {cap} jobs at a time (max_jobs_by_room); {running} are running. {tail}")
     current = room(config, runtime_name, counts, pinned=account, model=model, now=now)
     admission = Admission(effort=effort)
     if current.accounts:
@@ -272,10 +311,23 @@ def admit(
             f"No {runtime_name} account allows model '{model or runtime.default_model}' "
             f"(allowed: {listed}; from {current.models_source}). {_tail(found, 'use one of those models')}"
         )
+    if current.pool_budget_hit:
+        pool = current.pool
+        found = [] if account else _alternatives(config, runtime_name, counts, now)
+        tail = "Use Opus instead." if "claude" in found else _tail(found, "try again after the weekly budget resets")
+        where = f"account '{account}'" if account else "every account"
+        raise _refusal(config, f"{pool.name.capitalize()} budget used up: {current.pool_budget_used} of {pool.weekly_jobs} jobs this week on {where} (weekly_jobs in pool {pool.name}). {tail}")
     if queue:
         return admission  # the runner waits for a free slot
     where = f"{name} account '{account}'" if account else name
     found = [] if account else _alternatives(config, runtime_name, counts, now)
+    if current.pool_total_hit or current.pool_full:
+        pool = current.pool
+        if current.pool_total_hit:
+            detail = f"{pool.total} jobs across accounts (total in pool {pool.name})"
+        else:
+            detail = f"{pool.per_account} jobs per account (per_account in pool {pool.name})"
+        raise _refusal(config, f"{pool.name.capitalize()} is at its limit: {detail}. {_tail(found, WAIT)}")
     if current.full:
         tail = _tail(found, WAIT)
         if account:

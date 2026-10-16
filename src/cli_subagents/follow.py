@@ -494,6 +494,15 @@ class Follower:
             self.announced = account
         parts.append(f"job {self.job_id}")
         self.emit(" · ".join(parts))
+        try:
+            config = load_config()
+            if any(runtime.max_jobs_by_room or runtime.pools for runtime in config.runtimes.values()):
+                from cli_subagents.tools import room_note
+
+                if line := room_note():
+                    self.emit(line)
+        except Exception:
+            pass  # room is a convenience; never stop following over a report problem
 
     def catch_up(self) -> None:
         """Replay the lines before the start offset without printing, to rebuild state."""

@@ -35,7 +35,7 @@ name = "plus-2"
 home = "~/.cli-subagents/homes/codex/plus-2"
 ```
 
-The `[codex]` section takes the same keys as `[claude]`; `connectors` only applies to Claude. `share_parent_mcp` (default `true`) applies to Codex and Antigravity: workers started from Claude Code get its MCP servers (see [codex.md](codex.md#what-a-worker-gets-from-a-claude-code-session)); for Antigravity your own Gemini servers win when two have the same name. `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `[antigravity]` takes `binary`, `default_model`, `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it) and `share_parent_mcp`, the review keys below, and the account keys further down.
+The `[codex]` section takes the same keys as `[claude]`; `connectors` only applies to Claude. `share_parent_mcp` (default `true`) applies to Codex and Antigravity: workers started from Claude Code get its MCP servers (see [codex.md](codex.md#what-a-worker-gets-from-a-claude-code-session)); for Antigravity your own Gemini servers win when two have the same name. `web_search` only applies to Codex: `"disabled"`, `"cached"`, `"indexed"` or `"live"`, passed as `-c web_search="<value>"` on new and resumed runs. Leaving it unset preserves Codex's own default (`"cached"`). `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `[antigravity]` takes `binary`, `default_model`, `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it) and `share_parent_mcp`, the review keys below, and the account keys further down.
 
 ```toml
 [antigravity]
@@ -76,6 +76,8 @@ Nothing is capped until you set a cap. Presets are recommended defaults and appl
 | `models` | an account entry | Models this account may run. A job asking for another model skips the account. |
 | `primary_max_jobs`, `primary_max_effort`, `primary_models` | `[<runtime>]` | The same three for the primary account. |
 | `max_jobs` | `[<runtime>]` | Most jobs running on that runtime, over all accounts. |
+| `max_jobs_by_room` | `[<runtime>]` | Optional quota-scaled runtime cap; descending `[percent_left, jobs]` steps (below). |
+| `pools` | `[[<runtime>.pools]]` | Optional model globs, caps, rolling weekly budgets and separate cooldowns (below). |
 | `max_jobs` | top level | Most jobs running over all runtimes. |
 | `usage_ceiling` | `[<runtime>]` | Default `0.95`. An account at or above this share of its 5-hour or weekly window gets no new jobs. It applies only when usage is known; csa never guesses. |
 | `when_full` | `[<runtime>]` | `"refuse"` (default): the start fails with a short message. `"queue"`: the job starts and waits for a free slot (the caps still hold on each account). |
@@ -103,9 +105,71 @@ Codex is at its limit: 4 of 4 subagents running (plan preset plus: 4 per account
 Room: Claude 2 accounts (no usage data) · Codex primary 8% left (5h, resets 03:12)
 ```
 
-The `Room:` line is also in the `subagent_start` result, the `subagent_accounts` result and the `csa run --follow` header. It shows what is already known, marks old data with its age (`as of 2 h ago`) and leaves out accounts with no data. Codex usage is read from the newest rollout file in each Codex account folder (the `rate_limits` field only). Claude usage comes from the events of jobs that already ran. Antigravity shows none. Nothing starts a job to measure usage.
+The `Room:` line is also in the `subagent_start` and `subagent_accounts` results. With quota steps or pools configured, it appears in the `csa run --follow` header too. It shows what is already known, marks old data with its age (`as of 2 h ago`) and leaves out accounts with no data. Codex usage is read from the newest rollout file in each Codex account folder (the `rate_limits` field only). Claude usage comes from the events of jobs that already ran. Antigravity shows job counts and cooldowns, with no remaining-quota estimate. Nothing starts a job to measure usage.
 
 `csa accounts`, `subagent_accounts` and `csa doctor` list each account's cap, effort cap and model list, and where each one comes from. For Claude accounts they also suggest a plan (read from `oauthAccount.userRateLimitTier` and `organizationRateLimitTier` in the account's `.claude.json`, nothing else). A suggestion is not applied until you set `plan`.
+
+### Quota-scaled caps
+
+`max_jobs_by_room` is optional under any runtime. Each step is `[percent_left, jobs]`, in descending order, ending at 0 percent. The first step with **more than** that percentage left sets the runtime cap. The job caps must be nonnegative integers and cannot increase as quota falls.
+
+```toml
+[codex]
+max_jobs_by_room = [[75, 4], [50, 3], [25, 2], [5, 1], [0, 0]]
+web_search = "live"
+```
+
+This example allows 4 jobs above 75 percent, 3 above 50, 2 above 25, 1 above 5, and none at 5 percent or less. An exact threshold uses the next step: 75 percent allows 3 jobs. csa uses each account's smaller remaining share across its open 5-hour and weekly windows, then takes the highest share among eligible regular accounts. Fallback accounts do not raise the cap. Windows that already reset are ignored. With no known usage it uses the top step. Antigravity reports no remaining quota, so it always uses the top step.
+
+The lowest applicable cap wins. A lower cap refuses new starts, including with `when_full = "queue"`; jobs already running keep going. A refusal names the current percentage and cap:
+
+```text
+Codex has 28% of its quota left, so 2 jobs at a time (max_jobs_by_room); 2 are running. Run this on Claude, or wait for one to finish.
+```
+
+### Model pools
+
+Optional `[[<runtime>.pools]]` tables split model limits and cooldowns within an account. The first pool whose `models` globs match the requested model wins. A job without a model uses `default_model`. A job matching no pool keeps the account-wide rules.
+
+| Pool key | Meaning |
+|---|---|
+| `name` | Unique simple name within this runtime. |
+| `models` | Nonempty list of model globs. Matching is case-sensitive. |
+| `per_account` | Most running jobs from this pool on one account. |
+| `total` | Most running jobs from this pool across all accounts. |
+| `weekly_jobs` | Most jobs started from this pool per account in a rolling 7 days. |
+| `cooldown_minutes` | Pool cooldown when an error gives no reset time or Retry-After. Falls back to the runtime's value. |
+
+The four numeric pool keys are optional positive integers. Account, runtime and global caps still apply. For example:
+
+```toml
+[antigravity]
+max_jobs = 6
+max_jobs_per_account = 3
+
+[[antigravity.pools]]
+name = "argon"
+models = ["gemini-4-argon-*"]
+per_account = 1
+total = 2
+weekly_jobs = 3
+cooldown_minutes = 10080
+
+[[antigravity.pools]]
+name = "flash"
+models = ["gemini-3.8-flash-*"]
+total = 6
+```
+
+A pooled usage-limit error cools down only that account's pool. Its reported reset time wins; otherwise csa uses Retry-After, then the pool or runtime cooldown. Other pools on the account stay available. Failover selects another account with a free pool slot and weekly budget, where failover is enabled.
+
+Weekly counts come from job records. A job counts once on each account it started on, including failed and cancelled jobs and each account used during failover. Follow-up turns within the same job do not add starts. Refused jobs and jobs that never started do not count. Waiting jobs reserve budget until they start or finish, so a burst cannot overbook it. When `weekly_jobs` is configured, automatic cleanup keeps at least 7 days of job records even if `job_retention_days` is lower. Deleting those records by hand removes their budget history.
+
+```text
+Argon budget used up: 3 of 3 jobs this week on every account (weekly_jobs in pool argon). Use Opus instead.
+```
+
+The alternative names depend on which other installed runtimes have room. `csa accounts`, `subagent_accounts`, `csa doctor` and the `Room:` line show the current quota cap and each account's pools, for example `Argon: 1 running of 1, 2 of 3 this week, cooling down until ...`. Pool totals appear across accounts too. `csa accounts reset <name>` clears the account's pool cooldowns as well as its account-wide cooldown; it does not clear weekly counts.
 
 ### What goes where
 

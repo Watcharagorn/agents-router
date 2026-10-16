@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import os
 from pathlib import Path
@@ -10,7 +10,7 @@ import re
 import time
 from typing import Any, BinaryIO
 
-from cli_subagents.config import Account, RuntimeConfig, state_dir
+from cli_subagents.config import Account, QuotaPool, RuntimeConfig, state_dir
 from cli_subagents.plans import account_cap, account_limits, model_allowed
 from cli_subagents.fsutil import file_lock, read_json, same_process, try_lock, unlock, write_json
 
@@ -108,6 +108,20 @@ def set_cooldown(runtime: str, account: str, until: float, reason: str) -> None:
     update_usage(runtime, account, cooldown_until=until, cooldown_reason=reason)
 
 
+def pool_cooldown_until(record: dict[str, Any] | None, pool: str, now: float | None = None) -> float | None:
+    return cooldown_until(((record or {}).get("pools") or {}).get(pool), now)
+
+
+def set_pool_cooldown(runtime: str, account: str, pool: str, until: float, reason: str) -> None:
+    path = _usage_path(runtime)
+    with file_lock(path.with_suffix(".lock")):
+        data = load_usage(runtime)
+        record = data.setdefault(account, {})
+        record.setdefault("pools", {}).setdefault(pool, {}).update(cooldown_until=until, cooldown_reason=reason)
+        record["updated"] = time.time()
+        write_json(path, data)
+
+
 def clear_cooldown(runtime: str, account: str) -> bool:
     """Forget an account's cooldown. Returns True if it had one."""
 
@@ -115,10 +129,11 @@ def clear_cooldown(runtime: str, account: str) -> bool:
     with file_lock(path.with_suffix(".lock")):
         data = load_usage(runtime)
         record = data.get(account)
-        if not isinstance(record, dict) or "cooldown_until" not in record:
+        if not isinstance(record, dict) or ("cooldown_until" not in record and not record.get("pools")):
             return False
         record.pop("cooldown_until", None)
         record.pop("cooldown_reason", None)
+        record.pop("pools", None)
         record["updated"] = time.time()
         write_json(path, data)
     return True
@@ -152,11 +167,14 @@ class Lease:
     handle: BinaryIO
     path: Path | None = None  # the slot's lock file
 
+    pool_slots: list[tuple[BinaryIO, Path]] = field(default_factory=list)
+
     def set_owner(self, pid: int, started: int | None, job_id: str | None = None) -> None:
         """Record the worker process, so the slot stays busy if the runner dies before it."""
 
-        if self.path is not None:
-            write_json(_owner_path(self.path), {"pid": pid, "started": started, "job_id": job_id})
+        paths = ([self.path] if self.path is not None else []) + [path for _handle, path in self.pool_slots]
+        for path in paths:
+            write_json(_owner_path(path), {"pid": pid, "started": started, "job_id": job_id})
 
     def release(self) -> None:
         try:
@@ -166,6 +184,14 @@ class Lease:
             pass
         finally:
             unlock(self.handle)
+            for handle, path in self.pool_slots:
+                try:
+                    _owner_path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                finally:
+                    unlock(handle)
+            self.pool_slots.clear()
 
 
 def _home_key(home: Path) -> str:
@@ -224,6 +250,23 @@ def try_lease(runtime: RuntimeConfig, account: Account) -> Lease | None:
     return None
 
 
+def _lease_pool(lease: Lease, runtime: RuntimeConfig, pool: QuotaPool) -> bool:
+    root = state_dir() / "leases" / runtime.runtime / "pools" / pool.name
+    for folder, cap in ((root / _home_key(lease.account.home), pool.per_account), (root / "total", pool.total)):
+        if cap is None:
+            continue
+        for slot in range(cap):
+            path = folder / f"{slot}.lock"
+            handle = _take_slot(path)
+            if handle is not None:
+                lease.pool_slots.append((handle, path))
+                break
+        else:
+            lease.release()
+            return False
+    return True
+
+
 def busy_slots(runtime: RuntimeConfig, account: Account) -> int:
     busy = 0
     for slot in range(account_cap(runtime, account)):
@@ -245,6 +288,7 @@ def ranked_accounts(
     exclude: set[str] | None = None,
     prefer: str | None = None,
     model: str | None = None,
+    pool: QuotaPool | None = None,
     now: float | None = None,
 ) -> tuple[list[Account], float | None]:
     """Usable accounts best-first, plus the earliest cooldown end if none are usable."""
@@ -263,9 +307,13 @@ def ranked_accounts(
     for account in candidates:
         if account.name in exclude:
             continue
+        if not account.enabled:
+            continue
         if model and not model_allowed(runtime, account_limits(runtime, account), model):
             continue  # the account's model list does not include it
-        until = cooldown_until(usage.get(account.name), now)
+        record = usage.get(account.name)
+        ends = [cooldown_until(record, now), pool_cooldown_until(record, pool.name, now) if pool else None]
+        until = max((end for end in ends if end is not None), default=None)
         if until is not None:
             earliest = until if earliest is None else min(earliest, until)
             continue
@@ -287,13 +335,14 @@ def ranked_accounts(
     return usable, (earliest if not usable else None)
 
 
-def acquire(
+def _acquire(
     runtime: RuntimeConfig,
     *,
     pinned: str | None = None,
     exclude: set[str] | None = None,
     prefer: str | None = None,
     model: str | None = None,
+    job_id: str | None = None,
 ) -> tuple[Lease | None, float | None, bool]:
     """Lease the best free account.
 
@@ -301,12 +350,42 @@ def acquire(
     all_busy=True means accounts exist but every slot is taken right now.
     """
 
+    from cli_subagents import limits, quota
+
+    pool = quota.pool_for(runtime, model)
+    state = quota.pool_state(runtime, limits.count_active(), time.time(), exclude_job=job_id) if pool else None
     accounts, earliest = ranked_accounts(
-        runtime, pinned=pinned, exclude=exclude, prefer=prefer, model=model
+        runtime, pinned=pinned, exclude=exclude, prefer=prefer, model=model or runtime.default_model, pool=pool
     )
+    if pool and pool.total is not None and state.executing_totals.get(pool.name, 0) >= pool.total:
+        return None, earliest, bool(accounts)
+    budget_blocked = 0
     for account in accounts:
+        if pool and pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
+            budget_blocked += 1
+            continue
+        if pool and pool.per_account is not None and state.executing.get((account.name, pool.name), 0) >= pool.per_account:
+            continue
         lease = try_lease(runtime, account)
         if lease is not None:
+            if pool and not _lease_pool(lease, runtime, pool):
+                continue
+            if pool and job_id:
+                from cli_subagents.jobs import update_status
+
+                try:
+                    update_status(job_id, account=None, assigned_account=account.name, pool=pool.name)
+                except OSError:
+                    lease.release()
+                    raise
             update_usage(runtime.runtime, account.name, last_used=time.time())
             return lease, None, False
-    return None, earliest, bool(accounts)
+    return None, earliest, len(accounts) > budget_blocked
+
+
+def acquire(runtime: RuntimeConfig, **kwargs: Any) -> tuple[Lease | None, float | None, bool]:
+    if runtime.pools:
+        # Share admission's lock: a lease and a new job cannot both reserve the last weekly start.
+        with file_lock(state_dir() / "admission.lock", timeout=30):
+            return _acquire(runtime, **kwargs)
+    return _acquire(runtime, **kwargs)

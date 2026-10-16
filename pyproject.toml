@@ -30,4 +30,5 @@ cli-subagents-mcp = "cli_subagents.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"cli_subagents" = ["templates/*.md"]
 "cli_subagents.agy_review" = ["policy.md"]

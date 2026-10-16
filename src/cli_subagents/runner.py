@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any
 
-from cli_subagents import accounts, messages, plans
+from cli_subagents import accounts, messages, plans, quota
 from cli_subagents.config import OPT_IN_FAILOVER, Account, RuntimeConfig, load_config
 from cli_subagents.fsutil import kill_tree, new_group_kwargs, open_private, process_start_time, write_text
 from cli_subagents.jobs import job_dir, mark_pending, read_spec, update_status
@@ -69,6 +69,7 @@ class Runner:
         self.config = load_config()
         self.runtime_config: RuntimeConfig = self.config.runtime(self.spec.runtime)
         self.runtime = get_runtime(self.spec.runtime)
+        self.pool = quota.pool_for(self.runtime_config, self.spec.model)
         # The whole job, failovers and queueing included, ends by this time.
         self.deadline = self.spec.created + self.spec.timeout_seconds + QUEUE_TIMEOUT_SECONDS
         self.attempts: list[dict[str, Any]] = []
@@ -172,14 +173,18 @@ class Runner:
                 continue
             if last.outcome != USAGE_LIMIT:
                 return self.finish(last.outcome, last.message, last)
-            if self.spec.runtime not in OPT_IN_FAILOVER or self.runtime_config.failover == "on-limit":
-                # Without failover an opt-in runtime runs on one account; a cooldown would only block later jobs.
+            if self.pool or self.spec.runtime not in OPT_IN_FAILOVER or self.runtime_config.failover == "on-limit":
+                # Unpooled opt-in runtimes keep their old behaviour; pool cooldowns always apply.
+                minutes = (self.pool.cooldown_minutes if self.pool else None) or self.runtime_config.cooldown_minutes
                 until = accounts.cooldown_end(
-                    "\n".join(part for part in (last.message, last.error_text) if part),
+                    "" if self.pool and last.resets_at else "\n".join(part for part in (last.message, last.error_text) if part),
                     last.resets_at,
-                    self.runtime_config.cooldown_minutes,
+                    minutes,
                 )
-                accounts.set_cooldown(self.spec.runtime, lease.account.name, until, last.message or USAGE_LIMIT)
+                if self.pool:
+                    accounts.set_pool_cooldown(self.spec.runtime, lease.account.name, self.pool.name, until, last.message or USAGE_LIMIT)
+                else:
+                    accounts.set_cooldown(self.spec.runtime, lease.account.name, until, last.message or USAGE_LIMIT)
             if not failover:
                 return self.finish(USAGE_LIMIT, f"{lease.account.name}: {last.message}", last)
             excluded.add(lease.account.name)
@@ -194,7 +199,10 @@ class Runner:
     def _no_account_message(self, excluded: set[str]) -> str:
         usage = accounts.load_usage(self.spec.runtime)
         ends = [
-            accounts.cooldown_until(usage.get(account.name))
+            max((end for end in (
+                accounts.cooldown_until(usage.get(account.name)),
+                accounts.pool_cooldown_until(usage.get(account.name), self.pool.name) if self.pool else None,
+            ) if end is not None), default=None)
             for account in self.runtime_config.worker_accounts()
             if account.name not in excluded
         ]
@@ -211,7 +219,7 @@ class Runner:
         while True:
             try:
                 lease, _earliest, all_busy = accounts.acquire(
-                    self.runtime_config, pinned=self.spec.account, exclude=excluded, prefer=prefer, model=self.spec.model
+                    self.runtime_config, pinned=self.spec.account, exclude=excluded, prefer=prefer, model=self.spec.model, job_id=self.job_id
                 )
             except ValueError as exc:
                 self.warnings.append(str(exc))
@@ -239,7 +247,11 @@ class Runner:
     ) -> AttemptResult:
         account = lease.account
         attempt: dict[str, Any] = {"account": account.name, "started_at": time.time()}
+        if self.pool:
+            attempt["pool"] = self.pool.name
         self.attempts.append(attempt)
+        if self.pool:
+            self.status(account=account.name, assigned_account=account.name, pool=self.pool.name)
         if session and owner and owner != account.name:
             source = self.runtime_config.find(owner)
             moved = bool(source) and self.runtime.transfer_session(source, account, session, self.spec.cwd)

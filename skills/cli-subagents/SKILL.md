@@ -33,6 +33,8 @@ Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when
 
 `access: "full"` skips the CLI's own permission checks. Use it only when the user asked for that.
 
+Codex workers use OpenAI's web search, which reaches sites such as Reddit that block other tools, so they suit web research.
+
 ## Limits
 
 Limits are enforced by csa. If a start is refused, follow the suggestion in the message; don't count quotas yourself.

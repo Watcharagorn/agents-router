@@ -457,6 +457,8 @@ def format_report(report: Report, name: str = "setup") -> str:
     else:
         lines.append("Nothing left for you to do.")
     lines += ["", "Check everything with `csa doctor` (add --runtime codex for Codex accounts)."]
+    if name == "setup":
+        lines.append("Optional: delegation rules for your agent. See `csa rules`; install with `csa rules --install`.")
     return "\n".join(lines)
 
 
