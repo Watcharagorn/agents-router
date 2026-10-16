@@ -22,9 +22,11 @@ From a host, pass `runtime: "antigravity"` to `subagent_start`. `agy models` lis
 
 | `access` | Antigravity mode |
 |---|---|
-| `read` | `--mode plan` |
-| `edit` | `--mode accept-edits`: file edits allowed; shell commands are refused in headless runs |
-| `full` | `accept-edits` plus `--dangerously-skip-permissions` |
+| `read` | `--mode plan`, behind the review gate: reads, read-only commands and the parent channel |
+| `edit` | `--mode accept-edits --sandbox`, behind the review gate: edits in the project, commands in agy's sandbox |
+| `full` | `accept-edits` plus `--dangerously-skip-permissions`: no gate, no sandbox |
+
+The review gate answers the permission questions a headless `agy` run can't ask you. See [Safety](#safety).
 
 Antigravity's own auto mode (a reviewer agent for commands) isn't available on every account or on Windows. Where your account has it, set `edit_permission_mode = "auto"` under `[antigravity]` in the config; AGY falls back to its default mode with a warning when it isn't available.
 
@@ -32,7 +34,9 @@ The prompt travels as a command-line argument, so it's limited to 24,000 charact
 
 ## Messages
 
-Workers on an extra account get `message_parent`, `ask_parent` and `check_parent_messages` from a `csa-parent` MCP server, which CLI Subagents writes into that account's `config/mcp_config.json` with the job's id before each job. Workers on your primary account don't get these tools: `agy` has no flag for an MCP server added for one run, and your own `~/.gemini/config/mcp_config.json` is left alone. Extra accounts with `max_jobs_per_account` above 1 don't get them either, because two jobs could then start from the same file.
+Workers get `message_parent`, `ask_parent` and `check_parent_messages` from a `csa-parent` MCP server, which CLI Subagents writes into the `config/mcp_config.json` of the folder the worker runs in, with the job's id, before each job. `agy` has no flag for an MCP server added for one run, so every job runs in a folder CLI Subagents manages: your primary account in `~/.cli-subagents/homes/antigravity/primary` (its login stays in the OS keyring, which `agy` finds from any folder), an extra account in its own folder. Your own `~/.gemini` is left alone. An account that may run more than one job at a time (`max_jobs` or `max_jobs_per_account` above 1) gets no channel, because two jobs could then start from the same file.
+
+Jobs started from Claude Code also get that session's MCP servers in the same file (`share_parent_mcp = true`, the default). Your own Gemini servers win when a name appears in both.
 
 Follow-ups still reach an Antigravity worker. A `subagent_message` sent while the job runs is given to the worker by the runner as a follow-up turn once its current turn ends. A `subagent_message` sent to a finished job continues the same conversation as a new job.
 
@@ -42,7 +46,7 @@ This is opt-in and at your own risk. Google's [Antigravity FAQ](https://antigrav
 
 ### How it works
 
-`agy` has no setting for its config folder, and it keeps its login in the OS keyring (Windows Credential Manager, macOS Keychain, Secret Service on Linux), where every login of your user would share it. So each extra account gets its own folder under `~/.cli-subagents/homes/antigravity/`, and `agy` runs with `HOME` and `USERPROFILE` pointing there (on macOS and Linux the XDG folders too). CLI Subagents also sets `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY`. When `agy` thinks it runs over SSH, it stores its login in a file in that folder instead of the keyring, so each folder keeps its own login. Your primary account isn't touched: its jobs run with your normal environment and keyring login.
+`agy` has no setting for its config folder, and it keeps its login in the OS keyring (Windows Credential Manager, macOS Keychain, Secret Service on Linux), where every login of your user would share it. So each extra account gets its own folder under `~/.cli-subagents/homes/antigravity/`, and `agy` runs with `HOME` and `USERPROFILE` pointing there (on macOS and Linux the XDG folders too). CLI Subagents also sets `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY`. When `agy` thinks it runs over SSH, it stores its login in a file in that folder instead of the keyring, so each folder keeps its own login. Your primary account keeps its keyring login: its jobs run in `homes/antigravity/primary` without the SSH variables, and `agy` finds the keyring login from there.
 
 This relies on `agy` behaviour that Google doesn't document. If a later `agy` stops honouring it, the login won't stick in the folder: `csa doctor --runtime antigravity` then shows the account as not logged in, and its jobs end with the outcome `auth` and the login command to run.
 
@@ -50,11 +54,15 @@ Your setup in `~/.gemini` is linked into each account folder, so there is still 
 
 | What | How it gets into the account folder |
 |---|---|
-| `GEMINI.md`, `AGENTS.md`, `config/GEMINI.md`, `config/AGENTS.md`, `config/hooks.json` | hard links |
+| `GEMINI.md`, `AGENTS.md`, `config/GEMINI.md`, `config/AGENTS.md` | hard links |
 | `config/rules/`, `antigravity-cli/rules/` | one folder link each |
 | `config/skills/`, `antigravity-cli/skills/`, `antigravity-cli/plugins/` | one link per entry; the cli-subagents plugin is left out so workers can't start subagents |
-| `config/config.json`, `antigravity-cli/settings.json` | hard links, unless they set `enableAdc` or `modelProvider`, which can select a login of their own (you get a warning instead) |
-| `config/mcp_config.json` | written before each job: your MCP servers (without cli-subagents) plus `csa-parent` |
+| `config/config.json` | a hard link, unless it sets `enableAdc`, which can select a login of its own (you get a warning instead) |
+| `config/hooks.json` | written before each job: your hooks plus the review gate |
+| `antigravity-cli/settings.json` | written before each job: your settings with `toolPermission` set to `request-review`; left out when they set `modelProvider` |
+| `config/mcp_config.json` | written before each job: your MCP servers (without cli-subagents), the Claude session's servers, and `csa-parent` |
+
+The folder your primary account's jobs run in gets the same setup; there the settings are shared even when they set `modelProvider` or `enableAdc`, since it's the same account. If a folder had its own `settings.json`, `hooks.json` or `mcp_config.json` before, the first job keeps a copy next to it (`*.before-cli-subagents`).
 
 Each account keeps its own login, conversations, project settings (`config/projects/`) and MCP OAuth tokens. Every job refreshes the links; `csa accounts sync NAME --runtime antigravity` does it by hand.
 
@@ -74,6 +82,56 @@ With `failover = "off"`, the default, jobs without `account` run on your primary
 - The quota error wording of `agy` is matched loosely ("quota", "resource exhausted", "rate limit", "429"). If a limit isn't recognised, the job ends with an error instead of moving on.
 - `csa launch --runtime antigravity --account NAME` opens an interactive session on an extra account; it doesn't take a job slot.
 
+## Safety
+
+A headless `agy` run can't ask you anything. Without help it refuses every action that needs a yes (shell commands, MCP tool calls, reads outside the project), and often stops right there with an empty answer. CLI Subagents answers those questions with a review gate, so read and edit jobs can work on their own without you approving each step.
+
+### How the gate works
+
+The gate is a `PreToolUse` hook in the worker's folder. `agy` calls it before every tool call, and it answers "approve" or "deny":
+
+1. Fixed rules decide the clear cases at once, with no model call.
+   - Approved: reads and edits inside the project (`add_dirs` included), reading the instruction files and skill folders of the session that started the job (so a worker started from Claude Code can read your `CLAUDE.md`), the `csa-parent` tools, plainly read-only commands such as `git status` or `ls`, and in edit jobs every command that stays in the sandbox.
+   - Denied: logins, keys and tokens (`~/.ssh`, `.env`, `*.pem`, credential stores, agent login files), CLI Subagents' own state, edits to `.git` and to agent configuration (`.agents`, `.gemini`, `.claude`, `.codex`), force pushes, publishing and deploying, deletes outside the project, credential tools, and encoded or downloaded code. In read jobs: every edit.
+2. A reviewer judges the rest: a separate model call with no tools that sees the action, a few facts about the job and a written policy, never your task or the conversation. It answers with one JSON object. Anything else, an error or a timeout counts as a denial, and so does any action it rates high or critical risk.
+
+A denial goes back to the worker with its reason, and the worker carries on another way. The same action is reviewed once per job; the answer is reused.
+
+If anything goes wrong, the gate fails closed: a missing or broken job file, unreadable input, or a crash means deny. The worker folders keep `toolPermission = "request-review"`, so if the hook doesn't load at all, `agy` falls back to refusing those actions instead of running them.
+
+### The sandbox
+
+Edit jobs run with `agy --sandbox`. Commands then run in an OS sandbox: they can write only to the project and the temp folders, can't read the rest of your home folder, and have no network. A command that needs more (installing packages, `git push`) asks to leave the sandbox, and the reviewer decides, as in Codex. Checked on Windows with agy 1.3.6; macOS and Linux follow Google's docs but are untested here.
+
+The sandbox doesn't protect `.git` or agent settings inside the project. The gate sends sandboxed commands that name them (`.git/hooks`, `core.hooksPath` and the like) to the reviewer, but a disguised write would get through. Read jobs don't use the sandbox: there, only read-only commands run without review.
+
+### Compared with Codex and Claude Code
+
+- Codex auto-review: the OS sandbox holds every command, and a second model judges only what wants out of it, with the conversation in view. Edit jobs here work the same way, except the reviewer doesn't see the conversation.
+- Claude Code auto mode: a classifier judges risky actions as they come, with your messages in view; there is no sandbox by default. Read jobs here work like that, with fixed rules in front.
+- Because the reviewer doesn't see your task, it can't tell that you asked for something consequential. A push or an MCP call that sends or changes things outside your machine is denied unless it looks plainly routine. Use `access: "full"` for jobs that need those.
+
+### Cost
+
+Reads, edits in the project, read-only commands and sandboxed commands cost nothing extra. Each reviewed action costs one `agy --mode plan` call on the same account with the cheapest Gemini model: about 12,000 input tokens (mostly `agy`'s own system prompt) and under 100 output tokens, and about 10 seconds, more when Google's service is slow. With `reviewer = "claude"` it's one Claude Haiku call on the Claude account you name instead. The reviewer runs from a bare folder without your MCP servers and hooks (an extra account's plugins still load there), and the gate denies it every tool, so it can't act.
+
+### Watching it
+
+`csa follow` and the live view of a running job print one `review:` line per decision, except routine approvals of reads and edits. The job folder keeps every decision in `review.jsonl`.
+
+### Settings
+
+Under `[antigravity]` in `config.toml`: `reviewer` (`"agy"`, `"claude"` or `"off"`), `reviewer_model`, `reviewer_account` (the Claude account for `"claude"`), and `sandbox` (`false` sends every non-read-only command to the reviewer). See [configuration](configuration.md).
+
+### Limits
+
+- `access: "full"` skips the gate and the sandbox.
+- If your primary account's login is a token file in your home folder (`agy` does that when it finds no keyring, as on many Linux servers), its jobs keep running in your real home without the gate, as before. Extra accounts always use the gate.
+- The rules stop direct reads of `.env` and key files, but a recursive search of the project (agy's `grep_search`, `grep -r`) can still show lines from them.
+- MCP servers that need their own OAuth login are signed in per folder, so they may ask again in a worker folder.
+- `csa launch` on an extra account opens `agy` in a folder that has the gate's hook; outside a job the hook stays out of the way and `agy` asks you as usual.
+- Jobs on your primary account keep their conversations in their folder, not in your own `agy` history.
+
 ## The standalone adapter
 
-[`adapters/antigravity/`](../adapters/antigravity/) is the original Windows MCP server for AGY. It runs `agy` through ConPTY (older versions printed nothing to a pipe) and adds its own command reviewer, so headless runs can execute shell commands after a separate model approves each one. Use it if you need reviewed shell commands on Windows; otherwise the core runtime is simpler and needs no setup.
+[`adapters/antigravity/`](../adapters/antigravity/) is the original Windows MCP server for AGY. It runs `agy` through ConPTY (older versions printed nothing to a pipe) and routed shell commands through its own reviewer and a signed approval broker. The review gate above replaces that reviewer, and current `agy` versions print to a pipe, so the core runtime is the one to use.

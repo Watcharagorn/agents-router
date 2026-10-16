@@ -40,6 +40,38 @@ This tool's own MCP server stays in the copied config, but every Codex worker, o
 
 Workers start without `OPENAI_API_KEY`, `CODEX_API_KEY` or the host's `CODEX_HOME`, so they always use the account's own ChatGPT login.
 
+## What a worker gets from a Claude Code session
+
+When the job comes from Claude Code, a Codex worker receives:
+
+- a short note in its prompt naming your Claude instruction files (`CLAUDE.md`) and skill folders, since Codex doesn't read them itself;
+- the MCP servers the Claude session uses for that folder: user and local servers from `~/.claude.json`, approved servers from the project's `.mcp.json`, and servers of enabled plugins (named `<plugin>_<server>`). They are passed as `-c mcp_servers.<name>...` overrides for that job only; nothing is written to your Codex config. A server with the same name in your Codex config wins. `${VAR}` references are expanded the way Claude Code does it.
+
+Values never go on the command line. A stdio server's `env` values are put into the Codex process environment and forwarded with `env_vars`; HTTP headers go through `env_http_headers`, and `Authorization: Bearer ...` through `bearer_token_env_var`. For example, a stdio server `fs` with `env = {API_KEY = ...}` and an HTTP server `web` with a bearer token become:
+
+```
+-c mcp_servers.fs.command="npx" -c mcp_servers.fs.args=["-y", "pkg"] -c mcp_servers.fs.env_vars=["API_KEY"]
+-c mcp_servers.web.url="https://example.com/mcp" -c mcp_servers.web.bearer_token_env_var="CSA_MCP_1_WEB_TOKEN"
+```
+
+with `API_KEY=***` and `CSA_MCP_1_WEB_TOKEN=***` set in the worker's environment.
+
+Turn it off with `share_parent_mcp = false` under `[codex]`. Jobs started from Codex itself never get this; they use your Codex config.
+
+Servers that can't be expressed are skipped, and the job's warnings say why:
+
+- claude.ai connectors (account-bound) are never shared, and neither is this tool's own server;
+- SSE and WebSocket servers (Codex supports stdio and streamable HTTP only) and `headersHelper`;
+- URLs with a password or query string, and arguments that look like they carry a credential (they would show in the process list);
+- an `env` variable that clashes with a different value already in the worker's environment (or starts with `CODEX_`, `OPENAI_`, `CLI_SUBAGENTS_`);
+- servers whose `${VAR}` isn't set, and project `.mcp.json` servers you haven't approved in Claude Code.
+
+Servers that sign in through a browser (OAuth) have no token to pass on; log each Codex account in with `codex mcp login <name>`. The shared variables are also visible to commands the worker runs, subject to Codex's own `shell_environment_policy`. Research and sources: the top of `src/cli_subagents/mcp_translate.py`.
+
+## Quota
+
+After each attempt, CLI Subagents reads the last `rate_limits` snapshot from the thread's rollout file (`sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl` in the account's folder) and nothing else from it. The 5-hour and weekly percentages show in `csa accounts --runtime codex` and rank accounts like Claude ones. When a job hits the limit, the snapshot's reset time sets the cooldown unless the error carries a Retry-After value.
+
 ## Using it
 
 Pass `runtime: "codex"` to `subagent_start`, or `--runtime codex` to `csa run` and `csa start`.

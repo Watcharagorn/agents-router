@@ -24,10 +24,11 @@ import subprocess
 import tomllib
 from typing import Any
 
-from cli_subagents import sync
+from cli_subagents import accounts as pool, sync
 from cli_subagents.hosts import parent_note
 from cli_subagents.config import Account, RuntimeConfig, state_dir
-from cli_subagents.fsutil import copy_exclusive, file_lock, is_link, same_path, write_text
+from cli_subagents import mcp_translate
+from cli_subagents.fsutil import copy_exclusive, file_lock, is_link, no_window_kwargs, same_path, write_text
 from cli_subagents.runtimes.base import (
     WORKER_TOOLS_NOTE,
     parent_server,
@@ -56,6 +57,62 @@ WORKER_NOTE = (
 LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota|try again at", re.IGNORECASE)
 AUTH_RE = re.compile(r"not logged in|\b401\b|unauthorized|log ?in again|token (has )?expired|refresh token", re.IGNORECASE)
 TOOL_ITEMS = {"command_execution", "file_change", "mcp_tool_call", "web_search"}
+
+
+ROLLOUT_TAIL_BYTES = 4_000_000
+WINDOW_NAMES = {300: "five_hour", 10080: "seven_day"}
+
+
+def find_rollout(home: Path, thread_id: str) -> Path | None:
+    """The session file Codex wrote for a thread: <home>/sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl."""
+
+    if not thread_id or not re.fullmatch(r"[A-Za-z0-9-]+", thread_id):
+        return None
+    matches = list((home / "sessions").glob(f"*/*/*/rollout-*-{thread_id}.jsonl"))
+    return max(matches, key=lambda path: path.stat().st_mtime) if matches else None
+
+
+def last_rate_limits(path: Path) -> dict[str, Any] | None:
+    """The last `rate_limits` object in a rollout file. Reads nothing else from the conversation."""
+
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - ROLLOUT_TAIL_BYTES))
+            lines = handle.read().splitlines()
+    except OSError:
+        return None
+    for raw in reversed(lines):
+        if b'"rate_limits"' not in raw:
+            continue
+        try:
+            payload = json.loads(raw).get("payload")
+        except (ValueError, AttributeError):
+            continue  # a cut-off first line, or not an event
+        limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+        if isinstance(limits, dict) and isinstance(limits.get("primary") or limits.get("secondary"), dict):
+            return limits
+    return None
+
+
+def usage_windows(limits: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    """Codex's primary/secondary windows as the pool stores them: utilization 0..1 and reset epoch seconds."""
+
+    windows: dict[str, dict[str, float | None]] = {}
+    for key in ("primary", "secondary"):
+        window = limits.get(key)
+        if not isinstance(window, dict) or not isinstance(window.get("used_percent"), (int, float)):
+            continue
+        minutes = window.get("window_minutes")
+        name = WINDOW_NAMES.get(int(minutes)) if isinstance(minutes, (int, float)) else None
+        name = name or ("five_hour" if key == "primary" else "seven_day")
+        resets = window.get("resets_at")
+        windows[name] = {
+            "utilization": float(window["used_percent"]) / 100.0,
+            "resets_at": float(resets) if isinstance(resets, (int, float)) else None,
+        }
+    return windows
 
 
 def _default_home() -> Path:
@@ -130,6 +187,45 @@ def self_server_overrides(files: list[Path]) -> list[str]:
             overrides += ["-c", f"mcp_servers.{name}.command='csa'"]
         overrides += ["-c", f"mcp_servers.{name}.enabled=false"]
     return overrides
+
+
+def configured_server_names(files: list[Path]) -> set[str]:
+    """Names of the MCP servers the user's Codex config files define (unreadable files count as none)."""
+
+    names: set[str] = set()
+    for path in files:
+        try:
+            servers = tomllib.loads(path.read_text(encoding="utf-8")).get("mcp_servers")
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(servers, dict):
+            names.update(str(name) for name in servers)
+    return names
+
+
+def parent_mcp(config: RuntimeConfig, spec: JobSpec, files: list[Path], env: dict[str, str]) -> mcp_translate.CodexServers | None:
+    """The Claude session's MCP servers as Codex overrides, or None when they aren't shared.
+
+    Only for jobs started from Claude Code; a Codex session's workers use their own config.
+    """
+
+    if not config.share_parent_mcp or not spec.parent or spec.parent.get("host") != "claude":
+        return None
+    try:
+        from cli_subagents.config import default_primary, load_config
+
+        try:
+            primary = load_config().runtime("claude").primary
+        except (OSError, ValueError):
+            primary = default_primary("claude")
+        collected = mcp_translate.collect_servers(primary, spec.cwd)
+    except Exception as exc:  # sharing is a convenience: never fail the job over it
+        result = mcp_translate.CodexServers()
+        result.warnings.append(f"could not read the Claude session's MCP servers: {type(exc).__name__}")
+        return result
+    result = mcp_translate.to_codex(collected.servers, configured_server_names(files), env)
+    result.warnings = [*collected.warnings, *result.warnings]
+    return result
 
 
 def _is_windows() -> bool:
@@ -281,7 +377,9 @@ def merge_config(primary: str, account: str) -> str:
 class CodexParser:
     """Turns `codex exec --json` events into progress and a result."""
 
-    def __init__(self) -> None:
+    def __init__(self, account: str | None = None, home: Path | None = None) -> None:
+        self.account = account  # with home: where to find the rollout file for the rate-limit snapshot
+        self.home = home
         self.session_id: str | None = None
         self.init: dict[str, Any] = {}
         self.last_text = ""
@@ -324,7 +422,32 @@ class CodexParser:
             progress["warnings"] = [item[:300] for item in warnings[-5:]]
         return progress
 
+    def _record_usage(self) -> float | None:
+        """Store the account's rate-limit windows from the rollout file; returns when a full window resets."""
+
+        if not (self.account and self.home and self.session_id):
+            return None
+        try:
+            rollout = find_rollout(self.home, self.session_id)
+            limits = last_rate_limits(rollout) if rollout else None
+            windows = usage_windows(limits) if limits else {}
+            if not windows:
+                return None
+            info = {"unifiedWindows": {name: {"utilization": w["utilization"], "resetsAt": w["resets_at"]} for name, w in windows.items()}}
+            pool.record_rate_limit_event("codex", self.account, info)
+        except Exception:
+            return None  # usage ranking is a convenience: never fail an attempt over it
+        full = [w["resets_at"] for w in windows.values() if w["utilization"] >= 1.0 and w["resets_at"]]
+        return max(full) if full else None
+
     def finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
+        resets_at = self._record_usage()
+        result = self._finish(exit_code, stderr_tail)
+        if result.outcome == USAGE_LIMIT and result.resets_at is None:
+            result.resets_at = resets_at
+        return result
+
+    def _finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
         common = {"session_id": self.session_id, "usage": self.usage}
         if self.completed and exit_code in (0, None):
             # A finished turn is a success; errors Codex recovered from stay warnings in progress.
@@ -348,6 +471,8 @@ class CodexParser:
 
 class CodexRuntime:
     name = "codex"
+    _attempt_account: str | None = None
+    _attempt_home: Path | None = None
 
     def find_binary(self, config: RuntimeConfig) -> list[str] | None:
         override = os.environ.get("CLI_SUBAGENTS_CODEX_COMMAND")
@@ -389,7 +514,7 @@ class CodexRuntime:
         try:
             completed = subprocess.run(
                 [*command, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=60, env=env, stdin=subprocess.DEVNULL,
+                timeout=60, env=env, stdin=subprocess.DEVNULL, **no_window_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return 1, f"{type(exc).__name__}: {exc}"
@@ -479,7 +604,9 @@ class CodexRuntime:
         command = self.find_binary(config)
         if not command:
             raise RuntimeError("codex binary not found; install Codex or set [codex] binary in config.toml")
-        no_nesting = self_server_overrides(config_files(account.home, spec.cwd))
+        files = config_files(account.home, spec.cwd)
+        no_nesting = self_server_overrides(files)
+        self._attempt_account, self._attempt_home = account.name, account.home
         resume = bool(spec.resume_session)
         argv = [*command, "exec"]
         if resume:
@@ -499,13 +626,19 @@ class CodexRuntime:
         argv += windows_sandbox_args(config, account.home, spec.access)
         argv += no_nesting
         argv += _parent_overrides(spec.job_id)
+        env = self.account_env(config, account)
+        warnings: list[str] = []
+        shared = parent_mcp(config, spec, files, env)
+        if shared:
+            argv += shared.overrides
+            env.update(shared.env)  # values reach the servers by variable name, never on the command line
+            warnings = shared.warnings
         argv.append("-")
 
-        env = self.account_env(config, account)
         env["CLI_SUBAGENTS_DEPTH"] = str(spec.depth)
         env["CLI_SUBAGENTS_JOB_ID"] = spec.job_id
         note = WORKER_NOTE.rstrip("]\n") + WORKER_TOOLS_NOTE + "]\n\n"
-        return Launch(argv=argv, env=env, stdin=note + ("" if spec.resume_session else parent_note(spec.parent, "codex")) + prompt, session_id=spec.resume_session)
+        return Launch(argv=argv, env=env, stdin=note + ("" if spec.resume_session else parent_note(spec.parent, "codex")) + prompt, session_id=spec.resume_session, warnings=warnings)
 
     def interactive(self, config: RuntimeConfig, account: Account, setup: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
         command = self.find_binary(config)
@@ -514,4 +647,5 @@ class CodexRuntime:
         return [*command, *self._auth_args(account)], self.account_env(config, account)
 
     def new_parser(self) -> CodexParser:
-        return CodexParser()
+        # The runner starts one job per process: launch() just recorded this attempt's account.
+        return CodexParser(self._attempt_account, self._attempt_home)

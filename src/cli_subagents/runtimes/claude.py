@@ -35,6 +35,7 @@ from cli_subagents.fsutil import (
     is_link,
     link_target,
     make_dir_link,
+    no_window_kwargs,
     read_json,
     replace_with_copy,
     same_path,
@@ -318,6 +319,7 @@ class ClaudeRuntime:
                 timeout=60,
                 env=env,
                 stdin=subprocess.DEVNULL,
+                **no_window_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return 1, f"{type(exc).__name__}: {exc}"

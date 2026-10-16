@@ -1,22 +1,29 @@
 """Antigravity adapter: `agy -p --output-format stream-json` workers (Gemini and other models).
 
-The primary account is the user's normal `agy` login (kept in the OS keyring)
-and runs exactly as `agy` does in a terminal.
+Every worker runs in a folder this adapter manages, used as its HOME
+(USERPROFILE on Windows, the XDG folders too on macOS and Linux for extra
+accounts). AGY has no setting to move its config folder, so this is the only way
+to give a worker its own hooks.json, settings.json and mcp_config.json without
+touching the user's ~/.gemini. The shared setup (rules, skills, plugins,
+instructions) is linked from the primary ~/.gemini.
 
-Extra accounts are opt-in and "use at your own risk": Google's FAQ says consumer
-plans don't support automating account rotation. AGY has no setting to move its
-config folder, so an extra account gets its own HOME (USERPROFILE on Windows,
-the XDG folders on macOS and Linux) plus SSH_CONNECTION, SSH_CLIENT and SSH_TTY.
-In an SSH-style session agy stores its login in a file under that HOME instead
-of the keyring (undocumented agy behaviour), so each account folder holds its
-own login, written by agy itself. The shared setup (rules, skills, plugins,
-instructions, hooks, settings) is linked from the primary `~/.gemini`, and the
-account's `config/mcp_config.json` is written by this adapter: the primary's
-MCP servers plus `csa-parent`, the worker's channel to the main session.
+* The primary account runs in `homes/antigravity/primary`. agy keeps its login in
+  the OS keyring, which it finds from any HOME (verified on Windows with agy 1.3.6).
+  Where the primary's login is a token file in the real home (agy does that when it
+  has no keyring, typical on Linux servers), the worker can't use another folder:
+  it then runs in the real home without the review gate and without the parent
+  channel, as before. `csa launch` always uses the real home.
+* Extra accounts are opt-in and "use at your own risk": Google's FAQ says consumer
+  plans don't support automating account rotation. Each gets its own folder plus
+  SSH_CONNECTION, SSH_CLIENT and SSH_TTY; in an SSH-style session agy stores its
+  login in a file under that HOME instead of the keyring (undocumented agy
+  behaviour), so each folder holds its own login, written by agy itself.
 
-AGY 1.3.5 streams JSON through a plain pipe on Windows, so no PTY is needed.
-The standalone adapter in `adapters/antigravity/` (ConPTY plus a command
-reviewer) remains for older AGY versions and for reviewed shell commands.
+Read and edit jobs run behind the review gate (`cli_subagents.agy_review`): a
+PreToolUse hook in the folder's config/hooks.json answers every tool call with
+auto_approve or deny, from fixed rules or a tool-less reviewer call. Edit jobs
+also run with `--sandbox`, so commands are confined to the workspace and temp
+folders without network unless the reviewer lets one out. Full jobs skip both.
 """
 
 from __future__ import annotations
@@ -29,9 +36,22 @@ import shutil
 import subprocess
 from typing import Any
 
-from cli_subagents import sync
-from cli_subagents.config import Account, RuntimeConfig, state_dir
-from cli_subagents.fsutil import copy_exclusive, file_lock, is_link, make_private_dir, read_json, same_path, write_text
+from cli_subagents import agy_review, mcp_translate, plans, sync
+from cli_subagents.agy_review import store as review_store
+from cli_subagents.config import Account, RuntimeConfig, home as csa_home, homes_dir, jobs_dir, state_dir
+from cli_subagents.fsutil import (
+    copy_exclusive,
+    file_lock,
+    is_link,
+    link_target,
+    make_private_dir,
+    no_window_kwargs,
+    python_executable,
+    read_json,
+    remove_link,
+    same_path,
+    write_text,
+)
 from cli_subagents.hosts import parent_note
 from cli_subagents.runtimes.base import (
     AUTH,
@@ -50,11 +70,26 @@ from cli_subagents.runtimes.base import (
 MAX_PROMPT_CHARS = 24_000  # the prompt travels as one command-line argument
 MODES = {"read": "plan", "full": "accept-edits"}
 VALID_MODES = ("plan", "accept-edits", "auto")
+GATED_ACCESS = ("read", "edit")
+PRIMARY_FOLDER = "primary"  # homes/antigravity/primary; "primary" can't be an account name
+REVIEWER_FOLDER = ".reviewer"  # homes/antigravity/.reviewer/<account>; account names can't start with a dot
+REVIEWER_MODEL = "gemini-3.8-flash-low"
+CLAUDE_REVIEWER_MODEL = "haiku"
+REVIEW_TIMEOUT = 75  # seconds for one reviewer call; the hook itself may take 90
 
 WORKER_NOTE = (
     "[You are running as a delegated subagent for another agent session, which will read your "
     "final message. Work only on this task, stay inside its scope, and end with a short summary "
     "of what you did, the result, and anything left open.]\n\n"
+)
+GATE_NOTE = (
+    " An automatic reviewer approves or denies each of your tool calls. If one is denied, the reason "
+    "comes back to you: don't repeat it, find another way or say in your final message what you couldn't do."
+)
+SANDBOX_NOTE = (
+    " Shell commands run in a sandbox: no network, and writes only to the workspace and temp folders. "
+    "If a command really needs the network or other folders, run it with BypassSandbox set to true; "
+    "the reviewer then decides."
 )
 
 LIMIT_RE = re.compile(r"quota|resource exhausted|rate limit|usage limit|\b429\b", re.IGNORECASE)
@@ -117,17 +152,25 @@ LOGIN_FILES = (
 TOKEN_MARK = "oauth-token"
 
 # The shared setup, relative to the primary ~/.gemini, synced as three folders so each
-# gets its own manifest. Settings files that can carry an identity are shared only when
-# they don't (see IDENTITY_KEYS).
+# gets its own manifest. hooks.json and settings.json are written per folder instead
+# (the user's content plus the review gate), and config.json is shared with an extra
+# account only when it doesn't select a login of its own (see IDENTITY_KEYS).
 ROOT_PLAN = sync.SyncPlan(files=("GEMINI.md", "AGENTS.md"))
-CONFIG_FILES = ("GEMINI.md", "AGENTS.md", "hooks.json")
+CONFIG_FILES = ("GEMINI.md", "AGENTS.md")
 CLI_FILES: tuple[str, ...] = ()
-IDENTITY_KEYS = {("config", "config.json"): "enableAdc", ("antigravity-cli", "settings.json"): "modelProvider"}
+IDENTITY_KEYS = {("config", "config.json"): "enableAdc"}
+SETTINGS_IDENTITY_KEY = "modelProvider"
 SYNCED_FOLDERS = ("", "config", "antigravity-cli")
 SELF_COMMANDS = {"csa", "csa.exe", "cli-subagents-mcp", "cli-subagents-mcp.exe"}
 SELF_NAMES = {"cli-subagents", "cli_subagents"}
 PROBE_JOB = "probe"  # job id used by csa accounts add/sync and csa launch: no worker, no channel
 MCP_MARKER = ".cli-subagents-mcp-config"
+# Read paths in a worker folder (and their sources in ~/.gemini) that hold the shared setup.
+SETUP_READ_PATHS = (
+    "GEMINI.md", "AGENTS.md", "config/GEMINI.md", "config/AGENTS.md", "config/rules", "config/skills",
+    "config/workflows", "antigravity-cli/rules", "antigravity-cli/skills", "antigravity-cli/plugins",
+    "antigravity-cli/mcp", "antigravity-cli/builtin",
+)
 
 
 def gemini_root(config: RuntimeConfig) -> Path:
@@ -162,14 +205,71 @@ def _identity_reason(path: Path, key: str) -> str | None:
     return None
 
 
+def _same_settings(text: str, wanted: dict[str, Any]) -> bool:
+    """True when settings.json text means the same as `wanted`: agy drops keys that hold their default."""
+
+    try:
+        current = json.loads(text)
+    except ValueError:
+        return False
+    if not isinstance(current, dict):
+        return False
+
+    def strip(data: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in data.items() if (key, value) != ("toolPermission", agy_review.install.TOOL_PERMISSION)}
+
+    return strip(current) == strip(wanted)
+
+
+def _link_folder(target: Path, link: Path) -> bool:
+    """A junction (Windows) or symlink to a folder; never a copy, since the folder holds a login file."""
+
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        try:
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+            return True
+        except (ImportError, OSError):
+            pass
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def has_file_login(home: Path) -> bool:
+    """True when agy's login file exists under `home` (checked by name only, never read)."""
+
+    if any((home / name).is_file() for name in LOGIN_FILES):
+        return True
+    cli = home / ".gemini" / "antigravity-cli"
+    try:
+        folders = []
+        for entry in cli.iterdir():
+            if TOKEN_MARK in entry.name.lower() and entry.is_file():
+                return True
+            if entry.is_dir() and not is_link(entry):
+                folders.append(entry)
+        for folder in folders:
+            if any(TOKEN_MARK in entry.name.lower() and entry.is_file() for entry in folder.iterdir()):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 class AntigravityParser:
-    def __init__(self) -> None:
+    def __init__(self, review_log: Path | None = None) -> None:
         self.session_id: str | None = None
         self.init: dict[str, Any] = {}
         self.last_text = ""
         self.tool_uses = 0
         self.last_tool: str | None = None
         self.result: dict[str, Any] | None = None
+        self.review_log = review_log  # set when the job ran behind the review gate
         self._texts: dict[int, str] = {}
         self._steps_seen: set[int] = set()
 
@@ -195,7 +295,7 @@ class AntigravityParser:
             elif step_type not in (None, "user_input") and index not in self._steps_seen:
                 self._steps_seen.add(index)
                 self.tool_uses += 1
-                self.last_tool = str(step_type)
+                self.last_tool = str(step.get("tool_name") or step_type)
         elif kind == "result":
             self.result = event.get("result") or {}
             self.session_id = self.result.get("conversation_id") or self.session_id
@@ -207,8 +307,13 @@ class AntigravityParser:
     def finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
         result = self.result or {}
         common = {"session_id": self.session_id, "usage": result.get("usage"), "num_turns": result.get("num_turns")}
+        response = (str(result.get("response") or "") or self.last_text).strip()
         if result.get("status") == "SUCCESS":
-            return AttemptResult(SUCCESS, text=(str(result.get("response") or "") or self.last_text).strip(), **common)
+            denied = [item for item in result.get("denied_actions") or [] if isinstance(item, dict)]
+            if not response and denied:
+                # Headless agy refused a tool it couldn't ask about and stopped without an answer.
+                return AttemptResult(ERROR, message=self._denied_message(denied, stderr_tail), **common)
+            return AttemptResult(SUCCESS, text=response, **common)
         text = self.last_text  # the worker's last real message, not an error text
         error = result.get("error")
         error_text = error if isinstance(error, str) else str((error or {}).get("message") or "")
@@ -223,12 +328,27 @@ class AntigravityParser:
         status = result.get("status") or f"exit {exit_code}"
         return AttemptResult(ERROR, message=message or f"agy finished with {status}", text=text, **common)
 
-
+    def _denied_message(self, denied: list[dict[str, Any]], stderr_tail: str) -> str:
+        names = sorted({str(item.get("display_name") or item.get("action") or "?") for item in denied})
+        actions = sorted({str(item.get("action") or "?") for item in denied})
+        message = (
+            f"agy stopped without an answer: it refused {', '.join(names)} (permission {', '.join(actions)}) "
+            "because a headless run can't ask for approval."
+        )
+        if self.review_log is not None and not review_store.read_log(self.review_log):
+            message += " The review gate never answered, so its hook did not load; check config/hooks.json in the worker's folder."
+        elif self.review_log is None:
+            message += " This job ran without the review gate (access full skips it; see docs/gemini.md)."
+        detail = next((line.strip() for line in stderr_tail.splitlines() if "permission" in line.lower()), "")
+        return (message + (f" agy said: {detail[:300]}" if detail else ""))[:900]
 
 
 class AntigravityRuntime:
     name = "antigravity"
     add_note = ADD_NOTE
+
+    def __init__(self) -> None:
+        self._review_log: Path | None = None
 
     def find_binary(self, config: RuntimeConfig) -> list[str] | None:
         override = os.environ.get("CLI_SUBAGENTS_AGY_COMMAND")
@@ -265,26 +385,28 @@ class AntigravityRuntime:
                 env[key] = str(home / relative)
         return env
 
+    def worker_home(self, config: RuntimeConfig, account: Account) -> Path | None:
+        """The folder a job runs in, or None when the primary must use the real home (file login)."""
+
+        if not account.is_primary:
+            return Path(account.home).expanduser()
+        if has_file_login(gemini_root(config).parent):
+            return None
+        return homes_dir() / "antigravity" / PRIMARY_FOLDER
+
+    def worker_env(self, config: RuntimeConfig, account: Account, home: Path | None) -> dict[str, str]:
+        if not account.is_primary:
+            return self.account_env(config, account)
+        env = clean_environment()
+        if home is not None:
+            env["HOME"] = str(home)
+            env["USERPROFILE"] = str(home)
+        return env
+
     def logged_in(self, account: Account) -> bool:
         """An extra account counts as logged in when agy's login file exists (checked by name only)."""
 
-        home = Path(account.home).expanduser()
-        if any((home / name).is_file() for name in LOGIN_FILES):
-            return True
-        cli = home / ".gemini" / "antigravity-cli"
-        try:
-            folders = []
-            for entry in cli.iterdir():
-                if TOKEN_MARK in entry.name.lower() and entry.is_file():
-                    return True
-                if entry.is_dir() and not is_link(entry):
-                    folders.append(entry)
-            for folder in folders:
-                if any(TOKEN_MARK in entry.name.lower() and entry.is_file() for entry in folder.iterdir()):
-                    return True
-        except OSError:
-            return False
-        return False
+        return has_file_login(Path(account.home).expanduser())
 
     def login_hint(self, account: Account) -> str:
         if account.is_primary:
@@ -316,7 +438,7 @@ class AntigravityRuntime:
         try:
             completed = subprocess.run(
                 [*command, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=timeout, env=clean_environment(), stdin=subprocess.DEVNULL,
+                timeout=timeout, env=clean_environment(), stdin=subprocess.DEVNULL, **no_window_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return 1, f"{type(exc).__name__}: {exc}"
@@ -364,13 +486,13 @@ class AntigravityRuntime:
 
     # Shared setup ---------------------------------------------------------
 
-    def _plans(self, root: Path, report: dict[str, Any]) -> list[tuple[str, sync.SyncPlan]]:
+    def _plans(self, root: Path, report: dict[str, Any], primary: bool = False) -> list[tuple[str, sync.SyncPlan]]:
         files = {"config": list(CONFIG_FILES), "antigravity-cli": list(CLI_FILES)}
         for (folder, name), key in IDENTITY_KEYS.items():
             source = root / folder / name
             if not source.is_file():
                 continue
-            reason = _identity_reason(source, key)
+            reason = None if primary else _identity_reason(source, key)
             if reason:
                 report["warnings"].append(f"{folder}/{name} {reason}; not shared with extra Antigravity accounts")
             else:
@@ -397,28 +519,154 @@ class AntigravityRuntime:
 
     def prepare(self, config: RuntimeConfig, account: Account, spec: JobSpec) -> dict[str, Any]:
         report = sync.new_report()
-        if account.is_primary:
-            return report  # the user's own setup, used as is; no channel to the main session
+        home = self.worker_home(config, account)
+        if home is None:
+            report["warnings"].append(
+                "your primary Antigravity login is a token file in your home folder, so its jobs run there "
+                "without the review gate and without the parent channel"
+            )
+            return report
         root = gemini_root(config)
-        home = Path(account.home).expanduser()
         if same_path(home, root.parent) or same_path(home, Path.home()):
             raise RuntimeError(f"{home} is your own home folder; an extra Antigravity account needs its own folder")
         with file_lock(state_dir() / "sync" / f"antigravity-{account.name}.lock", timeout=30):
-            make_private_dir(home)  # holds the account's login file
+            make_private_dir(home)  # holds the account's login file (extra accounts)
             gemini = home / ".gemini"
-            for folder, plan in self._plans(root, report):
+            for folder, plan in self._plans(root, report, primary=account.is_primary):
                 part = sync.new_report()
                 sync.sync(root / folder if folder else root, gemini / folder if folder else gemini, plan, part)
                 prefix = f"{folder}/" if folder else ""
                 for key, values in part.items():
                     report[key] += [value if key in ("conflicts", "warnings") else prefix + value for value in values]
-            report["parent_channel"] = self._write_mcp_config(config, root, gemini, spec, report)
+            report["review_gate"] = self._write_hooks(root, gemini, report)
+            self._write_settings(root, gemini, account, report)
+            report["parent_channel"] = self._write_mcp_config(config, root, gemini, spec, report, account)
+            report["worker_home"] = str(home)
+            if report["review_gate"] and config.reviewer == "agy" and spec.job_id != PROBE_JOB:
+                reviewer_home = self._prepare_reviewer_home(account, home, report)
+                if reviewer_home is not None:
+                    report["reviewer_home"] = str(reviewer_home)
         return report
 
+    def _write_generated(self, path: Path, content: str, report: dict[str, Any], same: Any = None) -> bool:
+        """Write a file this adapter owns in a worker folder; keep one copy of what was there first.
+
+        `same(current_text)` may say that a different text means the same (agy rewrites settings.json).
+        """
+
+        relative = "/".join(path.parts[-2:])
+        if is_link(path) or is_link(path.parent):
+            report["conflicts"].append(f"{relative}: is a link in the account folder, left in place")
+            return False
+        current = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
+        if current == content or (current is not None and same is not None and same(current)):
+            return True
+        if current is not None:
+            backup = path.with_name(path.name + ".before-cli-subagents")
+            if not os.path.lexists(backup):
+                copy_exclusive(path, backup)
+                report["warnings"].append(f"kept the folder's previous {relative} as {backup.name}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_text(path, content)
+        return True
+
+    def _write_hooks(self, root: Path, gemini: Path, report: dict[str, Any]) -> bool:
+        """config/hooks.json: the user's hooks plus the review gate. Returns True when the gate is in place."""
+
+        source = root / "config" / "hooks.json"
+        user: Any = read_json(source, None) if source.is_file() else {}
+        if not isinstance(user, dict):
+            report["warnings"].append("config/hooks.json in your setup is not a JSON object; workers don't get your hooks")
+            user = {}
+        try:
+            command = agy_review.hook_command(python_executable())
+        except ValueError as exc:
+            report["warnings"].append(f"the review gate is off for Antigravity workers: {exc}")
+            content, gate = user, False
+        else:
+            content, gate = agy_review.merged_hooks(user, command), True
+        written = self._write_generated(gemini / "config" / "hooks.json", json.dumps(content, indent=2) + "\n", report)
+        return gate and written
+
+    def _write_settings(self, root: Path, gemini: Path, account: Account, report: dict[str, Any]) -> None:
+        """antigravity-cli/settings.json: the user's settings with the permission mode the gate relies on."""
+
+        source = root / "antigravity-cli" / "settings.json"
+        user: Any = {}
+        if source.is_file():
+            data = read_json(source, None)
+            if not isinstance(data, dict):
+                report["warnings"].append("antigravity-cli/settings.json could not be read as JSON; workers don't get your settings")
+            elif not account.is_primary and SETTINGS_IDENTITY_KEY in data:
+                report["warnings"].append(
+                    f"antigravity-cli/settings.json sets {SETTINGS_IDENTITY_KEY}, which can select a login of its own; "
+                    "not shared with extra Antigravity accounts"
+                )
+            else:
+                user = data
+        wanted = agy_review.gated_settings(user)
+        content = json.dumps(wanted, indent=2) + "\n"
+        self._write_generated(
+            gemini / "antigravity-cli" / "settings.json", content, report, same=lambda text: _same_settings(text, wanted)
+        )
+
+    def _prepare_reviewer_home(self, account: Account, worker: Path, report: dict[str, Any]) -> Path | None:
+        """A bare folder the agy reviewer runs from: no MCP servers, no user hooks, only the gate (which
+        denies the reviewer every tool). The primary finds its keyring login from any folder; an extra
+        account's login file lives in .gemini/antigravity-cli, so that one folder is linked from the
+        account folder. Returns None (the reviewer then runs in the worker folder) when that link fails."""
+
+        folder = homes_dir() / "antigravity" / REVIEWER_FOLDER / account.name
+        gemini = folder / ".gemini"
+        make_private_dir(gemini / "config")
+        cli = gemini / "antigravity-cli"
+        if account.is_primary:
+            make_private_dir(cli)
+            self._write_generated(cli / "settings.json", "{}\n", report, same=lambda text: _same_settings(text, {}))
+        else:
+            target = worker / ".gemini" / "antigravity-cli"
+            make_private_dir(target)
+            if is_link(cli) and not same_path(link_target(cli) or "", target):
+                remove_link(cli)
+            if not is_link(cli):
+                if os.path.lexists(cli) or not _link_folder(target, cli):
+                    report["warnings"].append(
+                        f"could not prepare a separate reviewer folder for {account.name}; the reviewer runs in its folder"
+                    )
+                    return None
+        try:
+            command = agy_review.hook_command(python_executable())
+        except ValueError:
+            return None
+        self._write_generated(gemini / "config" / "hooks.json", json.dumps(agy_review.merged_hooks({}, command), indent=2) + "\n", report)
+        self._write_generated(gemini / "config" / "mcp_config.json", json.dumps({"mcpServers": {}}) + "\n", report)
+        return folder
+
+    def _parent_mcp_servers(self, config: RuntimeConfig, spec: JobSpec, report: dict[str, Any]) -> dict[str, Any]:
+        """The Claude session's MCP servers in agy's shape, for jobs started from Claude Code."""
+
+        if spec.job_id == PROBE_JOB or not config.share_parent_mcp or not spec.parent or spec.parent.get("host") != "claude":
+            return {}
+        try:
+            from cli_subagents.config import default_primary, load_config
+
+            try:
+                primary = load_config().runtime("claude").primary
+            except (OSError, ValueError):
+                primary = default_primary("claude")
+            collected = mcp_translate.collect_servers(primary, spec.cwd)
+            servers, warnings = mcp_translate.to_agy(collected.servers)
+        except Exception as exc:  # sharing is a convenience: never fail the job over it
+            report["warnings"].append(f"could not read the Claude session's MCP servers: {type(exc).__name__}")
+            return {}
+        report["warnings"] += [*collected.warnings, *warnings]
+        return servers
+
     def _write_mcp_config(
-        self, config: RuntimeConfig, root: Path, gemini: Path, spec: JobSpec, report: dict[str, Any]
+        self, config: RuntimeConfig, root: Path, gemini: Path, spec: JobSpec, report: dict[str, Any],
+        account: Account | None = None,
     ) -> bool:
-        """Write the account's config/mcp_config.json: the primary's servers plus csa-parent for this job.
+        """Write the folder's config/mcp_config.json: the user's servers, the parent session's, and csa-parent.
 
         agy has no flag for per-run MCP servers, and whether it passes its environment on to
         MCP servers is unverified, so the job id is written into the file. The file is
@@ -431,13 +679,17 @@ class AntigravityRuntime:
         data: Any = read_json(source, {}) if source.is_file() else {}
         if not isinstance(data, dict):
             report["warnings"].append(
-                "config/mcp_config.json in your setup is not a JSON object; extra accounts get no MCP servers from it"
+                "config/mcp_config.json in your setup is not a JSON object; workers get no MCP servers from it"
             )
             data = {}
         servers = data.get("mcpServers")
         servers = servers if isinstance(servers, dict) else {}
         shared = {name: server for name, server in servers.items() if not _is_self_server(name, server)}
-        channel = spec.job_id != PROBE_JOB and config.max_jobs_per_account == 1
+        for name, server in self._parent_mcp_servers(config, spec, report).items():
+            if name not in shared and not _is_self_server(name, server) and name != PARENT_SERVER:
+                shared[name] = server  # your own Gemini servers win on a name clash
+        slots = plans.account_cap(config, account) if account is not None else config.max_jobs_per_account
+        channel = spec.job_id != PROBE_JOB and slots == 1
         if channel:
             shared[PARENT_SERVER] = parent_server(spec.job_id)
         content = json.dumps({**data, "mcpServers": shared}, indent=2) + "\n"
@@ -456,6 +708,7 @@ class AntigravityRuntime:
             if not os.path.lexists(backup):
                 copy_exclusive(destination, backup)
                 report["warnings"].append(f"kept the account's previous config/mcp_config.json as {backup.name}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
         write_text(destination, content)
         write_text(marker, "config/mcp_config.json is generated from the primary setup for every job\n")
         return channel
@@ -472,6 +725,66 @@ class AntigravityRuntime:
             found += [prefix + item for item in sync.fallback_copies(gemini / folder if folder else gemini)]
         return found
 
+    # Review gate ----------------------------------------------------------
+
+    def _reviewer_config(
+        self, config: RuntimeConfig, job: Path, warnings: list[str], reviewer_home: str | None = None
+    ) -> dict[str, Any]:
+        kind = config.reviewer
+        work = job / "reviewer"
+        make_private_dir(work)
+        base = {"kind": kind, "timeout": REVIEW_TIMEOUT, "work_dir": str(work)}
+        if kind == "agy":
+            env = {"HOME": reviewer_home, "USERPROFILE": reviewer_home} if reviewer_home else {}
+            return {**base, "command": self.find_binary(config) or [], "model": config.reviewer_model or REVIEWER_MODEL, "env": env}
+        if kind == "claude":
+            from cli_subagents.config import load_config
+            from cli_subagents.runtimes.claude import ClaudeRuntime
+
+            claude_config = load_config().runtime("claude")
+            account = claude_config.find(config.reviewer_account or "primary")
+            if account is None:
+                warnings.append(f"reviewer_account '{config.reviewer_account}' is not a Claude account; reviewed actions are denied")
+                return {**base, "command": []}
+            runtime = ClaudeRuntime()
+            command = runtime.find_binary(claude_config) or []
+            if not command:
+                warnings.append("the Claude reviewer can't find the claude binary; reviewed actions are denied")
+            real_home = str(gemini_root(config).parent)
+            env = {key: value for key, value in runtime.account_env(claude_config, account).items() if key == "CLAUDE_CONFIG_DIR"}
+            env.update(HOME=real_home, USERPROFILE=real_home)
+            return {
+                **base, "command": command, "model": config.reviewer_model or CLAUDE_REVIEWER_MODEL, "env": env,
+                "unset_env": [*SSH_ENV, *XDG_ENV],
+            }
+        return {"kind": "off"}
+
+    def _review_context(
+        self, config: RuntimeConfig, spec: JobSpec, home: Path, sandbox: bool, warnings: list[str], setup: dict[str, Any]
+    ) -> Path:
+        job = jobs_dir() / spec.job_id
+        root = gemini_root(config)
+        parent = spec.parent or {}
+        read_paths = [str(item) for item in [*(parent.get("instructions") or []), *(parent.get("skills") or [])]]
+        for base in (home / ".gemini", root):
+            read_paths += [str(base / relative) for relative in SETUP_READ_PATHS]
+        data = {
+            "version": 1,
+            "job": spec.job_id,
+            "access": spec.access,
+            "sandbox": sandbox,
+            "workspaces": [spec.cwd, *spec.add_dirs],
+            "read_paths": read_paths,
+            "protected_paths": [str(csa_home())],
+            "agent_home": str(home),
+            "user_home": str(root.parent),
+            "trusted_mcp_servers": [PARENT_SERVER],
+            "reviewer": self._reviewer_config(config, job, warnings, setup.get("reviewer_home")),
+            "log": str(job / "review.jsonl"),
+            "cache": str(job / "review-cache.json"),
+        }
+        return agy_review.write_context(job / "review-context.json", data)
+
     # Launch ---------------------------------------------------------------
 
     def launch(
@@ -480,9 +793,21 @@ class AntigravityRuntime:
         command = self.find_binary(config)
         if not command:
             raise RuntimeError("agy binary not found; install Antigravity CLI or set [antigravity] binary")
-        note = WORKER_NOTE
+        home = self.worker_home(config, account)
+        warnings: list[str] = []
+        gate = spec.access in GATED_ACCESS and home is not None and bool(setup.get("review_gate"))
+        sandbox = gate and config.sandbox and spec.access == "edit"
+        if spec.access in GATED_ACCESS and not gate:
+            warnings.append(
+                "this job runs without the review gate, so agy refuses commands, MCP calls and reads outside the "
+                "workspace (headless mode can't ask)"
+            )
+        extra = ""
         if setup.get("parent_channel"):
-            note = WORKER_NOTE.rstrip("]\n") + WORKER_TOOLS_NOTE + "]\n\n"
+            extra += WORKER_TOOLS_NOTE
+        if gate:
+            extra += GATE_NOTE + (SANDBOX_NOTE if sandbox else "")
+        note = WORKER_NOTE.rstrip("]\n") + extra + "]\n\n" if extra else WORKER_NOTE
         text = note + ("" if spec.resume_session else parent_note(spec.parent, "antigravity")) + prompt
         if len(text) > MAX_PROMPT_CHARS:
             raise RuntimeError(
@@ -493,6 +818,8 @@ class AntigravityRuntime:
         argv = [*command, "--mode", mode, "--output-format", "stream-json"]
         if spec.access == "full":
             argv.append("--dangerously-skip-permissions")
+        if sandbox:
+            argv.append("--sandbox")
         model = spec.model or config.default_model
         if model:
             argv += ["--model", model]
@@ -504,13 +831,18 @@ class AntigravityRuntime:
             argv += ["--conversation", str(spec.resume_session)]
         argv.append(f"--print-timeout={spec.timeout_seconds}s")
         argv.append(f"--print={text}")
-        env = self.account_env(config, account)
+        env = self.worker_env(config, account, home)
         env["CLI_SUBAGENTS_DEPTH"] = str(spec.depth)
         env["CLI_SUBAGENTS_JOB_ID"] = spec.job_id
-        return Launch(argv=argv, env=env, stdin="", session_id=spec.resume_session)
+        self._review_log = None
+        if gate and home is not None:
+            context = self._review_context(config, spec, home, sandbox, warnings, setup)
+            env[agy_review.CONTEXT_ENV] = str(context)
+            self._review_log = jobs_dir() / spec.job_id / "review.jsonl"
+        return Launch(argv=argv, env=env, stdin="", session_id=spec.resume_session, warnings=warnings)
 
     def interactive(self, config: RuntimeConfig, account: Account, setup: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
         return self.login_command(config, account)
 
     def new_parser(self) -> AntigravityParser:
-        return AntigravityParser()
+        return AntigravityParser(self._review_log)

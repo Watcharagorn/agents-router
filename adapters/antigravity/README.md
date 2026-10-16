@@ -1,17 +1,22 @@
-# Antigravity adapter
+# Antigravity adapter (superseded)
 
-The original, standalone MCP server for [Antigravity CLI](https://www.antigravity.google/docs/cli/) (`agy`). The core of CLI Subagents now runs AGY directly as `runtime: "antigravity"` ([guide](../../docs/gemini.md)); this adapter remains for Windows setups that want shell commands approved by its own reviewer, and for AGY versions that print nothing to a pipe.
+The original, standalone MCP server for [Antigravity CLI](https://www.antigravity.google/docs/cli/) (`agy`). The core of CLI Subagents now runs AGY directly as `runtime: "antigravity"` ([guide](../../docs/gemini.md)), and its review gate ([Safety](../../docs/gemini.md#safety), code in [`src/cli_subagents/agy_review/`](../../src/cli_subagents/agy_review/)) replaces this adapter's reviewer.
 
-It runs AGY as a subagent. The host sends a task; AGY works on it in its own harness with its own login; the host gets back a summary and the path to the full answer.
+What the core took over, and how it changed:
 
-Status: works on Windows; last checked against AGY 1.2.5. Python 3.11+, FastMCP, ConPTY via `pywinpty`.
+| Here | In the core |
+|---|---|
+| `review_gate.py`: rules plus a reviewer call, run as a PreToolUse hook | `agy_review/rules.py`, `hook.py`: answers every tool call with `auto_approve` or `deny`, so headless runs don't stop on a refusal |
+| Direct shell commands denied; commands go through `reviewed_exec.cmd` and signed one-use approvals | Commands are judged where they are: read-only ones by rule, edit-job commands run in `agy --sandbox`, and the reviewer judges what wants out of it. No broker, no approval files |
+| `reviewer_client.py`: Gemini in plan mode with the task as context | `agy_review/reviewer.py`: Gemini in plan mode (or Claude Haiku) from a bare folder, seeing the action and the policy but not the task |
+| `review_policy.md` | `agy_review/policy.md`, rewritten for a reviewer without the task |
+| `settings_guard.py`: edits your `~/.gemini` settings (trust, write rule, credit overages) | Your `~/.gemini` is never edited; each worker folder gets its own settings |
+| `executor_workspace.py`: a temporary workspace with a hook inside the project | The hook lives in the worker's own folder (`config/hooks.json`) |
+| ConPTY capture (`agy_pty.py`) | Not needed: AGY 1.3.5 and later stream JSON through a pipe |
 
-- Synchronous and background delegation with any model AGY offers (Gemini, Claude, GPT-OSS)
-- Command review: AGY's terminal commands go through a separate tool-less reviewer and signed one-use approvals
-- Project scoping: work stays inside a trusted project root; credential stores and agent config are blocked
-- Live model and flag discovery from the installed `agy`
+Keep this folder only for AGY versions that print nothing to a pipe. It was last checked against AGY 1.2.5; Python 3.11+, FastMCP, ConPTY via `pywinpty`.
 
-Read Google's terms before using it: the [Antigravity FAQ](https://antigravity.google/docs/faq) says consumer plans don't support wrapping `agy` inside third-party coding agents. Details in [provider terms](../../docs/research/provider-terms.md).
+Read Google's terms before using either: the [Antigravity FAQ](https://antigravity.google/docs/faq) says consumer plans don't support wrapping `agy` inside third-party coding agents. Details in [provider terms](../../docs/research/provider-terms.md).
 
 | Doc | Contents |
 |---|---|

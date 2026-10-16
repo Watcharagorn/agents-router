@@ -11,10 +11,12 @@ import time
 from typing import Any, BinaryIO
 
 from cli_subagents.config import Account, RuntimeConfig, state_dir
+from cli_subagents.plans import account_cap, account_limits, model_allowed
 from cli_subagents.fsutil import file_lock, read_json, same_process, try_lock, unlock, write_json
 
-# Above this utilization (0..1) an account is only used when nothing else is free.
-NEARLY_FULL = 0.97
+# Default for `usage_ceiling`: above this utilization (0..1) an account gets no new jobs
+# (admission) and sorts after every other account (ranking).
+NEARLY_FULL = 0.95
 MAX_COOLDOWN_SECONDS = 7 * 86400
 RETRY_AFTER_RE = re.compile(
     r"retry[- ]after\b[\s:=]*(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?)?\b", re.IGNORECASE
@@ -214,7 +216,7 @@ def _take_slot(lock_path: Path) -> BinaryIO | None:
 def try_lease(runtime: RuntimeConfig, account: Account) -> Lease | None:
     """Take one of the account's job slots, or None if all are busy."""
 
-    for slot in range(runtime.max_jobs_per_account):
+    for slot in range(account_cap(runtime, account)):
         path = _slot_path(runtime, account, slot)
         handle = _take_slot(path)
         if handle is not None:
@@ -224,7 +226,7 @@ def try_lease(runtime: RuntimeConfig, account: Account) -> Lease | None:
 
 def busy_slots(runtime: RuntimeConfig, account: Account) -> int:
     busy = 0
-    for slot in range(runtime.max_jobs_per_account):
+    for slot in range(account_cap(runtime, account)):
         path = _slot_path(runtime, account, slot)
         handle = try_lock(path)
         if handle is None:
@@ -242,6 +244,7 @@ def ranked_accounts(
     pinned: str | None = None,
     exclude: set[str] | None = None,
     prefer: str | None = None,
+    model: str | None = None,
     now: float | None = None,
 ) -> tuple[list[Account], float | None]:
     """Usable accounts best-first, plus the earliest cooldown end if none are usable."""
@@ -260,17 +263,20 @@ def ranked_accounts(
     for account in candidates:
         if account.name in exclude:
             continue
+        if model and not model_allowed(runtime, account_limits(runtime, account), model):
+            continue  # the account's model list does not include it
         until = cooldown_until(usage.get(account.name), now)
         if until is not None:
             earliest = until if earliest is None else min(earliest, until)
             continue
         usable.append(account)
 
-    def key(account: Account) -> tuple[bool, bool, float, float]:
+    def key(account: Account) -> tuple[bool, bool, bool, float, float]:
         record = usage.get(account.name) or {}
         utilization = max_utilization(record)
-        nearly_full = utilization is not None and utilization >= NEARLY_FULL
+        nearly_full = utilization is not None and utilization >= runtime.usage_ceiling
         return (
+            account.fallback,  # fallback accounts only after every regular one
             nearly_full,
             account.name != prefer,
             utilization if utilization is not None else 0.0,
@@ -287,6 +293,7 @@ def acquire(
     pinned: str | None = None,
     exclude: set[str] | None = None,
     prefer: str | None = None,
+    model: str | None = None,
 ) -> tuple[Lease | None, float | None, bool]:
     """Lease the best free account.
 
@@ -294,7 +301,9 @@ def acquire(
     all_busy=True means accounts exist but every slot is taken right now.
     """
 
-    accounts, earliest = ranked_accounts(runtime, pinned=pinned, exclude=exclude, prefer=prefer)
+    accounts, earliest = ranked_accounts(
+        runtime, pinned=pinned, exclude=exclude, prefer=prefer, model=model
+    )
     for account in accounts:
         lease = try_lease(runtime, account)
         if lease is not None:

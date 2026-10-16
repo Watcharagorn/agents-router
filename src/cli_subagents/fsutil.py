@@ -347,6 +347,7 @@ def kill_tree(pid: int) -> None:
             capture_output=True,
             check=False,
             timeout=30,
+            **no_window_kwargs(),
         )
         return
     try:  # pragma: no cover
@@ -355,6 +356,16 @@ def kill_tree(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
     except OSError:
         pass
+
+
+def no_window_kwargs() -> dict[str, Any]:
+    """Popen/run arguments that keep a console program from opening a window on Windows.
+
+    The background runner has no console of its own, so without this every console
+    program it starts (version and login checks, taskkill) flashes a window.
+    """
+
+    return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 def new_group_kwargs() -> dict[str, Any]:

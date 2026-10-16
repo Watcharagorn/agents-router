@@ -27,6 +27,7 @@ from typing import Any, Callable, TextIO
 
 from cli_subagents import jobs, messages
 from cli_subagents.config import load_config
+from cli_subagents.fsutil import read_json, write_json
 from cli_subagents.runtimes.base import SUCCESS
 
 POLL_SECONDS = 0.5
@@ -282,6 +283,8 @@ class CodexDescriber(Describer):
 # Antigravity: `agy --output-format stream-json`
 
 _AGY_FIELDS = ("command", "command_line", "tool_name", "name", "path", "file_path", "uri", "url", "query", "title", "description", "summary")
+_AGY_PARAMS = ("CommandLine", "AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath", "SearchDirectory", "Query",
+               "Url", "URL", "Pattern")
 
 
 class AntigravityDescriber(Describer):
@@ -341,6 +344,16 @@ class AntigravityDescriber(Describer):
             return lines
         self._seen.add(index)
         self.tool_calls += 1
+        tool = step.get("tool_name")
+        if isinstance(tool, str) and tool:
+            # agy 1.3.6: step_type "tool", the name and some parameters under tool_info
+            params = (step.get("tool_info") or {}).get("parameters") if isinstance(step.get("tool_info"), dict) else None
+            params = params if isinstance(params, dict) else {}
+            if params.get("ServerName") and params.get("ToolName"):
+                detail = f"{params['ServerName']}/{params['ToolName']}"
+            else:
+                detail = next((params[key] for key in _AGY_PARAMS if isinstance(params.get(key), str) and params[key].strip()), "")
+            return lines + [f"tool: {tool}" + (f" · {short(detail)}" if detail else "")]
         detail = next((step[key] for key in _AGY_FIELDS if isinstance(step.get(key), str) and step[key].strip()), "")
         return lines + [f"step: {step_type}" + (f" · {short(detail)}" if detail else "")]
 
@@ -354,6 +367,46 @@ DESCRIBERS: dict[str, Callable[[], Describer]] = {
 
 def describer_for(runtime: str) -> Describer:
     return DESCRIBERS.get(runtime, Describer)()
+
+
+# The review gate's log (Antigravity) ------------------------------------------------
+
+REVIEW_LOG = "review.jsonl"
+REVIEW_FOLLOWED = "review-followed.json"
+
+
+def _review_records(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    records = []
+    for line in lines:
+        record = decode(line.encode("utf-8"))
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def review_line(record: dict[str, Any]) -> str:
+    verb = "approved" if record.get("decision") == "approve" else "denied"
+    what = str(record.get("tool") or "tool")
+    if record.get("summary"):
+        what += f" · {short(record['summary'], 120)}"
+    source = record.get("source")
+    if source == "reviewer":
+        how = f"reviewer, {record.get('risk') or '?'} risk"
+        if record.get("seconds") is not None:
+            how += f", {record['seconds']}s"
+        if verb == "denied" and record.get("reason"):
+            how += f": {short(record['reason'], 160)}"
+    elif source == "cache":
+        how = "same as before"
+    elif source == "error":
+        how = "gate error: " + short(record.get("reason") or "", 160)
+    else:
+        how = short(record.get("reason") or "rule", 160)
+    return f"review: {verb} {what} ({how})"
 
 
 # Reading events.jsonl -------------------------------------------------------------
@@ -409,6 +462,7 @@ class Follower:
         self.reported = 0  # attempts whose account line was printed (or needs none)
         self.announced: str | None = None  # account named in the header
         self.queued_shown = False
+        self.review_replay = start is None
         self.status: dict[str, Any] = {}
 
     # Output
@@ -543,6 +597,29 @@ class Follower:
         self.replay = False  # history is printed once; later polls show only new entries
         return stop
 
+    def review_lines(self) -> None:
+        """Print the review gate's decisions (Antigravity jobs), each once. Routine approvals stay quiet."""
+
+        path = self.folder / REVIEW_LOG
+        if not path.exists():
+            return
+        seen_path = self.folder / REVIEW_FOLLOWED
+        already = set(read_json(seen_path, []) or [])
+        fresh: list[str] = []
+        for record in _review_records(path):
+            record_id = str(record.get("id") or "")
+            if not record_id or (record_id in already and not self.review_replay) or record_id in fresh:
+                continue
+            fresh.append(record_id)
+            if not record.get("quiet"):
+                self.emit(review_line(record))
+        self.review_replay = False
+        if set(fresh) - already:
+            try:
+                write_json(seen_path, sorted(already | set(fresh)))
+            except OSError:
+                pass
+
     # End markers
 
     def elapsed(self) -> float:
@@ -559,6 +636,7 @@ class Follower:
         lines = self.describer.flush() + self.attempt_lines()
         if lines:
             self.emit(*lines)
+        self.review_lines()
         self.worker_messages(done=True)
         status = self.status
         result = jobs.read_result(self.job_id, 10_000_000)
@@ -616,6 +694,7 @@ class Follower:
                 self.queued_shown = True
                 self.emit(f"[csa] queued: {self.status['message']}")
             self.read_events(final=False)
+            self.review_lines()
             question = self.worker_messages(done=False)
             if question is not None:
                 return self.question(question)

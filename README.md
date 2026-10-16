@@ -32,6 +32,7 @@ flowchart LR
 - Two-way messages. A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works, and each message is delivered once.
 - One setup for every account. Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder through links and launch flags, not copied. Only the login differs per account.
 - Automatic account switching. Claude Code reports each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude or Codex account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off.
+- Limits handled for you. Set your plan once and csa refuses a start that would go over it, with one line that says what to do instead. Nothing is capped until you set it.
 - Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity), and the subagent is told where your instructions and skills live.
 - The vendors' own safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Skipping permissions is an explicit choice per job.
 - No tokens touched. Every model call comes from the vendor's own CLI with your own login. Nothing reads, copies or forwards credentials.
@@ -157,13 +158,14 @@ All of this runs through each vendor's official CLI with your own login: the sam
 ```text
 src/cli_subagents/      Core: jobs, account pool, shared setup, messages, MCP server, csa CLI
   runtimes/             Claude Code, Codex and Antigravity adapters
+  agy_review/           The review gate for Antigravity workers
 .claude-plugin/         Claude Code and Codex plugin manifest and marketplace
 agents/                 Relay agents that show jobs in Claude Code's agent list
 plugin.json, mcp_config.json   Antigravity plugin
 skills/cli-subagents/   The skill that teaches the host agent how to use subagents
 commands/               /cli-subagents:delegate
 tests/                  Unit and end-to-end tests with fake CLIs
-adapters/antigravity/   The original standalone AGY server with ConPTY and a command reviewer
+adapters/antigravity/   The original standalone AGY server (superseded)
 docs/                   Guides, design and research
 ```
 

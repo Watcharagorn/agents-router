@@ -20,7 +20,7 @@ import time
 from typing import Any
 
 from cli_subagents.config import NAME_RE, Account, Config, save_config
-from cli_subagents.fsutil import same_path, write_json
+from cli_subagents.fsutil import no_window_kwargs, same_path, write_json
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import JobSpec, clean_environment
 
@@ -69,7 +69,7 @@ def run_command(argv: list[str], env: dict[str, str] | None, timeout: int = 300)
     try:
         completed = subprocess.run(
             argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, env=env, stdin=subprocess.DEVNULL,
+            timeout=timeout, env=env, stdin=subprocess.DEVNULL, **no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", f"{type(exc).__name__}: {exc}"

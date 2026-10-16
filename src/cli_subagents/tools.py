@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from cli_subagents import accounts, jobs, messages
+from cli_subagents import accounts, jobs, limits, messages, plans, usage_view
 from cli_subagents.config import load_config
 from cli_subagents.hosts import detect_host
 from cli_subagents.runtimes import AVAILABLE as RUNTIMES, get_runtime
@@ -44,7 +44,8 @@ DEFINITIONS = [
             "Start a subagent: another installed agent CLI works on one task in the background, "
             "under one of your accounts, with your shared MCP servers, plugins, skills and settings. "
             "Returns a job_id at once (or the result, if it finishes within wait_seconds). "
-            "Give it a complete, self-contained task: goal, scope, files, and how to check the result."
+            "Give it a complete, self-contained task: goal, scope, files, and how to check the result. "
+            "csa enforces the account limits itself: if a start is refused, follow the suggestion in the message."
         ),
         "inputSchema": _schema(
             {
@@ -175,6 +176,9 @@ def summarize(status: dict[str, Any]) -> dict[str, Any]:
         "cwd", "progress", "cost_usd", "warnings",
     )
     summary = {key: status.get(key) for key in keys if status.get(key) not in (None, [], {})}
+    notes = [*(status.get("warnings") or []), *(status.get("limit_notes") or [])]
+    if notes:
+        summary["warnings"] = notes
     init = status.get("init") or {}
     if init:
         summary["worker"] = {
@@ -334,7 +338,10 @@ def _call(name: str, arguments: dict[str, Any], progress=None, client: str | Non
             status = jobs.wait_for(status["job_id"], wait)
             if status.get("state") == "done":
                 return _result(status["job_id"], 20000)
-        return summarize(jobs.read_status(status["job_id"]))
+        started = summarize(jobs.read_status(status["job_id"]))
+        if room := room_note():
+            started["room"] = room
+        return started
     if name == "subagent_status":
         return summarize(jobs.wait_for(_job_id(arguments), _wait(arguments, client)))
     if name == "subagent_result":
@@ -345,7 +352,10 @@ def _call(name: str, arguments: dict[str, Any], progress=None, client: str | Non
         return {"jobs": jobs.list_jobs(int(arguments.get("limit") or 20))}
     if name == "subagent_accounts":
         selected = arguments.get("runtime")
-        return {"runtimes": [account_report(runtime) for runtime in RUNTIMES if not selected or runtime == selected]}
+        reports = {"runtimes": [account_report(runtime) for runtime in RUNTIMES if not selected or runtime == selected]}
+        if room := room_note():
+            reports["room"] = room
+        return reports
     raise ToolError(f"unknown tool: {name}")
 
 
@@ -392,6 +402,29 @@ def _result(job_id: str, max_chars: int) -> dict[str, Any]:
     return summary
 
 
+def account_limit_report(config: Any, account: Any) -> dict[str, Any]:
+    """An account's effective caps and where each one comes from."""
+
+    data = plans.account_limits(config, account).describe()
+    plan, _auto = plans.effective_plan(config, account)
+    if account.plan:
+        data["plan"] = plan or account.plan
+        if not plans.preset_for(config.runtime, plan):
+            data["plan_note"] = "no preset for this plan name; only explicit keys apply"
+    elif config.runtime == "claude":
+        detected = plans.detect_claude_plan(account.home)
+        if detected:
+            data["suggested_plan"] = f'{detected} (not applied; set plan = "{detected}" or plan = "auto" to use its preset)'
+    return data
+
+
+def runtime_limits(config: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {"usage_ceiling": config.usage_ceiling, "when_full": config.when_full}
+    if config.max_jobs:
+        data["max_jobs"] = config.max_jobs
+    return data
+
+
 def account_report(runtime_name: str) -> dict[str, Any]:
     config = load_config().runtime(runtime_name)
     runtime = get_runtime(runtime_name)
@@ -402,8 +435,12 @@ def account_report(runtime_name: str) -> dict[str, Any]:
         "version": runtime.version(config) if binary else None,
         "primary_setup": str(config.primary),
         "failover": config.failover,
+        "limits": runtime_limits(config),
         "accounts": [],
     }
+    if runtime_name == "codex":
+        usage_view.refresh_codex(load_config())
+    counts = limits.count_active()
     usage = accounts.load_usage(runtime_name)
     now = time.time()
     for account in config.listed_accounts():
@@ -422,5 +459,18 @@ def account_report(runtime_name: str) -> dict[str, Any]:
                 if isinstance(window, dict) and isinstance(window.get("utilization"), (int, float))
             }
         entry["busy_slots"] = accounts.busy_slots(config, account)
+        entry["running_jobs"] = counts.on_account(runtime_name, account.name)
+        entry["limits"] = account_limit_report(config, account)
         report["accounts"].append(entry)
     return report
+
+
+def room_note(runtimes: list[str] | None = None) -> str:
+    """The one-line "Room: ..." summary, or "" (it never fails a call)."""
+
+    try:
+        config = load_config()
+        usage_view.refresh_codex(config)
+        return usage_view.room_line(config, runtimes)
+    except Exception:
+        return ""

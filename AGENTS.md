@@ -55,6 +55,7 @@ The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`,
 | `src/cli_subagents/sync.py`, `fsutil.py` | Linking the shared setup into account folders |
 | `src/cli_subagents/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
 | `src/cli_subagents/runtimes/` | Claude Code, Codex and Antigravity adapters |
+| `src/cli_subagents/agy_review/` | The review gate for Antigravity workers (PreToolUse hook, fixed rules, reviewer, policy). Self-contained: no imports from the rest of the package |
 | `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity |
 | `agents/` | Claude Code relay agents (`cli-subagents:cli-subagents-claude` and so on) that run `csa run --follow` |
 | `src/cli_subagents/follow.py` | `csa follow`: one readable line per worker event, with end markers for the relay agents |

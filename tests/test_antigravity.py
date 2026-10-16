@@ -161,13 +161,17 @@ class SharedSetupTests(AgyHome):
         report = self.prepare()
         account = self.homes / "a1" / ".gemini"
         self.assertTrue(os.path.samefile(account / "GEMINI.md", self.gemini / "GEMINI.md"))
-        self.assertTrue(os.path.samefile(account / "config" / "hooks.json", self.gemini / "config" / "hooks.json"))
+        # hooks.json and settings.json are written for the folder: the user's content plus the review gate.
+        hooks = json.loads((account / "config" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("cli-subagents-review", hooks)
+        self.assertTrue(report["review_gate"])
         self.assertTrue((account / "config" / "config.json").is_file())
         self.assertTrue((account / "config" / "rules" / "r.md").is_file())
         self.assertTrue((account / "config" / "skills" / "s1" / "SKILL.md").is_file())
         self.assertTrue((account / "antigravity-cli" / "plugins" / "p1").is_dir())
         self.assertFalse((account / "antigravity-cli" / "plugins" / "cli-subagents").exists())
-        self.assertFalse((account / "antigravity-cli" / "settings.json").exists())
+        settings = json.loads((account / "antigravity-cli" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(settings, {"toolPermission": "request-review"})  # modelProvider is not shared
         self.assertTrue(any("modelProvider" in item for item in report["warnings"]), report)
         self.assertIn("config/rules", report["linked"])
         # The primary setup itself is never changed.
@@ -214,9 +218,11 @@ class AntigravityJobTests(AgyHome):
         argv = record["argv"]
         self.assertEqual(argv[argv.index("--mode") + 1], "accept-edits")
         self.assertTrue(argv[-1].startswith("--print=") and argv[-1].endswith("task"))
-        # The primary account keeps no parent channel: its MCP config is the user's own.
-        self.assertNotIn(WORKER_TOOLS_NOTE.strip(), argv[-1])
+        # The primary runs in a folder CLI Subagents manages (keyring login), so it gets the parent channel.
+        self.assertIn(WORKER_TOOLS_NOTE.strip(), argv[-1])
+        self.assertEqual(Path(record["env"]["HOME"]), self.home / "homes" / "antigravity" / "primary")
         self.assertNotIn("SSH_CONNECTION", record["env"])
+        self.assertFalse((self.gemini / "config" / "hooks.json").exists())  # the user's own ~/.gemini is left alone
 
     def test_read_access_uses_plan_mode_and_resume(self):
         first = self.run_job(prompt="a", access="read")

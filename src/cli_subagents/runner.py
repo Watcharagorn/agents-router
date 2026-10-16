@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any
 
-from cli_subagents import accounts, messages
+from cli_subagents import accounts, messages, plans
 from cli_subagents.config import OPT_IN_FAILOVER, Account, RuntimeConfig, load_config
 from cli_subagents.fsutil import kill_tree, new_group_kwargs, open_private, process_start_time, write_text
 from cli_subagents.jobs import job_dir, mark_pending, read_spec, update_status
@@ -211,7 +211,7 @@ class Runner:
         while True:
             try:
                 lease, _earliest, all_busy = accounts.acquire(
-                    self.runtime_config, pinned=self.spec.account, exclude=excluded, prefer=prefer
+                    self.runtime_config, pinned=self.spec.account, exclude=excluded, prefer=prefer, model=self.spec.model
                 )
             except ValueError as exc:
                 self.warnings.append(str(exc))
@@ -249,6 +249,14 @@ class Runner:
                 self.warnings.append(f"could not move the session from {owner}; starting a new one with a summary")
                 session, prompt = None, fallback_prompt or prompt
         spec = dataclasses.replace(self.spec, resume_session=session)
+        limits = plans.account_limits(self.runtime_config, account)
+        capped = plans.cap_effort(spec.effort, limits)
+        if capped != spec.effort:
+            # The account's effort cap holds on failover too, not only at admission.
+            note = f"effort lowered from {spec.effort} to {capped} ({account.name}: {limits.max_effort_source})"
+            if note not in self.warnings:
+                self.warnings.append(note)
+            spec = dataclasses.replace(spec, effort=capped)
         preflight = getattr(self.runtime, "preflight", None)
         blocked = preflight(self.runtime_config, account) if preflight else None
         if blocked is not None:

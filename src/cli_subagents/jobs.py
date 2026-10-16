@@ -22,8 +22,10 @@ import subprocess
 import time
 from typing import Any
 
-from cli_subagents.config import jobs_dir, load_config
+from cli_subagents import limits
+from cli_subagents.config import jobs_dir, load_config, state_dir
 from cli_subagents.fsutil import (
+    file_lock,
     kill_tree,
     make_private_dir,
     pid_alive,
@@ -54,7 +56,20 @@ def new_job_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
 
 
-def create_job(
+def create_job(**kwargs: Any) -> dict[str, Any]:
+    """Validate a request, check the limits, write the job record and start its runner.
+
+    Raises limits.LimitError (a ValueError) when a limit says the job can't start now.
+    Counting and starting happen under one lock, so two callers can't both take the last slot.
+    """
+
+    if not kwargs.get("start", True):
+        return _create_job(**kwargs)
+    with file_lock(state_dir() / "admission.lock", timeout=30):
+        return _create_job(**kwargs)
+
+
+def _create_job(
     *,
     runtime: str,
     prompt: str,
@@ -70,8 +85,6 @@ def create_job(
     host: str | None = None,
     start: bool = True,
 ) -> dict[str, Any]:
-    """Validate a request, write the job record and start its runner."""
-
     config = load_config()
     config.runtime(runtime)
     depth = int(os.environ.get("CLI_SUBAGENTS_DEPTH", "0") or 0)
@@ -117,6 +130,10 @@ def create_job(
             # The session lives in one account's folder and can't be moved: stay there.
             account = resume_account or account
 
+    admission = limits.admit(config, runtime, account=account, model=model, effort=effort) if start else None
+    if admission is not None:
+        effort = admission.effort
+
     spec = JobSpec(
         job_id=new_job_id(),
         runtime=runtime,
@@ -150,6 +167,8 @@ def create_job(
         "updated_at": spec.created,
         "attempts": [],
         "warnings": [],
+        # The runner rewrites "warnings"; this key survives, and summarize() shows it with them.
+        "limit_notes": list(admission.warnings) if admission else [],
     }
     write_json(folder / "status.json", status)
     if start:

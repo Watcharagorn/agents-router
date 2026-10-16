@@ -194,6 +194,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if args.runtime == "codex" and os.name == "nt":
         from cli_subagents.runtimes.codex import windows_sandbox_summary
         print(windows_sandbox_summary(runtime_config))
+    print(f"\nEffective limits ({args.runtime}): when_full={runtime_config.when_full}, usage_ceiling={runtime_config.usage_ceiling}"
+          + (f", runtime max_jobs={runtime_config.max_jobs}" if runtime_config.max_jobs else "")
+          + (f", global max_jobs={config.max_jobs}" if config.max_jobs else ""))
+    for entry in report["accounts"]:
+        shown = entry.get("limits") or {}
+        text = f"  {entry['name']}: up to {shown.get('max_jobs')} jobs ({shown.get('max_jobs_from')})"
+        if shown.get("max_effort"):
+            text += f", effort up to {shown['max_effort']} ({shown.get('max_effort_from')})"
+        if shown.get("models"):
+            text += f", models {', '.join(shown['models'])} ({shown.get('models_from')})"
+        if shown.get("suggested_plan"):
+            text += f"; suggested plan {shown['suggested_plan']}"
+        print(text)
     if not report["binary"]:
         print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in the config.")
         return 1

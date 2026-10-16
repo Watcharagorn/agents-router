@@ -95,7 +95,7 @@ Each adapter implements: detect the binary and version, build the command and en
 |---|---|---|---|---|
 | Claude Code | `claude -p --output-format stream-json --verbose` | `system/init`, assistant, tool, `api_retry`, `rate_limit_event`, `result` | `dontAsk` with an allowlist of read-only tools and shell commands | auto mode (works in `-p`) |
 | Codex | `codex exec --json` (app-server later for quota and live control) | `thread.*`, `turn.*`, `item.*` | `--sandbox read-only` | `--approve-for-me` |
-| Antigravity | `agy --print --output-format stream-json --print-timeout` | JSON statuses, `denied_actions` | `--mode plan` | Auto mode where the account has it; the standalone adapter's reviewer on Windows |
+| Antigravity | `agy --print --output-format stream-json --print-timeout` | JSON statuses, `denied_actions` | `--mode plan` | CLI Subagents' review gate (`agy_review`): a PreToolUse hook with fixed rules and a tool-less reviewer; edit jobs add `--sandbox` |
 
 Permission levels are mapped per runtime instead of passing through raw flags: `read` maps to each CLI's real read-only mode (for Claude Code that is `dontAsk` plus an allowlist, because plan mode blocks every MCP call, including the channel to the main session); `edit` maps to accept-edits plus the native reviewer where one works headless (Claude auto mode, Codex `--approve-for-me`), or our reviewer where it doesn't. A bypass level exists only as an explicit per-call opt-in. The full table of CLIs and hooks is in [cli-permissions-and-headless.md](research/cli-permissions-and-headless.md).
 
@@ -218,7 +218,7 @@ Two findings from the live tests changed the design:
 | 2 | Claude Code plugin and marketplace, usage skill | Done; the plugin loads its MCP server, skill and command in a live session |
 | 3 | Failover (opt-in), cooldowns, `subagent_accounts` | Done; tested with a fake CLI, a real limit not yet observed |
 | 4 | Codex adapter and Codex account profiles | Done; live job on the primary Codex login, account sync and failover tested with a fake CLI |
-| 5 | Antigravity runtime in the core | Done; live job through a plain pipe. The standalone adapter stays for reviewed shell commands on Windows |
+| 5 | Antigravity runtime in the core | Done; live job through a plain pipe. Read and edit jobs run behind the review gate (2026-10-16) |
 | 6 | Two-way messages, wake-up hooks, `csa wait` and `csa message` | Done; verified with a real Claude worker |
 | 7 | Antigravity multi-account rotation | Implemented, opt-in only and marked "use at your own risk", because Google's FAQ says consumer plans don't support automated account rotation. Per-account HOME plus SSH-style variables give each folder its own file login. Not yet tested with a second real account |
 | 8 | Cursor and further runtimes, compatibility matrix, CI | Each runtime has a recorded live test |
@@ -234,7 +234,7 @@ plugin.json, mcp_config.json  Antigravity plugin
 skills/cli-subagents/         usage skill
 commands/                     /cli-subagents:delegate
 tests/                        unit and end-to-end tests with fake claude, codex and agy CLIs
-adapters/antigravity/         standalone AGY server for reviewed shell commands on Windows
+adapters/antigravity/         the original standalone AGY server (superseded by the review gate)
 ```
 
 ## Risks
