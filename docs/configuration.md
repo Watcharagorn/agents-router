@@ -47,7 +47,7 @@ sandbox = true              # run edit jobs with agy --sandbox
 
 With `reviewer = "off"` only the fixed rules decide, and everything they would hand to the reviewer is denied. See [Safety](gemini.md#safety) for what the gate does.
 
-Extra Antigravity accounts are opt-in and at your own risk (Google's FAQ says consumer plans don't support automated account switching; see [Gemini](gemini.md#more-than-one-google-account)). For `[antigravity]`, `failover` is `"off"` by default: jobs without `account` then run on the primary account only, and an extra account is used only when a job pins it. `"on-limit"` rotates through the primary and the enabled extra accounts (`include_primary` is `true` by default here). An Antigravity account folder stands in for a home folder: it gets its own `.gemini`.
+Extra Antigravity accounts are at your own risk (Google's FAQ says consumer plans don't support automated account switching; see [Gemini](gemini.md#more-than-one-google-account)). As for the other runtimes, `failover` is `"on-limit"` by default: jobs rotate through the primary and the enabled extra accounts (`include_primary` is `true` by default here). Set `failover = "off"` under `[antigravity]` to keep jobs without `account` on the primary account; an extra account is then used only when a job pins it. An Antigravity account folder stands in for a home folder: it gets its own `.gemini`.
 
 ```toml
 [antigravity]

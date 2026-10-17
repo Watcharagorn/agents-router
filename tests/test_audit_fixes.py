@@ -194,6 +194,8 @@ class AntigravityTests(TempHome):
         self.assertIn("--print-timeout=600s", self.records()[-1]["argv"])
 
     def test_quota_on_the_single_account_sets_no_cooldown(self):
+        # With failover turned off; it's on by default, like for the other runtimes.
+        (Path(os.environ["CLI_SUBAGENTS_HOME"]) / "config.toml").write_text('[antigravity]\nfailover = "off"\n', encoding="utf-8")
         os.environ["FAKE_AGY_SCENARIO"] = "quota"
         status = jobs.wait_for(jobs.create_job(runtime="antigravity", prompt="t", cwd=str(self.project))["job_id"], 60)
         self.assertEqual(status["outcome"], "usage_limit", status)

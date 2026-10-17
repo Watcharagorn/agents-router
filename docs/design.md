@@ -216,11 +216,11 @@ Two findings from the live tests changed the design:
 | 0 | Repository cleanup, research | Done |
 | 1 | Core job API and store, Claude adapter, Claude account profiles with the shared setup, `doctor` | Done; identical setup verified live on two account folders |
 | 2 | Claude Code plugin and marketplace, usage skill | Done; the plugin loads its MCP server, skill and command in a live session |
-| 3 | Failover (opt-in), cooldowns, `subagent_accounts` | Done; tested with a fake CLI, a real limit not yet observed |
+| 3 | Failover (on by default), cooldowns, `subagent_accounts` | Done; tested with a fake CLI, a real limit not yet observed |
 | 4 | Codex adapter and Codex account profiles | Done; live job on the primary Codex login, account sync and failover tested with a fake CLI |
 | 5 | Antigravity runtime in the core | Done; live job through a plain pipe. Read and edit jobs run behind the review gate (2026-10-16) |
 | 6 | Two-way messages, wake-up hooks, `csa wait` and `csa message` | Done; verified with a real Claude worker |
-| 7 | Antigravity multi-account rotation | Implemented, opt-in only and marked "use at your own risk", because Google's FAQ says consumer plans don't support automated account rotation. Per-account HOME plus SSH-style variables give each folder its own file login. Not yet tested with a second real account |
+| 7 | Antigravity multi-account rotation | Implemented, on by default like the other runtimes and marked "use at your own risk", because Google's FAQ says consumer plans don't support automated account rotation; `failover = "off"` turns it off. Per-account HOME plus SSH-style variables give each folder its own file login. Not yet tested with a second real account |
 | 8 | Cursor and further runtimes, compatibility matrix, CI | Each runtime has a recorded live test |
 
 ## Target layout
@@ -239,7 +239,7 @@ adapters/antigravity/         the original standalone AGY server (superseded by 
 
 ## Risks
 
-- Terms: the vendors' restrictions target third-party token handling, which this project avoids; their terms don't address switching between your own CLI logins explicitly. Antigravity consumer plans rule out rotation, so extra Antigravity accounts are opt-in and failover is off by default there. Failover is on by default for Claude Code and Codex and can be turned off per runtime.
+- Terms: the vendors' restrictions target third-party token handling, which this project avoids; their terms don't address switching between your own CLI logins explicitly. Antigravity consumer plans rule out rotation, so extra Antigravity accounts are marked use at your own risk. Failover is on by default for every runtime and can be turned off per runtime.
 - Vendor drift: flags, event formats and config layouts change often. Adapters check versions and `doctor` flags mismatches.
 - Concurrency bugs in vendor CLIs (`.claude.json`, credential refresh). Mitigated by one job per account folder.
 - Windows: symlinks need developer mode; junctions don't, but only work for folders. Folder links use junctions there, and files are hard-linked or, on another drive, copied.

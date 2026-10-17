@@ -13,8 +13,9 @@ instructions) is linked from the primary ~/.gemini.
   has no keyring, typical on Linux servers), the worker can't use another folder:
   it then runs in the real home without the review gate and without the parent
   channel, as before. `csa launch` always uses the real home.
-* Extra accounts are opt-in and "use at your own risk": Google's FAQ says consumer
-  plans don't support automating account rotation. Each gets its own folder plus
+* Extra accounts are "use at your own risk": Google's FAQ says consumer plans don't
+  support automating account rotation. Rotation is on by default, as for the other
+  runtimes; failover = "off" keeps unpinned jobs on the primary. Each gets its own folder plus
   SSH_CONNECTION, SSH_CLIENT and SSH_TTY; in an SSH-style session agy stores its
   login in a file under that HOME instead of the keyring (undocumented agy
   behaviour), so each folder holds its own login, written by agy itself.
@@ -126,8 +127,8 @@ FAQ_URL = (
 )
 ADD_NOTE = (
     "Use at your own risk: Google's Antigravity FAQ says consumer plans don't support automating "
-    f"account switching ({FAQ_URL}). This account is only used when a job pins it with account=NAME, "
-    "or in rotation after you set failover = \"on-limit\" under [antigravity]."
+    f"account switching ({FAQ_URL}). csa switches between your Google accounts when one runs out, "
+    "like for the other CLIs; set failover = \"off\" under [antigravity] to keep jobs on your main account."
 )
 
 # agy stores its login in a file instead of the OS keyring when it detects an SSH session.

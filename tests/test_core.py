@@ -308,7 +308,7 @@ class JobTests(TempHome):
     def test_failover_is_on_by_default(self):
         (self.home / "config.toml").write_text("", encoding="utf-8")
         self.assertEqual(load_config().runtime("claude").failover, "on-limit")
-        self.assertEqual(load_config().runtime("antigravity").failover, "off")
+        self.assertEqual(load_config().runtime("antigravity").failover, "on-limit")
 
     def test_resume_stays_on_the_same_account(self):
         self.write_config(failover="off")

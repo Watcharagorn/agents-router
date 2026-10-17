@@ -13,9 +13,9 @@ from typing import Any
 from cli_subagents.fsutil import write_text
 
 RUNTIMES = ("claude", "codex", "antigravity")
-# Runtimes whose extra accounts and failover are opt-in: failover is "off" by default,
-# and then unpinned jobs run on the primary account only (Antigravity: Google's FAQ
-# says consumer plans don't support automated account rotation).
+# Runtimes whose extra accounts are "use at your own risk" (Antigravity: Google's FAQ says
+# consumer plans don't support automated account rotation). Failover is on by default, as for
+# the others; with failover = "off", unpinned jobs run on the primary account only.
 OPT_IN_FAILOVER = ("antigravity",)
 FAILOVER_MODES = ("off", "on-limit")
 WHEN_FULL_MODES = ("refuse", "queue")
@@ -257,7 +257,8 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
             )
         )
     opt_in = name in OPT_IN_FAILOVER
-    failover = str(data.get("failover", "off" if opt_in else "on-limit"))
+    # On by default everywhere; for Antigravity, "off" keeps unpinned jobs on the primary account.
+    failover = str(data.get("failover", "on-limit"))
     if failover not in FAILOVER_MODES:
         raise ValueError(f"[{name}] failover must be one of {FAILOVER_MODES}")
     connectors = str(data.get("connectors", "account"))
@@ -282,7 +283,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         runtime=name,
         primary=_path(data.get("primary"), default_primary(name)),
         binary=data.get("binary") or None,
-        # Opt-in runtimes rotate through the primary account too, unless told otherwise.
+        # These runtimes rotate through the primary account too, unless told otherwise.
         include_primary=bool(data.get("include_primary", opt_in)),
         failover=failover,
         max_jobs_per_account=max(1, int(data.get("max_jobs_per_account", 1))),

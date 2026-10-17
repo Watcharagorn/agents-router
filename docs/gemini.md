@@ -10,7 +10,7 @@ Check Google's terms first. The [Antigravity FAQ](https://antigravity.google/doc
 2. Install `csa` (see the [Claude Code guide](claude-code.md#1-install)).
 3. Check: `csa accounts --runtime antigravity` lists the binary, its version and whether it can list models.
 
-There is nothing else to configure. Jobs run on the account you signed in with in `agy`. Extra Google accounts are optional and off by default; see [More than one Google account](#more-than-one-google-account).
+There is nothing else to configure. Jobs run on the account you signed in with in `agy`. Extra Google accounts are optional; see [More than one Google account](#more-than-one-google-account).
 
 ## Using it
 
@@ -42,7 +42,7 @@ Follow-ups still reach an Antigravity worker. A `subagent_message` sent while th
 
 ## More than one Google account
 
-This is opt-in and at your own risk. Google's [Antigravity FAQ](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching) says consumer plans don't support automating account switching. Nothing changes until you add an account, and jobs only move between accounts after you turn failover on.
+This is at your own risk. Google's [Antigravity FAQ](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching) says consumer plans don't support automating account switching. Nothing changes until you add an account. Once you do, jobs switch between your accounts automatically, as they do for Claude and Codex; set `failover = "off"` under `[antigravity]` to keep them on your main account.
 
 ### How it works
 
@@ -71,9 +71,9 @@ Each account keeps its own login, conversations, project settings (`config/proje
 1. Run `csa accounts add NAME --runtime antigravity`. It creates the folder, links your setup, prints the risk note and starts `agy` in that account's environment.
 2. `agy` prints a Google sign-in link. Open it, sign in with the other account, paste the code back into `agy`, then exit `agy`. Odd characters may show up in the prompt because `agy` queries the terminal when it thinks it runs over SSH; ignore them. To sign in later or again, run `csa accounts login NAME --runtime antigravity`.
 3. Run `csa doctor --runtime antigravity`. It lists each account with its folder, whether a login file exists, whether it's enabled, and any cooldown.
-4. Pin a job to the account with `account: "NAME"` (`--account NAME` on the command line). To rotate between accounts, set `failover = "on-limit"` under `[antigravity]` in the config.
+4. Pin a job to the account with `account: "NAME"` (`--account NAME` on the command line). Rotation between accounts is on by default; `failover = "off"` under `[antigravity]` turns it off.
 
-With `failover = "off"`, the default, jobs without `account` run on your primary account as before. With `"on-limit"`, a job goes to the least recently used account that isn't cooling down, the primary included (`include_primary = false` leaves it out). When an account runs out of quota, it cools down and the job starts again on the next account with the partial output attached. A conversation can't move between account folders, so the next account starts a new one. In rotation an account without a login file is skipped; a job pinned to it ends at once with `auth`.
+With `failover = "on-limit"`, the default, a job goes to the least recently used account that isn't cooling down, the primary included (`include_primary = false` leaves it out). When an account runs out of quota, it cools down and the job starts again on the next account with the partial output attached. A conversation can't move between account folders, so the next account starts a new one. In rotation an account without a login file is skipped; a job pinned to it ends at once with `auth`. With `failover = "off"`, jobs without `account` run on your primary account only.
 
 ### Limits
 

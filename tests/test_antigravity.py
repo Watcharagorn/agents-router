@@ -91,7 +91,16 @@ class AgyHome(TempHome):
 
 
 class ConfigAndEnvTests(AgyHome):
-    def test_extra_accounts_are_opt_in(self):
+    def test_rotation_is_on_by_default(self):
+        lines = ["[antigravity]", f"primary = {json.dumps(str(self.gemini / 'antigravity-cli'))}"]
+        for name in ("a1", "a2"):
+            lines += ["[[antigravity.accounts]]", f'name = "{name}"', f"home = {json.dumps(str(self.homes / name))}"]
+        (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        config = self.runtime_config()
+        self.assertEqual((config.failover, config.include_primary), ("on-limit", True))
+        self.assertEqual([account.name for account in config.worker_accounts()], ["primary", "a1", "a2"])
+
+    def test_failover_off_keeps_unpinned_jobs_on_the_primary(self):
         self.write_agy_config(accounts=("a1", "a2"))
         config = self.runtime_config()
         self.assertEqual((config.failover, config.include_primary), ("off", True))
@@ -298,6 +307,7 @@ class AntigravityJobTests(AgyHome):
         self.assertTrue(any("a1" in warning for warning in status["warnings"]), status)
 
     def test_quota_on_primary_without_failover_sets_no_cooldown(self):
+        self.write_agy_config(accounts=(), failover="off")
         os.environ["FAKE_AGY_SCENARIO"] = "quota"
         self.assertEqual(self.run_job()["outcome"], "usage_limit")
         self.assertNotIn("cooldown_until", accounts.load_usage("antigravity").get("primary", {}))
