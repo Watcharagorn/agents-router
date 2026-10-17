@@ -44,6 +44,8 @@ export PYTHONPATH=src:tests
 python -m unittest discover -s tests -t tests
 ```
 
+When you change anything the plugin ships (agents, skills, commands, hooks, the MCP server or the `csa` code it calls), raise `version` in `.claude-plugin/plugin.json`, `pyproject.toml` and `src/cli_subagents/__init__.py` together. Claude Code only updates an installed plugin when that version changes.
+
 The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`, `fake_host.py`) and temporary folders. Keep it that way: tests must never call the real `claude`, `codex` or `agy`, or touch the real `~/.claude`, `~/.codex` or `~/.gemini`. Set `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `CLI_SUBAGENTS_HOME` to temporary folders when a test needs them.
 
 ## Layout
