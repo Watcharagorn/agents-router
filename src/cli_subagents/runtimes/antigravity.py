@@ -69,6 +69,18 @@ from cli_subagents.runtimes.base import (
 )
 
 MAX_PROMPT_CHARS = 24_000  # the prompt travels as one command-line argument
+
+# agy rejects --effort for third-party models ("--effort is not supported for model ...", checked with
+# claude-sonnet-4-6 in agy 1.4.0), and ids like gemini-3.8-flash-high or gpt-oss-120b-medium carry their level.
+EFFORT_SUFFIX_RE = re.compile(r"-(minimal|low|medium|high|xhigh|max)$")
+
+
+def takes_effort(model: str | None) -> bool:
+    """Whether agy accepts --effort next to this model id (unset = agy's default model, which does)."""
+
+    if not model:
+        return True
+    return not (model.startswith(("claude-", "gpt-")) or EFFORT_SUFFIX_RE.search(model))
 MODES = {"read": "plan", "full": "accept-edits"}
 VALID_MODES = ("plan", "accept-edits", "auto")
 GATED_ACCESS = ("read", "edit")
@@ -843,8 +855,10 @@ class AntigravityRuntime:
         model = spec.model or config.default_model
         if model:
             argv += ["--model", model]
-        if spec.effort:
+        if spec.effort and takes_effort(model):
             argv += ["--effort", spec.effort]
+        elif spec.effort:
+            warnings.append(f"effort '{spec.effort}' left out: agy takes no --effort for model '{model}'")
         for directory in spec.add_dirs:
             argv.append(f"--add-dir={directory}")
         if spec.resume_session:
