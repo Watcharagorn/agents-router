@@ -274,7 +274,7 @@ def wait_any(job_ids: list[str], timeout: float, progress=None) -> dict[str, Any
         jobs.read_status(job_id)  # fail fast on unknown ids
     deadline = time.monotonic() + max(1.0, float(timeout))
     pings = 0
-    last_ping = time.monotonic()
+    last_ping = float("-inf")  # the first ping goes out right away
     while True:
         done = [job_id for job_id in ids if jobs.read_status(job_id).get("state") == "done"]
         talking = [job_id for job_id in ids if messages.has_new_for_host(job_id)]
