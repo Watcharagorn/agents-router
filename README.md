@@ -31,11 +31,11 @@ flowchart LR
 - Subagents that feel built in. Start one, keep working, and get the result back when it's done. In Claude Code they appear in the agent list like native subagents, colored by CLI and labeled with the model and task, and you can open one to watch each step and its reasoning as the worker goes. The plugin also wakes an idle session when a subagent finishes or asks a question, and lists any uncollected results after you resume.
 - Two-way messages. A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works, and each message is delivered once.
 - One setup for every account. Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder through links and launch flags, not copied. Only the login differs per account.
-- Automatic account switching. Claude Code reports each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude or Codex account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off.
+- Automatic account switching. Claude Code and Codex report each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude, Codex or Gemini account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off per CLI.
 - Limits handled for you. Set your plan once and csa refuses a start that would go over it, with one line that says what to do instead. Nothing is capped until you set it.
 - Optional delegation rules. Preview a template with model tiers with `csa rules`, then choose whether to install it. See [Delegation rules](docs/delegation.md).
-- Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity), and the subagent is told where your instructions and skills live.
-- The vendors' own safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Skipping permissions is an explicit choice per job.
+- Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity). The subagent gets your Claude MCP servers and is told where your instructions and skills live.
+- Safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Gemini workers, which have none on Windows, run behind a review gate of fixed rules plus a separate reviewer model, and `edit` jobs inside Antigravity's sandbox. Skipping permissions is an explicit choice per job.
 - No tokens touched. Every model call comes from the vendor's own CLI with your own login. Nothing reads, copies or forwards credentials.
 - Nothing to install besides Python 3.11. Pure standard library, with its own small MCP server.
 
@@ -147,7 +147,7 @@ Never read or copy credential files, and never edit files inside `~/.cli-subagen
 | Antigravity (`agy`, Gemini) | Works; extra accounts at your own risk | [Gemini](docs/gemini.md) |
 | Cursor, Gemini CLI, Copilot, OpenCode, others | Researched | [CLI comparison](docs/research/cli-permissions-and-headless.md) |
 
-Tested live on Windows with Claude Code 2.1.295, Codex 0.162.1 and Antigravity 1.3.5; the test suite also runs on macOS and Linux in CI.
+Tested live on Windows with Claude Code 2.1.299, Codex 0.162.1 and Antigravity 1.4.0; the test suite also runs on macOS and Linux in CI.
 
 ## How the shared setup works
 
