@@ -19,7 +19,15 @@ from cli_subagents.follow import (
     read_lines,
 )
 
-FOLLOW_RE = re.compile(r"^csa follow (\S+) --from (\d+)$", re.MULTILINE)
+FOLLOW_RE = re.compile(r"^csa follow (\S+) --from (\d+) # csa-token ([0-9a-f]{32})$", re.MULTILINE)
+FRAME_RE = re.compile(r" · job ([a-z0-9-]+) · token ([0-9a-f]{32})$")
+
+
+def result_body(text):
+    lines = text.split("\n")
+    start, end = lines.index("===== RESULT ====="), lines.index("===== END RESULT =====")
+    assert all(line.startswith("| ") for line in lines[start + 1:end])
+    return "\n".join(line[2:] for line in lines[start + 1:end])
 
 
 def describe(describer, *events):
@@ -178,21 +186,23 @@ class FollowTests(TempHome):
 
         lines = text.splitlines()
         self.assertTrue(lines[0].startswith("[csa] CLI Subagents · Claude Code"), lines)
-        end = next(index for index, line in enumerate(lines) if re.match(r"\[csa\] (DONE|FAILED|STILL|QUESTION)", line))
-        return lines[1:end]
+        end = next((index for index, line in enumerate(lines) if line in
+                    ("===== RESULT =====", "===== QUESTION =====")), len(lines) - 1)
+        return [line[2:] for line in lines[1:end] if line.startswith("| ")]
 
     def test_run_follow_ends_with_done_and_the_result(self):
         self.write_config(accounts=("a1",))
         code, text = self.csa("run", "--follow", "--cwd", str(self.project), "--model", "haiku", "do the task")
         self.assertEqual(code, 0, text)
         lines = text.splitlines()
-        self.assertRegex(lines[0], r"^\[csa\] CLI Subagents · Claude Code · model haiku · access edit · (account a1 · )?job \S+$")
-        self.assertIn("tool: Read", lines)
-        self.assertIn("says: done on a1", lines)
-        self.assertTrue(any(line.startswith("started: Claude Code 9.9.9 · claude-haiku-5-5 · 1 MCP server") for line in lines))
-        self.assertRegex(lines[-3], r"^\[csa\] DONE · success · \d+s · 1 tool call · account a1$")
-        self.assertEqual(lines[-2:], ["===== RESULT =====", "done on a1"])
-        job_id = lines[0].rsplit(" ", 1)[1]
+        self.assertRegex(lines[0], r"^\[csa\] CLI Subagents · Claude Code · model haiku · access edit · (account a1 · )?job \S+ · token [0-9a-f]{32}$")
+        self.assertIn("| tool: Read", lines)
+        self.assertIn("| says: done on a1", lines)
+        self.assertTrue(any(line.startswith("| started: Claude Code 9.9.9 · claude-haiku-5-5 · 1 MCP server") for line in lines))
+        self.assertRegex(lines[-1], r"^\[csa\] DONE · success · \d+s · 1 tool call · account a1 · job \S+ · token [0-9a-f]{32}$")
+        self.assertEqual(lines[-4:-1], ["===== RESULT =====", "| done on a1", "===== END RESULT ====="])
+        job_id, token = FRAME_RE.search(lines[0]).groups()
+        self.assertEqual(FRAME_RE.search(lines[-1]).groups(), (job_id, token))
         # The follower delivered the result: nothing is left for the wake-up or SessionStart hooks.
         self.assertFalse(jobs.is_pending(job_id))
         self.assertFalse(jobs.claim_delivery(job_id))
@@ -201,16 +211,16 @@ class FollowTests(TempHome):
         code, again = self.csa("follow", job_id)
         # The replay names the account in its header instead of in a line of its own.
         self.assertIn(" · account a1 · ", again.splitlines()[0])
-        live = [line for line in self.body(text) if line != "[csa] running on account a1"]
+        live = [line for line in self.body(text) if line != "running on account a1"]
         self.assertEqual((code, self.body(again)), (0, live))
-        self.assertEqual(again.splitlines()[-2:], ["===== RESULT =====", "done on a1"])
+        self.assertEqual(result_body(again), "done on a1")
 
     def test_failed_job(self):
         self.write_config(accounts=("a1",))
         os.environ["FAKE_CLAUDE_SCENARIO"] = "auth"
         code, text = self.csa("run", "--follow", "--cwd", str(self.project), "x")
         self.assertEqual(code, 1, text)
-        self.assertEqual(text.splitlines()[-1], "[csa] FAILED · auth · Invalid API key · Please run /login")
+        self.assertTrue(text.splitlines()[-1].startswith("[csa] FAILED · auth · Invalid API key · Please run /login · job "))
 
     def test_failover_prints_the_account_switch(self):
         self.write_config(accounts=("a1", "a2"))
@@ -219,11 +229,11 @@ class FollowTests(TempHome):
         self.assertEqual(code, 0, text)
         body = self.body(text)
         limit = body.index("usage limit reached on this account")
-        switch = body.index("[csa] switched to account a2 after usage_limit on a1")
+        switch = body.index("switched to account a2 after usage_limit on a1")
         self.assertLess(limit, switch)
         self.assertLess(switch, body.index("says: done on a2"))
         self.assertEqual(sum(line.startswith("started: Claude Code") for line in body), 2)
-        self.assertIn("· account a2", text.splitlines()[-3])
+        self.assertIn("· account a2", text.splitlines()[-1])
 
     def test_still_running_then_continue_without_repeats(self):
         self.write_config(accounts=("a1",))
@@ -241,12 +251,14 @@ class FollowTests(TempHome):
             self.assertIn("[csa] STILL RUNNING after", text)
             match = FOLLOW_RE.search(text)
             self.assertEqual(match.group(1), job_id)
-            self.assertEqual(text.splitlines()[-1], match.group(0))
+            self.assertEqual(text.splitlines()[-2], match.group(0))
+            self.assertEqual(FRAME_RE.search(text.splitlines()[-1]).groups(), (job_id, match.group(3)))
             offset = int(match.group(2))
             self.assertLess(calls, 100)
         self.assertGreater(calls, 1)
         _, full = self.csa("follow", job_id)
-        self.assertEqual(seen, self.body(full))
+        # A live follow may announce the first account before a replay's header does.
+        self.assertEqual([line for line in seen if line != "running on account a1"], self.body(full))
         self.assertEqual(sum(line.startswith("started:") for line in seen), 1)
 
     def test_question_stops_the_follow_and_message_answers_from_stdin(self):
@@ -258,13 +270,15 @@ class FollowTests(TempHome):
         code, text = self.csa("follow", job_id)
         self.assertEqual(code, 0, text)
         lines = text.splitlines()
-        marker = lines.index(f"[csa] QUESTION from the worker (id {question['id']}):")
-        self.assertEqual(lines[marker + 1 : marker + 3], ["Tabs or spaces?", "Answer with:"])
-        self.assertIn(f"csa message {job_id} --reply-to {question['id']} -", lines)
-        self.assertEqual(lines[-2], "Then keep watching with:")
+        marker = lines.index("===== QUESTION =====")
+        self.assertEqual(lines[marker + 1 : marker + 4], ["| Tabs or spaces?", "===== END QUESTION =====", "Answer with:"])
+        token = FRAME_RE.search(lines[0]).group(2)
+        self.assertIn(f"csa message {job_id} --reply-to {question['id']} - # csa-token {token}", lines)
+        self.assertTrue(lines[-1].startswith(f"[csa] QUESTION from the worker (id {question['id']}) · job {job_id}"))
+        self.assertEqual(lines[-3], "Then keep watching with:")
         offset = int(FOLLOW_RE.search(text).group(2))
         # The note after the question waits for the next follow.
-        self.assertNotIn("note for the main session: halfway there", lines)
+        self.assertNotIn("| note for the main session: halfway there", lines)
 
         code, reply = self.csa("message", job_id, "--reply-to", question["id"], "-", stdin="Spaces, four of them.\n")
         self.assertEqual(code, 0, reply)
@@ -274,7 +288,7 @@ class FollowTests(TempHome):
         code, text = self.csa("follow", job_id, "--from", str(offset))
         self.assertEqual(code, 0, text)
         self.assertNotIn("QUESTION", text)
-        self.assertIn("note for the main session: halfway there", text.splitlines())
+        self.assertIn("| note for the main session: halfway there", text.splitlines())
         self.assertIn("[csa] DONE · success", text)
         # Both worker messages reached the main session through the follower.
         self.assertFalse(messages.has_new_for_host(job_id))
@@ -294,7 +308,7 @@ class FollowTests(TempHome):
         self.assertIn("[csa] DONE · success", text)
         # The full history shows the question as a plain line.
         _, full = self.csa("follow", job_id)
-        self.assertIn("asked the main session: Which branch?", full.splitlines())
+        self.assertIn("| asked the main session: Which branch?", full.splitlines())
 
     def test_partial_lines_wait_and_offsets_resume(self):
         self.write_config(accounts=("a1",))
@@ -306,18 +320,19 @@ class FollowTests(TempHome):
         out = io.StringIO()
         self.assertEqual(follow(job_id, None, 0, out), 0)
         lines = out.getvalue().splitlines()
-        self.assertIn("started: Claude Code · m", lines)
-        self.assertNotIn("says: hello", lines)
+        self.assertIn("| started: Claude Code · m", lines)
+        self.assertNotIn("| says: hello", lines)
         offset = len((init + "not json\n").encode())
-        self.assertEqual(lines[-1], f"csa follow {job_id} --from {offset}")
+        self.assertEqual(FOLLOW_RE.search(out.getvalue()).groups()[:2], (job_id, str(offset)))
+        self.assertTrue(lines[-1].startswith("[csa] STILL RUNNING"))
 
         with open(events, "ab") as handle:
             handle.write(said[10:].encode())
         out = io.StringIO()
         follow(job_id, offset, 0, out)
         lines = out.getvalue().splitlines()
-        self.assertNotIn("started: Claude Code · m", lines)
-        self.assertIn("says: hello", lines)
+        self.assertNotIn("| started: Claude Code · m", lines)
+        self.assertIn("| says: hello", lines)
         offset = int(FOLLOW_RE.search(out.getvalue()).group(2))
         self.assertEqual(offset, events.stat().st_size)
 
@@ -328,8 +343,8 @@ class FollowTests(TempHome):
         out = io.StringIO()
         self.assertEqual(follow(job_id, offset, 0, out), 0)
         lines = out.getvalue().splitlines()
-        self.assertNotIn("says: hello", lines)
-        self.assertEqual(lines[-3], "[csa] DONE · success · 1m 15s · 0 tool calls · account a1")
+        self.assertNotIn("| says: hello", lines)
+        self.assertTrue(lines[-1].startswith("[csa] DONE · success · 1m 15s · 0 tool calls · account a1 · job "))
         self.assertFalse(jobs.is_pending(job_id))
 
     def test_antigravity_run(self):
@@ -340,11 +355,11 @@ class FollowTests(TempHome):
         lines = text.splitlines()
         self.assertTrue(lines[0].startswith("[csa] CLI Subagents · Antigravity · model gemini-test · access edit"), lines)
         self.assertEqual(
-            [line for line in lines[1:-3] if not line.startswith("[csa] running")],
-            ["started: Antigravity · gemini-test", "step: tool_call", "says: gemini done"],
+            [line for line in lines[1:lines.index("===== RESULT =====")] if not line.startswith("| running")],
+            ["| started: Antigravity · gemini-test", "| step: tool_call", "| says: gemini done"],
         )
-        self.assertRegex(lines[-3], r"^\[csa\] DONE · success · \d+s · 1 tool call · account primary$")
-        self.assertEqual(lines[-1], "gemini done")
+        self.assertRegex(lines[-1], r"^\[csa\] DONE · success · \d+s · 1 tool call · account primary · job \S+ · token [0-9a-f]{32}$")
+        self.assertEqual(result_body(text), "gemini done")
 
     def test_explicit_offset_zero_does_not_replay_messages(self):
         self.write_config(accounts=("a1",))
@@ -352,7 +367,7 @@ class FollowTests(TempHome):
         job_id = self.start()
         messages.post_from_worker(job_id, "first note")
         _, text = self.csa("follow", job_id, "--max-wait", "0")
-        self.assertIn("note for the main session: first note", text.splitlines())
+        self.assertIn("| note for the main session: first note", text.splitlines())
         _, text = self.csa("follow", job_id, "--from", "0")
         self.assertNotIn("first note", text)
         self.assertIn("[csa] DONE", text)
@@ -382,9 +397,9 @@ class FollowTests(TempHome):
         out = io.StringIO()
         follow(job_id, offset, 0, out)
         lines = out.getvalue().splitlines()
-        self.assertIn("says: Hello", lines)
-        self.assertNotIn("step: tool_call", lines)
-        self.assertNotIn("started: Antigravity · g", lines)
+        self.assertIn("| says: Hello", lines)
+        self.assertNotIn("| step: tool_call", lines)
+        self.assertNotIn("| started: Antigravity · g", lines)
 
 
 if __name__ == "__main__":

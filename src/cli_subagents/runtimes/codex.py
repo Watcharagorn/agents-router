@@ -281,6 +281,13 @@ def _parent_overrides(job_id: str) -> list[str]:
     overrides = [f"{prefix}.command={_toml_literal(server['command'])}", f"{prefix}.args={args}"]
     for key, value in server["env"].items():
         overrides.append(f"{prefix}.env.{key}={_toml_literal(value)}")
+    # Codex 0.162: Auto still prompts for unannotated MCP tools; Approve bypasses
+    # that prompt. Scope this to the three parent tools, including inherited overrides.
+    # https://learn.chatgpt.com/docs/config-file/config-reference
+    # https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/core/src/mcp_tool_call.rs
+    overrides.append(f'{prefix}.default_tools_approval_mode="approve"')
+    for name in ("message_parent", "ask_parent", "check_parent_messages"):
+        overrides.append(f'{prefix}.tools.{name}.approval_mode="approve"')
     return [part for override in overrides for part in ("-c", override)]
 
 

@@ -97,7 +97,13 @@ class OrphanedWorkerTests(TempHome):
         os.kill(int(status["runner_pid"]), getattr(signal, "SIGKILL", signal.SIGTERM))  # the runner only
         self.assertTrue(wait_until(lambda: not pid_alive(int(status["runner_pid"])), 10))
         config, account = self.slot()
-        self.assertIsNone(accounts.try_lease(config, account), "the orphaned worker still runs on a1")
+        if os.name == "nt":
+            self.assertTrue(wait_until(lambda: not pid_alive(child), 10), "runner death must close its worker Job Object")
+            lease = accounts.try_lease(config, account)
+            self.assertIsNotNone(lease)
+            lease.release()
+        else:
+            self.assertIsNone(accounts.try_lease(config, account), "the orphaned worker still runs on a1")
 
         # Once the status is stale, reading it marks the job lost and stops the worker.
         raw = json.loads((jobs.job_dir(job_id) / "status.json").read_text(encoding="utf-8"))

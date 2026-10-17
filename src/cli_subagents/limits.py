@@ -14,8 +14,8 @@ import time
 from typing import Any
 
 from cli_subagents import accounts, quota
-from cli_subagents.config import Config, RUNTIMES, jobs_dir
-from cli_subagents.fsutil import pid_alive, read_json
+from cli_subagents.config import Config, RUNTIMES, jobs_dir, state_dir
+from cli_subagents.fsutil import pid_alive, read_json, unlock
 from cli_subagents.plans import Limits, account_limits, cap_effort, model_allowed
 
 ACTIVE_STATES = ("queued", "starting", "running")
@@ -64,6 +64,8 @@ def count_active(now: float | None = None) -> Counts:
         status = read_json(path / "status.json") if path.is_dir() else None
         if not isinstance(status, dict) or status.get("state") not in ACTIVE_STATES:
             continue
+        if (path / "inbox-closed.json").exists():
+            continue  # execution ended; final status may still be retrying its write
         if now - float(status.get("created_at") or 0) > IGNORE_JOBS_OLDER_THAN:
             continue
         try:
@@ -249,6 +251,37 @@ class Admission:
     account: str | None = None  # best eligible account right now (the runner leases its own)
     effort: str | None = None
     warnings: list[str] = field(default_factory=list)
+
+
+def acquire_execution_slots(config: Config, runtime_name: str, model: str | None = None) -> list | None:
+    """Lease the global and runtime caps at execution, including jobs admitted to queue.
+
+    These slots join the account lease, so its owner tracking and cleanup cover
+    them too. Waiting jobs hold no slots and cannot keep each other queued forever.
+    """
+
+    runtime = config.runtime(runtime_name)
+    room_cap, _ = quota.room_cap(runtime, time.time(), model)
+    runtime_caps = [cap for cap in (runtime.max_jobs, room_cap) if cap is not None]
+    caps = [("global", config.max_jobs), (runtime_name, min(runtime_caps) if runtime_caps else None)]
+    slots = []
+    try:
+        for name, cap in caps:
+            if cap is None:
+                continue
+            for index in range(cap):
+                path = state_dir() / "leases" / "execution" / name / f"{index}.lock"
+                handle = accounts._take_slot(path)
+                if handle is not None:
+                    slots.append((handle, path))
+                    break
+            else:
+                return None
+        result, slots = slots, []
+        return result
+    finally:
+        for handle, _path in slots:
+            unlock(handle)
 
 
 def admit(

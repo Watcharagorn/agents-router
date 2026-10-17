@@ -15,9 +15,9 @@ import threading
 import time
 from typing import Any
 
-from cli_subagents import accounts, messages, plans, quota
+from cli_subagents import accounts, limits, messages, plans, quota
 from cli_subagents.config import OPT_IN_FAILOVER, Account, RuntimeConfig, load_config
-from cli_subagents.fsutil import kill_tree, new_group_kwargs, open_private, process_start_time, write_text
+from cli_subagents.fsutil import kill_tree, open_private, process_start_time, unlock, worker_process, write_text
 from cli_subagents.jobs import job_dir, mark_pending, read_spec, update_status
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import (
@@ -94,6 +94,10 @@ class Runner:
             return False
 
     def finish(self, outcome: str, message: str = "", result: AttemptResult | None = None) -> int:
+        messages.close_or_continue(
+            self.job_id, result.session_id if result else None,
+            self.attempts[-1]["account"] if self.attempts else self.spec.resume_account,
+        )
         text = result.text if result else ""
         if text:
             write_text(self.folder / "result.md", text)
@@ -140,7 +144,8 @@ class Runner:
         while True:
             if self.cancelled():
                 return self.finish(CANCELLED, "cancelled", last)
-            lease = self._wait_for_account(excluded, prefer=owner)
+            pinned = owner if session and not hasattr(self.runtime, "transfer_session") else self.spec.account
+            lease = self._wait_for_account(excluded, prefer=owner, pinned=pinned)
             if lease is None:
                 if self.cancelled():
                     return self.finish(CANCELLED, "cancelled", last)
@@ -153,8 +158,11 @@ class Runner:
             finally:
                 lease.release()
 
-            if last.outcome == SUCCESS and last.session_id and follow_ups < MAX_FOLLOW_UP_TURNS:
-                pending = messages.take_for_worker(self.job_id)
+            if last.outcome == SUCCESS:
+                pending = messages.close_or_continue(
+                    self.job_id, last.session_id, lease.account.name,
+                    can_continue=bool(last.session_id) and follow_ups < MAX_FOLLOW_UP_TURNS,
+                )
                 if pending:
                     # Follow-ups sent while the worker was busy: continue the same conversation.
                     follow_ups += 1
@@ -214,16 +222,28 @@ class Runner:
             return "the job ran out of time before an account was free"
         return f"no {self.spec.runtime} account was free within {QUEUE_TIMEOUT_SECONDS // 60} minutes"
 
-    def _wait_for_account(self, excluded: set[str], prefer: str | None = None) -> accounts.Lease | None:
+    def _wait_for_account(self, excluded: set[str], prefer: str | None = None,
+                          pinned: str | None = None) -> accounts.Lease | None:
         queued_since = time.time()
         while True:
+            slots = limits.acquire_execution_slots(self.config, self.spec.runtime, self.spec.model)
             try:
-                lease, _earliest, all_busy = accounts.acquire(
-                    self.runtime_config, pinned=self.spec.account, exclude=excluded, prefer=prefer, model=self.spec.model, job_id=self.job_id
-                )
+                if slots is None:
+                    lease, all_busy = None, True
+                else:
+                    lease, _earliest, all_busy = accounts.acquire(
+                        self.runtime_config, pinned=pinned or self.spec.account, exclude=excluded,
+                        prefer=prefer, model=self.spec.model, job_id=self.job_id,
+                    )
+                    if lease is not None:
+                        lease.pool_slots.extend(slots)
+                        slots = []
             except ValueError as exc:
                 self.warnings.append(str(exc))
                 return None
+            finally:
+                for handle, _path in slots or []:
+                    unlock(handle)
             if lease is not None:
                 if time.time() >= self.deadline:
                     lease.release()
@@ -246,7 +266,7 @@ class Runner:
         fallback_prompt: str | None = None,
     ) -> AttemptResult:
         account = lease.account
-        attempt: dict[str, Any] = {"account": account.name, "started_at": time.time()}
+        attempt: dict[str, Any] = {"account": account.name, "attempted_at": time.time(), "before_start": True}
         if self.pool:
             attempt["pool"] = self.pool.name
         self.attempts.append(attempt)
@@ -254,7 +274,8 @@ class Runner:
             self.status(account=account.name, assigned_account=account.name, pool=self.pool.name)
         if session and owner and owner != account.name:
             source = self.runtime_config.find(owner)
-            moved = bool(source) and self.runtime.transfer_session(source, account, session, self.spec.cwd)
+            transfer = getattr(self.runtime, "transfer_session", None)
+            moved = bool(source) and transfer is not None and transfer(source, account, session, self.spec.cwd)
             if moved:
                 attempt["continued_from"] = owner
             else:
@@ -288,7 +309,7 @@ class Runner:
         try:
             launch = self.runtime.launch(self.runtime_config, account, spec, prompt, setup)
         except Exception as exc:
-            result = AttemptResult(ERROR, message=f"could not start the worker: {exc}", session_id=session)
+            result = AttemptResult(ERROR, message=f"could not start the worker: {exc}", session_id=session, before_start=True)
             attempt.update(ended_at=time.time(), outcome=result.outcome, message=result.message)
             return result
         attempt["session_id"] = launch.session_id
@@ -303,41 +324,35 @@ class Runner:
         stop_reason: str | None = None
         exit_code: int | None = None
         with open_private(events_path) as events, open_private(stderr_path, append=False) as stderr:
-            process = subprocess.Popen(
-                launch.argv,
-                cwd=self.spec.cwd,
-                env=launch.env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=stderr,
-                **new_group_kwargs(),
-            )
             try:
-                started = process_start_time(process.pid)
-                try:
-                    lease.set_owner(process.pid, started, self.job_id)
-                except OSError as exc:
-                    self.warnings.append(f"could not record the worker in its account slot: {exc}")
-                self.status(
-                    state="running", account=account.name, child_pid=process.pid, child_started=started,
-                    session_id=launch.session_id, message=None,
-                )
-                stop_reason = self._pump(process, launch.stdin, parser, account, events, time_limit, stderr_path)
-                try:
-                    exit_code = process.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    kill_tree(process.pid)
-                    exit_code = None
-            finally:
-                # Whatever happened above, never leave the worker running without its slot.
-                if process.poll() is None:
-                    kill_tree(process.pid)
+                with worker_process(
+                    launch.argv, cwd=self.spec.cwd, env=launch.env, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=stderr,
+                ) as process:
+                    attempt.update(started_at=time.time(), before_start=False)
+                    started = process_start_time(process.pid)
                     try:
-                        process.wait(timeout=15)
+                        lease.set_owner(process.pid, started, self.job_id)
+                    except OSError as exc:
+                        self.warnings.append(f"could not record the worker in its account slot: {exc}")
+                    self.status(
+                        state="running", account=account.name, child_pid=process.pid, child_started=started,
+                        session_id=launch.session_id, message=None,
+                    )
+                    stop_reason = self._pump(process, launch.stdin, parser, account, events, time_limit, stderr_path)
+                    try:
+                        exit_code = process.wait(timeout=30)
                     except subprocess.TimeoutExpired:
-                        pass
-                if process.stdout:
-                    process.stdout.close()
+                        kill_tree(process.pid)
+                        exit_code = None
+            except OSError as exc:
+                if not attempt["before_start"]:
+                    raise
+                result = AttemptResult(ERROR, message=f"could not start the worker: {exc}", session_id=session,
+                                       before_start=True)
+                attempt.update(ended_at=time.time(), outcome=result.outcome, message=result.message)
+                return result
+            finally:
                 self.status(child_pid=None, child_started=None)
 
         stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:] if stderr_path.exists() else ""
@@ -436,7 +451,12 @@ class Runner:
                 return None
             if raw:
                 events.write(raw if raw.endswith(b"\n") else raw + b"\n")
+                events.flush()
                 self._handle_line(raw, parser, account)
+            elif process.poll() is not None:
+                # A descendant can inherit stdout after the CLI exits. Do not wait
+                # for it to close the pipe before the process-group cleanup runs.
+                return None
             if time.monotonic() - last_status > STATUS_INTERVAL:
                 last_status = time.monotonic()
                 self.status(state="running", account=account.name, progress=parser.progress(), init=getattr(parser, "init", None))

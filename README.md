@@ -32,7 +32,7 @@ flowchart LR
 - Two-way messages. A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works, and each message is delivered once.
 - One setup for every account. Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder through links and launch flags, not copied. Only the login differs per account.
 - Automatic account switching. Claude Code and Codex report each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude, Codex or Gemini account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off per CLI.
-- Limits handled for you. Set your plan once and csa refuses a start that would go over it, with one line that says what to do instead. Nothing is capped until you set it.
+- Limits handled for you. Plan presets and extra caps are opt-in. By default, `max_jobs_per_account = 1` runs one worker per account and queues extra jobs. `usage_ceiling = 0.95` blocks new starts on accounts with known usage at or above 95%. Set a plan or extra caps to refuse starts that would go over them, with one line that says what to do instead.
 - Optional delegation rules. Preview a template with model tiers with `csa rules`, then choose whether to install it. See [Delegation rules](docs/delegation.md).
 - Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity). The subagent gets your Claude MCP servers and is told where your instructions and skills live.
 - Safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Gemini workers, which have none on Windows, run behind a review gate of fixed rules plus a separate reviewer model, and `edit` jobs inside Antigravity's sandbox. Skipping permissions is an explicit choice per job.
@@ -111,7 +111,7 @@ If you're the agent, do this. No slash commands are needed.
 
 4. Show the user the "Still needed from you" list from the output. Typical items: browser logins for accounts that aren't logged in (`csa accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code) so the plugin loads, and putting `csa` on PATH.
 
-5. Check with `csa doctor` (no model calls). `csa doctor --live` runs one tiny job per account and uses a little quota.
+5. Run `csa doctor --runtime <runtime>` for each runtime you set up (`claude`, `codex`, `antigravity`; no model calls). Plain `csa doctor` checks Claude only. Adding `--live` runs one tiny job per account in that runtime and uses a little quota.
 
 If `csa setup` fails for a host, these are the commands it runs, so you can run them yourself:
 
@@ -134,7 +134,7 @@ When the `claude` command can't be found (common with the Claude desktop app) or
 
 To update later, run `csa update` (`--dry-run` shows the plan first). It reinstalls `csa` from GitHub with the tool that installed it (pipx, uv or pip) and updates the plugin in every host that has it, then lists the restarts. On Windows it prints the package command for you to run instead, because `csa` can't replace itself while running. By hand: `pipx install --force git+https://github.com/lunati228/CLI-Subagents`, then `claude plugin marketplace update cli-subagents` and `claude plugin update cli-subagents@cli-subagents`, `codex plugin marketplace upgrade cli-subagents` and `codex plugin add cli-subagents@cli-subagents`, or `agy plugin install https://github.com/lunati228/CLI-Subagents` again.
 
-To register an account folder by hand: `csa accounts add <name> --home <folder> --no-login`. For a new account, `csa accounts add <name>` opens the vendor's login, which the user completes in the browser.
+To register an account folder by hand: `csa accounts add <name> --home <folder> --no-login`. This defaults to Claude; add `--runtime codex` or `--runtime antigravity` for those accounts. For a new account, omit `--no-login` to open that runtime's login, which the user completes in the browser.
 
 Never read or copy credential files, and never edit files inside `~/.cli-subagents/homes/`; `csa` manages those folders. More for agents working in this repository is in [AGENTS.md](AGENTS.md).
 

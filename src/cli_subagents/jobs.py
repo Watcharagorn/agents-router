@@ -116,16 +116,18 @@ def _create_job(
     resume_account = None
     if resume_job:
         previous = read_status(resume_job)
+        closed = read_json(job_dir(resume_job) / "inbox-closed.json", {}) or {}
         if previous.get("state") in ACTIVE_STATES:
-            raise ValueError(
-                f"job {resume_job} is still running; wait for it to finish, or send it a follow-up with subagent_message"
-            )
-        resume_session = previous.get("session_id")
+            if not closed.get("session_id"):
+                raise ValueError(
+                    f"job {resume_job} is still running; wait for it to finish, or send it a follow-up with subagent_message"
+                )
+        resume_session = closed.get("session_id") or previous.get("session_id")
         if not resume_session:
             raise ValueError(f"job {resume_job} has no session to continue")
         if previous.get("runtime") != runtime:
             raise ValueError("resume_job belongs to a different runtime")
-        resume_account = previous.get("account")
+        resume_account = closed.get("account") or previous.get("account")
         if not hasattr(get_runtime(runtime), "transfer_session"):
             # The session lives in one account's folder and can't be moved: stay there.
             account = resume_account or account

@@ -121,7 +121,7 @@ The plugin also ships two hooks for the main session (`hooks/hooks.json`):
 - After `subagent_start`, an async `PostToolUse` hook (`csa hook await`) waits for the job. When it finishes or the worker asks a question or sends a note, the hook wakes an idle Claude Code session with a summary. The same hook runs after `subagent_message`, so once you answer a question it waits for the job again, or for the new job when you continued a finished one.
 - On resume or compact, a `SessionStart` hook (`csa hook pending`) lists finished jobs in the current project whose result nobody collected.
 
-Each result is delivered once. Whichever of `subagent_wait`, `subagent_result` or the hook gets it first claims it, so you don't see it twice.
+The first retrieval through `subagent_wait`, `subagent_result`, `csa follow` or the hook claims the finished result and suppresses later automatic notifications. Explicit retrieval with `subagent_result` or `csa follow` can return it again.
 
 ## What every account shares
 

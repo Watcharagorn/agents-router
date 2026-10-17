@@ -17,7 +17,6 @@ max_jobs_per_account = 1     # parallel workers per account folder
 connectors = "account"       # "account" keeps each account's claude.ai connectors; "off" hides them
 edit_permission_mode = "auto"  # permission mode for access="edit"
 cooldown_minutes = 60        # cooldown when the limit error has no Retry-After or reset time (any cooldown is capped at 7 days)
-# windows_sandbox = "unelevated"   # [codex] on Windows: "unelevated", "elevated" or "off" (see docs/codex.md)
 # binary = "C:/path/to/claude.exe"   # only if auto-detection fails
 # default_model = "sonnet"
 
@@ -29,13 +28,14 @@ enabled = true
 [codex]
 primary = "~/.codex"        # default: CODEX_HOME or ~/.codex
 failover = "on-limit"
+# windows_sandbox = "unelevated"   # on Windows: "unelevated", "elevated" or "off" (see docs/codex.md)
 
 [[codex.accounts]]
 name = "plus-2"
 home = "~/.cli-subagents/homes/codex/plus-2"
 ```
 
-The `[codex]` section takes the same keys as `[claude]`; `connectors` only applies to Claude. `share_parent_mcp` (default `true`) applies to Codex and Antigravity: workers started from Claude Code get its MCP servers (see [codex.md](codex.md#what-a-worker-gets-from-a-claude-code-session)); for Antigravity your own Gemini servers win when two have the same name. `web_search` only applies to Codex: `"disabled"`, `"cached"`, `"indexed"` or `"live"`, passed as `-c web_search="<value>"` on new and resumed runs. Leaving it unset preserves Codex's own default (`"cached"`). `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `[antigravity]` takes `binary`, `default_model`, `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it) and `share_parent_mcp`, the review keys below, and the account keys further down.
+The `[codex]` section takes the same keys as `[claude]`, but ignores `connectors` and `edit_permission_mode`. `connectors` only applies to Claude. Codex uses its own approval and sandbox flags for each `access` level; see [Codex](codex.md#using-it). `share_parent_mcp` (default `true`) applies to Codex and Antigravity: workers started from Claude Code get its MCP servers (see [codex.md](codex.md#what-a-worker-gets-from-a-claude-code-session)); for Antigravity your own Gemini servers win when two have the same name. `web_search` only applies to Codex: `"disabled"`, `"cached"`, `"indexed"` or `"live"`, passed as `-c web_search="<value>"` on new and resumed runs. Leaving it unset preserves Codex's own default (`"cached"`). `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `[antigravity]` takes `binary`, `default_model`, `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it) and `share_parent_mcp`, the review keys below, and the account keys further down.
 
 ```toml
 [antigravity]
@@ -64,9 +64,9 @@ When no extra accounts are configured, workers run on the primary account. That 
 
 ## Limits
 
-CLI Subagents counts the running jobs in `~/.cli-subagents/jobs` before it starts one. That covers nested subagents and other chat sessions on the same machine. If no account can take the job now, the start is refused at once with one line that names the cap and what to do instead. The model that asked doesn't have to track quotas.
+CLI Subagents counts active jobs in `~/.cli-subagents/jobs` before it starts one. That covers nested subagents and other chat sessions on the same machine. With the default `when_full = "refuse"`, a full explicit account, plan, runtime or global cap refuses the start at once. The message names the cap and what to do instead. Accounts using only `max_jobs_per_account` queue extra jobs in the runner instead.
 
-Nothing is capped until you set a cap. Presets are recommended defaults and apply only when you set `plan`.
+Plan presets and extra caps are opt-in. By default, each account runs one worker (`max_jobs_per_account = 1`). The usage ceiling also applies by default: accounts at or above 95% of a known usage window get no new starts. Presets apply only when you set `plan`.
 
 | Key | Where | Meaning |
 |---|---|---|
@@ -79,11 +79,13 @@ Nothing is capped until you set a cap. Presets are recommended defaults and appl
 | `max_jobs_by_room` | `[<runtime>]` | Optional quota-scaled runtime cap; descending `[percent_left, jobs]` steps (below). |
 | `pools` | `[[<runtime>.pools]]` | Optional model globs, caps, rolling weekly budgets and separate cooldowns (below). |
 | `max_jobs` | top level | Most jobs running over all runtimes. |
-| `usage_ceiling` | `[<runtime>]` | Default `0.95`. An account at or above this share of its 5-hour or weekly window gets no new jobs. It applies only when usage is known; csa never guesses. |
-| `when_full` | `[<runtime>]` | `"refuse"` (default): the start fails with a short message. `"queue"`: the job starts and waits for a free slot (the caps still hold on each account). |
-| `max_jobs_per_account` | `[<runtime>]` | The old default for accounts without a cap. It shapes the runner's queue and refuses nothing. |
+| `usage_ceiling` | `[<runtime>]` | Default `0.95`. With `when_full = "refuse"`, an account at or above this share of its 5-hour or weekly window gets no new jobs. It applies only when usage is known; csa never guesses. |
+| `when_full` | `[<runtime>]` | `"refuse"` (default): full explicit caps refuse the start. `"queue"`: admit jobs despite full slots, cooldowns or the usage ceiling, with the exceptions below. |
+| `max_jobs_per_account` | `[<runtime>]` | Default `1` for accounts without an explicit cap or plan preset. Extra jobs wait for a slot in the runner; this setting alone never refuses a start. |
 
 Order for one account: its own `max_jobs`, then its plan preset, then `max_jobs_per_account`. A `fallback = true` account still comes after every other account.
+
+`when_full = "queue"` skips admission checks for global and fixed runtime `max_jobs`. It still checks model allowlists, `max_jobs_by_room` and pool weekly budgets. The runner waits up to 15 minutes for busy account or pool slots. It re-checks account eligibility, model allowlists, cooldowns, account caps and pool limits. It does not re-check global or runtime caps (including `max_jobs_by_room`) or enforce `usage_ceiling`. If no eligible account remains, such as when all accounts are cooling down, the job can end with `no_account` at once.
 
 ```toml
 [codex]
@@ -173,7 +175,7 @@ The alternative names depend on which other installed runtimes have room. `csa a
 
 ### What goes where
 
-- Project defaults are safe for everyone: no caps without a plan, `usage_ceiling` 0.95 only when usage is known, `when_full = "refuse"`.
+- Defaults: one running worker per account with extra jobs queued, `usage_ceiling = 0.95` when usage is known, and `when_full = "refuse"` for explicit caps. Plans and extra caps are opt-in.
 - Your `config.toml` holds your plans and caps: `plan`, `max_jobs`, `models`, `fallback`.
 - Your agent instructions (`CLAUDE.md` and the like) hold preferences, such as which model to use for what kind of task.
 - csa decides by itself: it counts running jobs, checks cooldowns and usage, picks an account, and lowers the effort when the account's plan needs it.

@@ -462,7 +462,7 @@ class QuotaTests(TempHome):
         follower.header()
         lines = output.getvalue().splitlines()
         self.assertTrue(lines[0].startswith("[csa] CLI Subagents"))
-        self.assertTrue(lines[1].startswith("Room:"))
+        self.assertTrue(lines[1].startswith("| Room:"))
         self.assertIn("max_jobs_by_room", lines[1])
         self.assertIn("Argon:", lines[1])
 

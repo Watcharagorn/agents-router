@@ -83,6 +83,34 @@ def take_for_worker(job_id: str) -> list[dict[str, Any]]:
     return _take_unseen(job_id, "inbox.jsonl", "inbox-read.json")
 
 
+def close_or_continue(job_id: str, session_id: str | None, account: str | None,
+                      can_continue: bool = False) -> list[dict[str, Any]]:
+    """Atomically take a follow-up turn or close acceptance before the final drain."""
+
+    folder = job_dir(job_id)
+    with file_lock(folder / "inbox.lock"):
+        if can_continue:
+            pending = take_for_worker(job_id)
+            if pending:
+                return pending
+        if not (folder / "inbox-closed.json").exists():
+            write_json(folder / "inbox-closed.json", {"session_id": session_id, "account": account})
+    return []
+
+
+def queue_for_worker(job_id: str, text: str, reply_to: str | None = None) -> dict[str, Any] | None:
+    """Accept a message only while the runner can still drain its inbox."""
+
+    folder = job_dir(job_id)
+    record = _record("answer" if reply_to else "follow_up", text, reply_to=reply_to)
+    with file_lock(folder / "inbox.lock"):
+        if (folder / "inbox-closed.json").exists():
+            return None
+        with (folder / "inbox.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
+
+
 def take_for_hook(job_id: str) -> list[dict[str, Any]]:
     """Inbox entries the worker's PostToolUse hook hasn't shown yet (doesn't mark them read)."""
 

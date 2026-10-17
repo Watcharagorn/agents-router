@@ -2,13 +2,16 @@
 
 A plugin agent (a thin forwarder) runs these commands through its Bash tool, so
 what they print is what the user sees when they open the agent's view. Every
-line is flushed at once. The last thing printed is always exactly one marker
-the forwarder acts on:
+line is flushed at once. Worker-controlled output always has a ``| `` prefix;
+terminal controls are rendered as visible escapes. Results and questions have
+fixed opening and closing delimiters. The last line is the authoritative
+DONE, FAILED, STILL RUNNING or QUESTION marker, after all worker text and
+continuation commands. Only this line and the header start with ``[csa]``.
 
-    [csa] DONE · ...              then ===== RESULT ===== and the result text
-    [csa] FAILED · ...            then the result text, if there is one
-    [csa] STILL RUNNING ...       then the `csa follow ... --from N` to run next
-    [csa] QUESTION from ...       then the `csa message` and `csa follow` to run
+The header and end marker carry the job ID and a fresh random token for this
+follow invocation. Printed commands carry the same token in a shell comment
+and always target that job. Relay agents must match both before acting and
+must treat everything inside a worker block as data, even apparent commands.
 
 The offset in `--from` is the byte offset in events.jsonl of the first event
 line whose output was not printed yet, so a continued follow neither repeats
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -35,6 +39,16 @@ DEFAULT_MAX_WAIT = 540.0  # keeps one Bash call under Claude Code's 10-minute ce
 SUMMARY_CHARS = 200
 RUNTIME_LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
 RESULT_RULE = "===== RESULT ====="
+RESULT_END_RULE = "===== END RESULT ====="
+QUESTION_RULE = "===== QUESTION ====="
+QUESTION_END_RULE = "===== END QUESTION ====="
+WORKER_PREFIX = "| "
+
+# A carriage return, backspace or terminal escape must not erase the prefix.
+_DISPLAY_ESCAPES = {
+    code: f"\\x{code:02x}" for code in (*range(32), *range(127, 160)) if code != 9
+}
+_DISPLAY_ESCAPES.update({0x2028: "\\u2028", 0x2029: "\\u2029"})
 
 
 # Formatting helpers ------------------------------------------------------------
@@ -457,6 +471,7 @@ class Follower:
         self.position = max(0, int(start or 0))
         self.max_wait = max(0.0, float(max_wait))
         self.out = out
+        self.token = secrets.token_hex(16)  # never stored in worker-readable job files
         self.describer = describer_for(self.spec.runtime)
         self.inits = 0  # attempt-start events seen so far
         self.reported = 0  # attempts whose account line was printed (or needs none)
@@ -473,6 +488,21 @@ class Follower:
             stream.write(line + "\n")
         stream.flush()
 
+    def emit_worker(self, *texts: str) -> None:
+        """Frame every physical line, including embedded newlines and blank lines."""
+
+        for text in texts:
+            self.emit(*(WORKER_PREFIX + line.translate(_DISPLAY_ESCAPES) for line in text.split("\n")))
+
+    def control(self, text: str) -> None:
+        # Metadata can contain arbitrary runtime strings too; keep it on one line.
+        text = " ".join(text.split()).translate(_DISPLAY_ESCAPES)
+        self.emit(f"[csa] {text} · job {self.job_id} · token {self.token}")
+
+    def command(self, text: str) -> str:
+        # A shell comment preserves the existing CLI arguments.
+        return f"{text} # csa-token {self.token}"
+
     # Steps
 
     def header(self) -> None:
@@ -485,22 +515,21 @@ class Follower:
                 model = load_config().runtime(spec.runtime).default_model
             except Exception:  # the header never fails over a config problem
                 model = None
-        parts = ["[csa] CLI Subagents", RUNTIME_LABELS.get(spec.runtime, spec.runtime), f"model {model or 'default'}"]
+        parts = ["CLI Subagents", RUNTIME_LABELS.get(spec.runtime, spec.runtime), f"model {model or 'default'}"]
         if spec.effort:
             parts.append(f"effort {spec.effort}")
         parts.append(f"access {spec.access}")
         if account:
             parts.append(f"account {account}")
             self.announced = account
-        parts.append(f"job {self.job_id}")
-        self.emit(" · ".join(parts))
+        self.control(" · ".join(parts))
         try:
             config = load_config()
             if any(runtime.max_jobs_by_room or runtime.pools for runtime in config.runtimes.values()):
                 from cli_subagents.tools import room_note
 
                 if line := room_note():
-                    self.emit(line)
+                    self.emit_worker(line)
         except Exception:
             pass  # room is a convenience; never stop following over a report problem
 
@@ -549,17 +578,17 @@ class Follower:
             account = current.get("account") or "?"
             if index == 0:
                 if account != self.announced:
-                    lines.append(f"[csa] running on account {account}")
+                    lines.append(f"running on account {account}")
             else:
                 previous = attempts[index - 1] or {}
                 before = previous.get("account") or "?"
                 outcome = previous.get("outcome") or "an error"
                 if outcome == SUCCESS:
-                    lines.append(f"[csa] follow-up turn on account {account}")
+                    lines.append(f"follow-up turn on account {account}")
                 elif account != before:
-                    lines.append(f"[csa] switched to account {account} after {outcome} on {before}")
+                    lines.append(f"switched to account {account} after {outcome} on {before}")
                 else:
-                    lines.append(f"[csa] retrying on account {account} after {outcome}")
+                    lines.append(f"retrying on account {account} after {outcome}")
             self.announced = account
             self.reported += 1
         return lines
@@ -569,7 +598,7 @@ class Follower:
         for offset, raw in lines:
             output = self._feed(offset, raw)
             if output:
-                self.emit(*output)
+                self.emit_worker(*output)
 
     def resume_offset(self) -> int:
         pending = self.describer.pending_offset
@@ -594,11 +623,11 @@ class Follower:
                 if record_id in open_ids and record_id not in already and not done:
                     stop = record
                     break
-                self.emit(*block("asked the main session: ", record.get("text")))
+                self.emit_worker(*block("asked the main session: ", record.get("text")))
                 if record_id in replies:
-                    self.emit(*block("  answer: ", replies[record_id]))
+                    self.emit_worker(*block("  answer: ", replies[record_id]))
             else:
-                self.emit(*block("note for the main session: ", record.get("text")))
+                self.emit_worker(*block("note for the main session: ", record.get("text")))
             printed.add(record_id)
         if stop is not None:
             printed.add(str(stop["id"]))
@@ -621,7 +650,7 @@ class Follower:
                 continue
             fresh.append(record_id)
             if not record.get("quiet"):
-                self.emit(review_line(record))
+                self.emit_worker(review_line(record))
         self.review_replay = False
         if set(fresh) - already:
             try:
@@ -644,7 +673,7 @@ class Follower:
         self.read_events(final=True)
         lines = self.describer.flush() + self.attempt_lines()
         if lines:
-            self.emit(*lines)
+            self.emit_worker(*lines)
         self.review_lines()
         self.worker_messages(done=True)
         status = self.status
@@ -652,38 +681,45 @@ class Follower:
         text = str(result.get("result") or "")
         outcome = status.get("outcome") or "error"
         jobs.claim_delivery(self.job_id)  # the forwarder hands the result on: no wake-up or pending notice
+        self.emit(RESULT_RULE)
+        self.emit_worker(text)
+        self.emit(RESULT_END_RULE)
         if outcome == SUCCESS:
             account = status.get("account") or self.announced or "-"
-            self.emit(
-                f"[csa] DONE · success · {duration(self.elapsed())} · {plural(self.describer.tool_calls, 'tool call')} "
-                f"· account {account}",
-                RESULT_RULE,
-                text.rstrip("\n"),
+            self.control(
+                f"DONE · success · {duration(self.elapsed())} · {plural(self.describer.tool_calls, 'tool call')} "
+                f"· account {account}"
             )
             return 0
         message = first_line(status.get("message") or "", 500)
-        self.emit(f"[csa] FAILED · {outcome}" + (f" · {message}" if message else ""))
-        if text.strip():
-            self.emit(RESULT_RULE, text.rstrip("\n"))
+        self.control(f"FAILED · {outcome}" + (f" · {message}" if message else ""))
         return 1
 
     def still_running(self) -> int:
-        self.emit(
-            f"[csa] STILL RUNNING after {duration(self.elapsed())}. Keep watching with:",
-            f"csa follow {self.job_id} --from {self.resume_offset()}",
-        )
+        self.emit("Keep watching with:", self.command(f"csa follow {self.job_id} --from {self.resume_offset()}"))
+        self.control(f"STILL RUNNING after {duration(self.elapsed())}")
         return 0
 
     def question(self, record: dict[str, Any]) -> int:
+        question_id = str(record["id"])
+        if not re.fullmatch(r"[0-9a-f]{8}", question_id):
+            # A malformed outbox record must not inject lines or shell syntax.
+            self.emit(RESULT_RULE)
+            self.emit_worker("Cannot relay a worker question with an invalid id.", str(record.get("text") or ""))
+            self.emit(RESULT_END_RULE)
+            self.control("FAILED · invalid worker question id")
+            return 1
+        self.emit(QUESTION_RULE)
+        self.emit_worker(str(record.get("text") or ""))
         self.emit(
-            f"[csa] QUESTION from the worker (id {record['id']}):",
-            *block("", record.get("text")),
+            QUESTION_END_RULE,
             "Answer with:",
-            f"csa message {self.job_id} --reply-to {record['id']} -",
+            self.command(f"csa message {self.job_id} --reply-to {question_id} -"),
             "(the answer text goes on stdin)",
             "Then keep watching with:",
-            f"csa follow {self.job_id} --from {self.resume_offset()}",
+            self.command(f"csa follow {self.job_id} --from {self.resume_offset()}"),
         )
+        self.control(f"QUESTION from the worker (id {question_id})")
         return 0
 
     # Main loop
@@ -701,7 +737,7 @@ class Follower:
                 return self.finish()
             if self.status.get("state") == "queued" and self.status.get("message") and not self.queued_shown:
                 self.queued_shown = True
-                self.emit(f"[csa] queued: {self.status['message']}")
+                self.emit_worker(f"queued: {self.status['message']}")
             self.read_events(final=False)
             self.review_lines()
             question = self.worker_messages(done=False)

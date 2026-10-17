@@ -309,8 +309,9 @@ def _call(name: str, arguments: dict[str, Any], progress=None, client: str | Non
         status = jobs.read_status(job_id)
         text = str(arguments.get("text") or "")
         if status.get("state") in jobs.ACTIVE_STATES:
-            record = messages.post_to_worker(job_id, text, arguments.get("reply_to") or None)
-            return {"job_id": job_id, "delivered": "queued for the running subagent", "message_id": record["id"]}
+            record = messages.queue_for_worker(job_id, text, arguments.get("reply_to") or None)
+            if record is not None:
+                return {"job_id": job_id, "delivered": "queued for the running subagent", "message_id": record["id"]}
         spec = jobs.read_spec(job_id)
         follow_up = jobs.create_job(
             runtime=spec.runtime, prompt=text, cwd=spec.cwd, model=spec.model, effort=spec.effort,

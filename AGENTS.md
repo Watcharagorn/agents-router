@@ -11,8 +11,10 @@ pipx install git+https://github.com/lunati228/CLI-Subagents   # or: pip install 
 csa --version
 csa setup --dry-run --account <name>=<folder> ...
 csa setup --account <name>=<folder> ...
-csa doctor
+csa doctor --runtime <runtime>   # repeat for each runtime set up
 ```
+
+Plain `csa doctor` checks Claude only. Run `csa doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`).
 
 `csa setup` installs the plugin into every installed host (`--host claude|codex|antigravity` limits it), registers and syncs account folders that are already logged in, and prints a "Still needed from you" list. It is safe to run again. Use a `codex:` or `claude:` prefix on `--account` when the folder's runtime is ambiguous.
 

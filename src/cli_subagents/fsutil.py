@@ -380,6 +380,128 @@ def new_group_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}  # pragma: no cover
 
 
+class _WindowsJob:
+    """Own a worker tree, including descendants whose original parent has exited.
+
+    https://learn.microsoft.com/windows/win32/procthread/job-objects
+    """
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimits), ("IoInfo", ctypes.c_ulonglong * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        signatures = {
+            "CreateJobObjectW": ([ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+            "SetInformationJobObject": ([wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
+            "AssignProcessToJobObject": ([wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+            "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            "QueryInformationJobObject": ([wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                           ctypes.c_void_p], wintypes.BOOL),
+            "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self.kernel, name)
+            function.argtypes, function.restype = arguments, result
+        self.handle = self.kernel.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not self.kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.WinError(ctypes.get_last_error())
+            self.kernel.CloseHandle(self.handle)
+            raise error
+
+    def start(self, process: subprocess.Popen) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        handle = wintypes.HANDLE(int(process._handle))
+        if not self.kernel.AssignProcessToJobObject(self.handle, handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # Popen closes the initial thread handle. Resume through its process handle
+        # only after assignment, so even a short-lived worker cannot escape the job.
+        resume = ctypes.WinDLL("ntdll").NtResumeProcess
+        resume.argtypes, resume.restype = [wintypes.HANDLE], ctypes.c_long
+        status = resume(handle)
+        if status < 0:
+            raise OSError(f"NtResumeProcess failed: {status:#x}")
+
+    def close(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [
+                ("times", ctypes.c_longlong * 4), ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD), ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        try:
+            if not self.kernel.TerminateJobObject(self.handle, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            while True:
+                accounting = Accounting()
+                if not self.kernel.QueryInformationJobObject(
+                    self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not accounting.ActiveProcesses:
+                    break
+                time.sleep(0.01)
+        finally:
+            self.kernel.CloseHandle(self.handle)
+
+
+@contextlib.contextmanager
+def worker_process(argv: list[str], **kwargs: Any) -> Iterator[subprocess.Popen]:
+    """Launch a contained worker; destroy its whole tree before releasing its lease."""
+
+    job = _WindowsJob() if os.name == "nt" else None
+    process = None
+    options = new_group_kwargs()
+    if job is not None:
+        options["creationflags"] |= 0x4  # CREATE_SUSPENDED: assign before the first instruction
+    try:
+        process = subprocess.Popen(argv, **kwargs, **options)
+        if job is not None:
+            job.start(process)
+        yield process
+    finally:
+        try:
+            if job is not None:
+                job.close()
+            elif process is not None:
+                # The group can outlive its leader, so cleanup is unconditional.
+                kill_tree(process.pid)
+        finally:
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()  # also covers a Windows assignment failure while suspended
+                process.wait(timeout=15)
+                for stream in (process.stdin, process.stdout):
+                    if stream is not None:
+                        stream.close()
+
+
 # Detached children we started. Keeping them referenced lets us reap finished
 # ones (no zombies on POSIX) without warnings about still-running processes.
 _SPAWNED: list[subprocess.Popen] = []

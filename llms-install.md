@@ -29,7 +29,7 @@ CLI Subagents is an MCP server with a plugin for Claude Code, Codex and Antigrav
 
 4. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
 
-5. Check with `csa doctor`. To update later, run `csa update`.
+5. Run `csa doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`). Plain `csa doctor` checks Claude only. To update later, run `csa update`.
 
 For an MCP client without a plugin system (Cline, Cursor and others), add a stdio server instead of step 2:
 
@@ -37,4 +37,4 @@ For an MCP client without a plugin system (Cline, Cursor and others), add a stdi
 { "mcpServers": { "cli-subagents": { "command": "csa", "args": ["mcp"] } } }
 ```
 
-Then copy `skills/cli-subagents/SKILL.md` into the client's rules so the agent knows how to use the tools. The full steps and the manual commands per host are in the README's "For AI agents" section and in [AGENTS.md](AGENTS.md).
+Then copy the whole `skills/cli-subagents/` folder into the client's skills so the agent gets `SKILL.md` and the `hosts/*.md` notes it links to. If the client accepts only rules text, inline `SKILL.md` and the relevant host note. The full steps and the manual commands per host are in the README's "For AI agents" section and in [AGENTS.md](AGENTS.md).

@@ -95,14 +95,14 @@ def pool_state(runtime: RuntimeConfig, counts: Any, now: float, exclude_job: str
             spec = {}
         pool = job_pool(runtime, status, spec)
         entries = status.get("attempts") or []
-        if not entries and status.get("account") and status.get("started_at"):
+        if not entries and status.get("account") and status.get("state") in ("running", "done") and status.get("started_at"):
             entries = [status]
         keys = set()
         for attempt in entries:
             when = attempt.get("started_at")
             account = attempt.get("account")
             attempt_pool = attempt.get("pool") or pool
-            if (account and attempt_pool and isinstance(when, (int, float))
+            if (not attempt.get("before_start") and account and attempt_pool and isinstance(when, (int, float))
                     and now - WEEK < when <= now and attempt.get("outcome") not in ("refused", "limit")):
                 keys.add((str(account), str(attempt_pool)))
         started[path.name] = keys

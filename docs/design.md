@@ -166,11 +166,11 @@ This tool's own MCP server is not removed from the copied config. Each Codex wor
 ### Selection and failover
 
 - An explicit `account` on a job always wins.
-- Otherwise the pool skips accounts in cooldown and ranks the rest: accounts at 97% usage or more come last, then the account that holds the conversation being continued, then the lowest reported utilization, then the one used least recently. A job waits up to 15 minutes for a free slot.
-- Limit detection for Claude: an error result that names a limit, together with a `rejected` `rate_limit_event` or HTTP 429, or the "hit your … limit" text. For Codex: an error message that mentions a usage limit. Codex doesn't report remaining quota, so its accounts are ranked by last use.
+- Otherwise the pool skips accounts in cooldown and puts fallback accounts after regular accounts. Within each group, accounts below `usage_ceiling` (default 95%) come first, then the account that holds the conversation being continued, then the lowest reported utilization, then the one used least recently. With `when_full = "refuse"`, accounts at or above the ceiling get no new starts. A job waits up to 15 minutes for a busy slot.
+- Limit detection for Claude: an error result that names a limit, together with a `rejected` `rate_limit_event` or HTTP 429, or the "hit your … limit" text. For Codex: an error message that mentions a usage limit. Codex usage comes from local rollout snapshots and ranks accounts by utilization, as for Claude.
 - The cooldown ends at the first value available: a `Retry-After` in the error, the reset time the CLI reported, then `cooldown_minutes`; never more than 7 days. `csa accounts reset <name>` clears it.
 - On a usage limit the job continues on another account: the Claude session transcript is copied into that account's folder and resumed (verified with Claude Code 2.1.295). Codex restarts with a handoff note containing the task and the partial output. A job pinned to one `account` doesn't fail over.
-- `failover` is on by default for Claude Code and Codex, and refused for Antigravity. See [provider-terms.md](research/provider-terms.md).
+- `failover = "on-limit"` is the default for every runtime. Extra Antigravity accounts are at your own risk. `failover = "off"` turns switching off; for Antigravity it also keeps unpinned jobs on the primary account. See [provider-terms.md](research/provider-terms.md).
 
 Concurrency: one running worker per account folder by default, because `.claude.json` has a history of corruption under concurrent writers.
 
@@ -240,6 +240,6 @@ adapters/antigravity/         the original standalone AGY server (superseded by 
 ## Risks
 
 - Terms: the vendors' restrictions target third-party token handling, which this project avoids; their terms don't address switching between your own CLI logins explicitly. Antigravity consumer plans rule out rotation, so extra Antigravity accounts are marked use at your own risk. Failover is on by default for every runtime and can be turned off per runtime.
-- Vendor drift: flags, event formats and config layouts change often. Adapters check versions and `doctor` flags mismatches.
+- Vendor drift: flags, event formats and config layouts change often. `doctor` reports CLI versions but does not check compatibility.
 - Concurrency bugs in vendor CLIs (`.claude.json`, credential refresh). Mitigated by one job per account folder.
 - Windows: symlinks need developer mode; junctions don't, but only work for folders. Folder links use junctions there, and files are hard-linked or, on another drive, copied.

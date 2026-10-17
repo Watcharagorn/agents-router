@@ -99,7 +99,7 @@ Pass `runtime: "codex"` to `subagent_start`, or `--runtime codex` to `csa run` a
 
 ## Limits
 
-`codex exec --json` doesn't report remaining quota, so CLI Subagents can't rank Codex accounts by usage the way it does for Claude. It recognizes a usage-limit failure from the error message and cools that account down until the `Retry-After` value or reported reset time in the error, or else for `cooldown_minutes` (default 60), never more than 7 days. The job then restarts on the next account with the partial output attached; a Codex thread isn't moved between accounts. Failover is on by default. `csa accounts reset <name> --runtime codex` clears a cooldown. Set `failover = "off"` under `[codex]` to stop at the limit instead.
+`codex exec --json` doesn't report remaining quota. CLI Subagents reads local rollout snapshots to rank accounts by usage and get reset times, as described in [Quota](#quota). It recognizes a usage-limit failure from the error message and cools that account down until the `Retry-After` value or reported reset time, or else for `cooldown_minutes` (default 60), never more than 7 days. The job then restarts on the next account with the partial output attached; a Codex thread isn't moved between accounts. Failover is on by default. `csa accounts reset <name> --runtime codex` clears a cooldown. Set `failover = "off"` under `[codex]` to stop at the limit instead.
 
 ## Notes
 

@@ -74,7 +74,7 @@ Register a stdio server with command `csa` and argument `mcp`. For example, in C
 { "mcpServers": { "cli-subagents": { "command": "csa", "args": ["mcp"] } } }
 ```
 
-Copy `skills/cli-subagents/SKILL.md` into the client's rules or skills if it supports them, so the agent knows how to use the tools.
+Copy the whole `skills/cli-subagents/` folder into the client's skills if it supports them. This keeps `SKILL.md` and its linked `hosts/*.md` notes together. If the client accepts only rules text, inline `SKILL.md` and the relevant host note.
 
 ## Which subagent CLI runs the work
 
