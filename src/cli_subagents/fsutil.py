@@ -306,6 +306,10 @@ def process_start_time(pid: int | None) -> int | None:
         if not process:
             return None
         try:
+            # An exited process stays readable while anyone holds a handle to it; it isn't running.
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(process, ctypes.byref(code)) or code.value != 259:  # STILL_ACTIVE
+                return None
             created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
             ok = kernel32.GetProcessTimes(
                 process, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
