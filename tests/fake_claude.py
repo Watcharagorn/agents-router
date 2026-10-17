@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 
 
@@ -30,7 +31,9 @@ def main():
         with open(record, "a", encoding="utf-8") as handle:
             handle.write(json.dumps({"argv": argv, "env": dict(os.environ), "stdin": prompt}) + "\n")
 
-    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", "default"))
+    # Tests that don't set CLAUDE_CONFIG_DIR must not leave a "default" folder in the working directory
+    # (the repository root when the suite runs), so fall back to a folder under the temp directory.
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path(tempfile.gettempdir()) / "csa-fake-claude" / "default")
     account = config_dir.name
     projects = config_dir / "projects"
     if "--resume" in argv:
