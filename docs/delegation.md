@@ -106,7 +106,9 @@ These limits guide the agent; they do not change the host's own nesting settings
 ## Web research
 
 The agent prefers an allowed CLI whose search reaches the sources it needs.
-The template uses Reddit access through Codex as an example.
+The template uses Reddit access through Codex and Antigravity as an example.
+It also picks the research model by importance: a fast low-tier model for quick lookups, a stronger one for important or many-source research.
+Antigravity workers find YouTube videos and read their title and description, but they can't watch them or read transcripts.
 Work data stays with the home vendor. Reading other projects' code to decide what to adopt goes to the strongest home model.
 
 ## Update or remove

@@ -33,7 +33,7 @@ Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when
 
 `access: "full"` skips the CLI's own permission checks. Use it only when the user asked for that.
 
-Codex workers use OpenAI's web search, which reaches sites such as Reddit that block other tools, so they suit web research.
+Codex and Antigravity workers have their own web search and page reading, which reach sites such as Reddit that block other tools, so they suit web research. Antigravity workers find YouTube videos and read their title and description, but can't watch them or read transcripts.
 
 ## Limits
 

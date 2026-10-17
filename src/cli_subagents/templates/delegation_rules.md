@@ -67,6 +67,9 @@ Split big work into smaller tasks. The same model and privacy rules apply at eve
 ### Web research
 
 Prefer the allowed CLI whose web search reaches the most sites.
-For example, Codex search can reach Reddit when other web tools are blocked.
+For example, Codex and Antigravity search can reach Reddit when other web tools are blocked.
+Pick the research model by how much the result matters, as with any tier.
+A fast low-tier model suits quick lookups; important or many-source research needs a stronger model.
+Fast models make more mistakes, so check what you rely on against their source URLs.
 Use read access and ask for source URLs and dates. Work data still stays with the home vendor.
 Reading other projects' code to decide what to adopt goes to the strongest home model.

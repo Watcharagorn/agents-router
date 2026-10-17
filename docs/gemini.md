@@ -30,6 +30,8 @@ The review gate answers the permission questions a headless `agy` run can't ask 
 
 Antigravity's own auto mode (a reviewer agent for commands) isn't available on every account or on Windows. Where your account has it, set `edit_permission_mode = "auto"` under `[antigravity]` in the config; AGY falls back to its default mode with a warning when it isn't available.
 
+Read jobs can search the web (`search_web`, Google search) and fetch pages (`read_url_content`). In a test on 2026-10-17, a Flash worker fetched a Reddit listing from `www.reddit.com` (`old.reddit.com` sent it to a login page) and found Reddit threads through search. It also found a recent YouTube video with its title, channel, date and description, but couldn't watch it or read a transcript, and presented the description as what was said in the video. Ask for source URLs and check what you rely on.
+
 The whole generated prompt travels as a command-line argument and is limited to 24,000 characters, including injected worker, host, parent channel and safety notes. Point to files instead of pasting them. The job's `timeout_seconds` is passed to `agy` as `--print-timeout`.
 
 ## Messages
