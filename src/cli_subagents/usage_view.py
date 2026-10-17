@@ -70,6 +70,19 @@ def _hours(seconds: float) -> str:
     return f"{round(seconds / 60)} min" if seconds < 5400 else f"{round(seconds / 3600)} h"
 
 
+def reset_text(resets_at: float, now: float) -> str:
+    """When a usage window resets, in local time, e.g. '2026-10-18 01:26 (in 4 h 15 min)'."""
+
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(resets_at))
+    if resets_at <= now:
+        return f"{when} (passed; that window's figure is out of date)"
+    days, rest = divmod(round((resets_at - now) / 60), 1440)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{when} (in {days} d {hours} h)"
+    return f"{when} (in {hours} h {minutes} min)" if hours else f"{when} (in {minutes} min)"
+
+
 def _account_text(runtime: RuntimeConfig, account: Any, record: dict[str, Any], now: float) -> str | None:
     cooling = accounts.cooldown_until(record, now)
     tag = " fallback" if account.fallback else ""

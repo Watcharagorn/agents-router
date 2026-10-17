@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -209,7 +210,8 @@ class LimitTests(TempHome):
     def test_accounts_report_shows_limits_and_sources(self):
         self.codex_config(primary='plan = "plus"')
         self.active()
-        entry = tools.account_report("codex")["accounts"][0]
+        with patch.dict(os.environ, {"CLI_SUBAGENTS_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
+            entry = tools.account_report("codex")["accounts"][0]
         self.assertEqual(entry["running_jobs"], 1)
         self.assertEqual(entry["limits"]["max_jobs"], 4)
         self.assertEqual(entry["limits"]["max_jobs_from"], "plan preset plus")
@@ -255,6 +257,22 @@ class UsageViewTests(TempHome):
         line = usage_view.room_line(config, ["codex"])
         self.assertTrue(line.startswith("Room: Codex primary 8% left (5h, resets "), line)
         self.assertNotIn("private", line)
+
+    def test_accounts_list_shows_when_each_window_resets(self):
+        codex_home = self.root / "codex"
+        (self.home / "config.toml").write_text(f'[codex]\nprimary = {json.dumps(str(codex_home))}\n', encoding="utf-8")
+        self.rollout(codex_home, 85.0)
+        with patch.dict(os.environ, {"CLI_SUBAGENTS_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
+            entry = tools.account_report("codex")["accounts"][0]
+        self.assertEqual(entry["usage"], {"five_hour": 85})
+        self.assertRegex(entry["usage_resets"]["five_hour"], r"^\d{4}-\d\d-\d\d \d\d:\d\d \(in (1 h 0 min|59 min)\)$")
+
+    def test_reset_text_counts_down_and_marks_passed_windows(self):
+        now = 1_000_000.0
+        self.assertTrue(usage_view.reset_text(now + 4 * 3600 + 15 * 60, now).endswith("(in 4 h 15 min)"))
+        self.assertTrue(usage_view.reset_text(now + 4 * 86400 + 18 * 3600, now).endswith("(in 4 d 18 h)"))
+        self.assertTrue(usage_view.reset_text(now + 20 * 60, now).endswith("(in 20 min)"))
+        self.assertIn("passed", usage_view.reset_text(now - 60, now))
 
     def test_stale_data_shows_its_age_and_unknown_accounts_are_left_out(self):
         (self.home / "config.toml").write_text(

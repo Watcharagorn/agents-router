@@ -465,6 +465,13 @@ def account_report(runtime_name: str) -> dict[str, Any]:
                 for name, window in windows.items()
                 if isinstance(window, dict) and isinstance(window.get("utilization"), (int, float))
             }
+            resets = {
+                name: usage_view.reset_text(float(window["resets_at"]), now)
+                for name, window in windows.items()
+                if isinstance(window, dict) and isinstance(window.get("resets_at"), (int, float))
+            }
+            if resets:
+                entry["usage_resets"] = resets
         entry["busy_slots"] = accounts.busy_slots(config, account)
         entry["running_jobs"] = counts.on_account(runtime_name, account.name)
         entry["limits"] = account_limit_report(config, account)

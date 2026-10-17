@@ -100,7 +100,7 @@ The relay agents are built on the same jobs as the MCP tools, which work in ever
 | `subagent_result` | Final answer, outcome, account, session, cost (`max_chars` up to 80000, default 20000) |
 | `subagent_cancel` | Stop a job and everything it started |
 | `subagent_list` | Recent jobs |
-| `subagent_accounts` | Accounts, logins, usage and cooldowns |
+| `subagent_accounts` | Accounts, logins, usage with reset times, and cooldowns |
 
 From a terminal, the same jobs are available through `csa run` (add `--follow` to watch each step), `csa start`, `csa follow`, `csa status`, `csa result`, `csa cancel`, `csa jobs`, `csa wait` and `csa message`. `csa --home <folder>` uses a different CLI Subagents folder for one command.
 

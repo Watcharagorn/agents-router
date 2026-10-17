@@ -109,7 +109,7 @@ Room: Claude 2 accounts (no usage data) · Codex primary 8% left (5h, resets 03:
 
 The `Room:` line is also in the `subagent_start` and `subagent_accounts` results. With quota steps or pools configured, it appears in the `csa run --follow` header too. It shows what is already known, marks old data with its age (`as of 2 h ago`) and leaves out accounts with no data. Codex usage is read from the newest rollout file in each Codex account folder (the `rate_limits` field only). Claude usage comes from the events of jobs that already ran. Antigravity shows job counts and cooldowns, with no remaining-quota estimate. Nothing starts a job to measure usage.
 
-`csa accounts`, `subagent_accounts` and `csa doctor` list each account's cap, effort cap and model list, and where each one comes from. For Claude accounts they also suggest a plan (read from `oauthAccount.userRateLimitTier` and `organizationRateLimitTier` in the account's `.claude.json`, nothing else). A suggestion is not applied until you set `plan`.
+`csa accounts`, `subagent_accounts` and `csa doctor` list each account's cap, effort cap and model list, and where each one comes from. Where usage is known, they show each window's percentage used (`usage`) and when it resets (`usage_resets`), in local time with a countdown, for example `"five_hour": "2026-10-18 01:26 (in 4 h 15 min)"`. For Claude accounts they also suggest a plan (read from `oauthAccount.userRateLimitTier` and `organizationRateLimitTier` in the account's `.claude.json`, nothing else). A suggestion is not applied until you set `plan`.
 
 ### Quota-scaled caps
 
