@@ -45,7 +45,8 @@ DEFINITIONS = [
             "under one of your accounts, with your shared MCP servers, plugins, skills and settings. "
             "Returns a job_id at once (or the result, if it finishes within wait_seconds). "
             "Give it a complete, self-contained task: goal, scope, files, and how to check the result. "
-            "csa enforces the account limits itself: if a start is refused, follow the suggestion in the message."
+            "csa enforces the account limits itself: if a start is refused, follow the suggestion in the message. "
+            "In Claude Code, use the Agent tool with a cli-subagents-* agent type instead, so the user sees the job."
         ),
         "inputSchema": _schema(
             {

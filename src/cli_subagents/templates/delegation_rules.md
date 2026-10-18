@@ -31,20 +31,13 @@ If a later step waits on a cross-CLI result, still start it there.
 Tell the user what waits and suggest the home model as the faster option.
 Switch for speed when the user asks. A subagent reports "a later step waits" to its parent.
 
-Start the matching `cli-subagents:cli-subagents-claude`, `cli-subagents:cli-subagents-codex`,
-or `cli-subagents:cli-subagents-antigravity` agent in the background when available.
-Use the description `<model> · <access> · <task>`.
-Put these option lines first in the relay prompt:
-
-```text
-model=<model ID from the chosen entry>
-effort=<effort from the chosen entry, when supported>
-access=<read or edit>
-```
-
-Omit `effort=` when the model has no separate effort option.
-The relay strips its option lines. Start the worker task that follows them with its depth line.
-Use `read` for research and reviews, or `edit` for changes.
+Start the chosen model as the `cli-subagents` skill describes: the matching relay agent
+(`cli-subagents:cli-subagents-codex`, `cli-subagents:cli-subagents-antigravity` or `cli-subagents:cli-subagents-claude`)
+through the Agent tool, in the background, at every depth.
+Never run `csa run`, `csa start` or `csa follow` in your own shell, and never call the start tool directly
+while these agents exist: the user can't see such jobs in the agent list, and you stay blocked waiting on them.
+Use the description `<model> · <access> · <task>`. Take the relay's `model=`, `effort=` and `access=` lines
+from the chosen entry (`read` for research and reviews, `edit` for changes), and start the worker task with its depth line.
 If the host has no relay agents, use the CLI Subagents start tool with the same options.
 
 ### Limits and nesting

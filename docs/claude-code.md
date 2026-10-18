@@ -79,7 +79,7 @@ The plugin adds three agent types, one per CLI:
 | `cli-subagents:cli-subagents-codex` | Codex (`codex exec`) on one of your ChatGPT accounts | green |
 | `cli-subagents:cli-subagents-antigravity` | Antigravity (`agy`) on your Google account | blue |
 
-Claude starts them with its Agent tool like any other subagent, so they show up in the agent list and in the desktop app's task list, and Claude gets the usual notice when one finishes. The task description reads `<model> · <access> · <task>`, for example `Opus 5.5 · edit · fix the login test`, so you can see which model works on what.
+Claude starts them with its Agent tool like any other subagent, so they show up in the agent list and in the desktop app's task list, and Claude gets the usual notice when one finishes. The task description reads `<model> · <access> · <task>`, for example `Opus 5.5 · edit · fix the login test`, so you can see which model works on what. Subagents start them the same way. A job started with `csa run` in a shell or with `subagent_start` doesn't appear in the agent list, so the skill and the rules template tell Claude to always use the relay agents in Claude Code.
 
 Each one is a small relay on Haiku. It starts the job with `csa run --follow` and prints the worker's steps as they happen: the commands it runs, the tools it calls, the files it edits, what it says, and its reasoning when the CLI reports it. Open the agent to watch. Jobs longer than about nine minutes continue with `csa follow <job> --from <offset>`, one more relay call each time. When the worker asks a question, the relay stops and passes it to the main session; Claude answers with SendMessage and the relay sends the answer on. SendMessage "cancel" stops the job.
 

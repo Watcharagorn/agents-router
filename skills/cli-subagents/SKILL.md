@@ -7,15 +7,37 @@ description: How to run subagents through CLI Subagents (the cli-subagents-* age
 
 These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex or Antigravity) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them.
 
-## In Claude Code: use the agents
+## In Claude Code: always start a relay agent
 
-With the plugin installed, Claude Code also has three agent types: `cli-subagents:cli-subagents-claude`, `cli-subagents:cli-subagents-codex` and `cli-subagents:cli-subagents-antigravity`. Start one with your Agent tool, in the background, like any other subagent. It shows up in the user's agent list with its own color, the user can open it and watch every step the worker takes (commands, edits, messages, reasoning), and you get the usual notice when it finishes. Prefer them over `subagent_start` in Claude Code.
+In Claude Code, start every CLI Subagents job with your Agent tool and one of the three relay agent types. This holds at every depth: a subagent that hands work to Codex or Gemini starts a relay agent the same way.
 
-- Description: `<model> · <access> · <task in a few words>`, for example `Opus 5.5 · edit · fix the login test`. The user reads it to see what runs where.
-- Prompt: optional option lines first (`model=opus`, `access=read`, `account=NAME`, `effort=high`, `cwd=PATH`, `timeout=SECONDS`, `override=USER_WORDS` only under the Limits rule below), then the complete task written as below. `access` defaults to `edit` in the Claude relay and `read` in the Codex and Antigravity relays. MCP starts default to `edit`.
-- Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. SendMessage "cancel" stops the job; anything else goes to the worker as a follow-up.
+| Runs in | `subagent_type` |
+|---|---|
+| Codex | `cli-subagents:cli-subagents-codex` |
+| Antigravity (Gemini) | `cli-subagents:cli-subagents-antigravity` |
+| Claude Code on another account | `cli-subagents:cli-subagents-claude` |
 
-The MCP tools below still work everywhere, and they are the only option in Codex and Antigravity.
+Don't run `csa run`, `csa start` or `csa follow` in your own shell, and don't call `subagent_start`. A job started that way never appears in the user's agent list, and your turn is blocked while you wait on it. A relay agent appears with its own color, the user can open it and watch every step the worker takes (commands, edits, messages, reasoning), and you get the usual notice when it finishes.
+
+```text
+Agent tool:
+  subagent_type: cli-subagents:cli-subagents-codex
+  description: Sol 6.1 high · edit · fix the login test
+  run_in_background: true
+  prompt: |
+    model=gpt-6.1-sol
+    effort=high
+    access=edit
+
+    <the complete, self-contained task>
+```
+
+- Description: `<model> · <access> · <task in a few words>`. The user reads it to see what runs where.
+- Prompt: option lines first, one per line (`model=...`, `effort=...`, `access=read|edit`, and only when needed `account=NAME`, `cwd=PATH`, `timeout=SECONDS`, `override=USER_WORDS` under the Limits rule below), then a blank line and the complete task written as below. `access` defaults to `edit` in the Claude relay and `read` in the Codex and Antigravity relays.
+- Start it in the background and keep working. Don't poll or wait in a shell; the notice arrives when it finishes.
+- Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. While the job runs, SendMessage "cancel" stops it and anything else goes to the worker as a follow-up. After the job has finished, its relay can't continue it: start a new relay agent with a complete task.
+
+The MCP tools below work everywhere. They are the only option in Codex and Antigravity, and in Claude Code only when the relay agent types are missing.
 
 ## The loop with the MCP tools
 

@@ -18,7 +18,9 @@ SUPPORTED_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 INSTRUCTIONS = (
     "Start subagents in Claude Code, Codex or Antigravity. Each job runs in the background on one "
     "of your own accounts, with the same MCP servers, plugins, skills and instructions as your main "
-    "setup. Start jobs with subagent_start, then call subagent_wait: it returns when a job finishes "
+    "setup. In Claude Code, start them with the Agent tool and the cli-subagents-* agent types "
+    "instead of these tools, so the user sees them; the cli-subagents skill explains how. Elsewhere, "
+    "start jobs with subagent_start, then call subagent_wait: it returns when a job finishes "
     "or a subagent sends a message or question. Answer or send follow-ups with subagent_message. "
     "subagent_accounts shows which accounts are ready."
 )
