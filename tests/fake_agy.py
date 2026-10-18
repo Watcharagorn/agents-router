@@ -1,6 +1,7 @@
 """Stand-in for `agy --output-format stream-json --print=...` used by the tests.
 
-  FAKE_AGY_SCENARIO  success (default) | quota | login_prompt | denied
+  FAKE_AGY_SCENARIO  success (default) | quota | login_prompt | denied | success_exit_1 |
+                    success_pause | success_quota | success_auth
   FAKE_AGY_LIMITED   comma-separated account folder names (HOME basenames) that report a quota error
   FAKE_AGY_TOOLS     JSON list of tool calls ({"name", "args"}) the "model" makes. Like agy, the fake
                      runs every PreToolUse hook in HOME/.gemini/config/hooks.json for each call and
@@ -106,6 +107,13 @@ def main():
     emit({"event": "step_update", "step_update": {"conversation_id": conversation, "step_index": 90, "state": "DONE", "step_type": "agent_response", "text_delta": "done"}})
     response = "gemini done\n" + "".join(line + "\n" for line in decisions)
     emit({"event": "result", "result": {"conversation_id": conversation, "status": "SUCCESS", "response": response, "num_turns": 1}})
+    scenario = os.environ.get("FAKE_AGY_SCENARIO", "success")
+    if scenario == "success_pause":
+        time.sleep(120)
+    if scenario in ("success_exit_1", "success_quota", "success_auth"):
+        sys.stderr.write({"success_exit_1": "late CLI failure\n", "success_quota": "quota reached\n",
+                          "success_auth": "Unauthenticated\n"}[scenario])
+        return 1
     return 0
 
 

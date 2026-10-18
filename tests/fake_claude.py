@@ -2,7 +2,8 @@
 
 Behaviour is chosen by environment variables:
   FAKE_CLAUDE_LIMITED   comma-separated account folder names that are "out of quota"
-  FAKE_CLAUDE_SCENARIO  success (default) | auth | slow | crash | nostdin
+  FAKE_CLAUDE_SCENARIO  success (default) | auth | slow | crash | nostdin | max_turns |
+                       success_exit_1 | success_pause | success_quota | success_auth
   FAKE_CLAUDE_RECORD    file to append {"argv", "env", "stdin"} records to
 """
 
@@ -90,8 +91,18 @@ def main():
         "status": "allowed", "unifiedWindows": {
             "five_hour": {"utilization": 0.25, "resetsAt": 1}, "seven_day": {"utilization": 0.5, "resetsAt": 2}},
     }, "session_id": session})
+    if scenario == "max_turns":
+        emit({"type": "result", "subtype": "error_max_turns", "is_error": True,
+              "session_id": session, "num_turns": 1})
+        return 1
     emit({"type": "result", "subtype": "success", "is_error": False, "result": f"done on {account}",
           "session_id": session, "total_cost_usd": 0.01, "num_turns": 1})
+    if scenario == "success_pause":
+        time.sleep(120)
+    if scenario in ("success_exit_1", "success_quota", "success_auth"):
+        sys.stderr.write({"success_exit_1": "late CLI failure\n", "success_quota": "usage limit reached\n",
+                          "success_auth": "not logged in\n"}[scenario])
+        return 1
     return 0
 
 

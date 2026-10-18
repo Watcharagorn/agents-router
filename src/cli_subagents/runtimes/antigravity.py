@@ -331,6 +331,8 @@ class AntigravityParser:
         elif kind == "result":
             self.result = event.get("result") or {}
             self.session_id = self.result.get("conversation_id") or self.session_id
+            if self.result.get("response"):
+                self.last_text = str(self.result["response"])
         return None
 
     def progress(self) -> dict[str, Any]:
@@ -340,13 +342,13 @@ class AntigravityParser:
         result = self.result or {}
         common = {"session_id": self.session_id, "usage": result.get("usage"), "num_turns": result.get("num_turns")}
         response = (str(result.get("response") or "") or self.last_text).strip()
-        if result.get("status") == "SUCCESS":
+        if result.get("status") == "SUCCESS" and exit_code == 0:
             denied = [item for item in result.get("denied_actions") or [] if isinstance(item, dict)]
             if not response and denied:
                 # Headless agy refused a tool it couldn't ask about and stopped without an answer.
                 return AttemptResult(ERROR, message=self._denied_message(denied, stderr_tail), **common)
             return AttemptResult(SUCCESS, text=response, **common)
-        text = self.last_text  # the worker's last real message, not an error text
+        text = response  # retain the response even if the CLI failed after emitting it
         error = result.get("error")
         error_text = error if isinstance(error, str) else str((error or {}).get("message") or "")
         haystack = "\n".join(part for part in (error_text, stderr_tail) if part)
@@ -358,8 +360,9 @@ class AntigravityParser:
             )
         if AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=message or "Antigravity needs a login", text=text, **common)
-        status = result.get("status") or f"exit {exit_code}"
-        return AttemptResult(ERROR, message=message or f"agy finished with {status}", text=text, **common)
+        status = result.get("status")
+        detail = message or (f"result status {status}" if status else "no result")
+        return AttemptResult(ERROR, message=f"agy exited with status {exit_code}: {detail}", text=text, **common)
 
     def _denied_message(self, denied: list[dict[str, Any]], stderr_tail: str) -> str:
         names = sorted({str(item.get("display_name") or item.get("action") or "?") for item in denied})

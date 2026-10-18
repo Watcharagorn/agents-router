@@ -397,6 +397,7 @@ class CodexParser:
         self.failures: list[str] = []  # turn.failed
         self.error_events: list[str] = []  # top-level `error` events (retries, stream errors)
         self.error_items: list[str] = []  # `error` items inside a turn
+        self._completed_error_count = 0
 
     def feed(self, event: dict[str, Any]) -> dict[str, Any] | None:
         kind = event.get("type")
@@ -415,6 +416,7 @@ class CodexParser:
         elif kind == "turn.completed":
             self.completed = True
             self.usage = event.get("usage")
+            self._completed_error_count = len(self.error_events)
         elif kind == "turn.failed":
             message = (event.get("error") or {}).get("message") or "turn failed"
             self.failures.append(str(message))
@@ -456,14 +458,12 @@ class CodexParser:
 
     def _finish(self, exit_code: int | None, stderr_tail: str) -> AttemptResult:
         common = {"session_id": self.session_id, "usage": self.usage}
-        if self.completed and exit_code in (0, None):
+        if self.completed and not self.failures and exit_code == 0:
             # A finished turn is a success; errors Codex recovered from stay warnings in progress.
             return AttemptResult(SUCCESS, text=self.last_text, **common)
-        # Limits and logins are judged only from a failed turn, or from CLI errors when
-        # no turn finished: error items and retried errors inside a finished turn don't count.
-        sources = list(self.failures)
-        if not self.completed:
-            sources += [*self.error_events, stderr_tail]
+        # A completed turn can be followed by a fatal CLI failure. Keep earlier
+        # recovered errors as warnings, but classify later errors and stderr.
+        sources = [*self.failures, *self.error_events[self._completed_error_count:], stderr_tail]
         haystack = "\n".join(part for part in sources if part)
         details = "\n".join(part for part in (haystack, *self.error_events, *self.error_items, stderr_tail) if part)
         message = next((line.strip() for line in details.splitlines() if line.strip()), "")[:300]
@@ -473,7 +473,8 @@ class CodexParser:
             )
         if AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=message or "authentication failed", text=self.last_text, **common)
-        return AttemptResult(ERROR, message=message or f"codex exited with status {exit_code}", text=self.last_text, **common)
+        message = f"codex exited with status {exit_code}" + (f": {message}" if message else "")
+        return AttemptResult(ERROR, message=message, text=self.last_text, **common)
 
 
 class CodexRuntime:

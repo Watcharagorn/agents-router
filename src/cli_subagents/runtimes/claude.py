@@ -210,6 +210,8 @@ class ClaudeParser:
                 return info
         elif kind == "result":
             self.result = event
+            if event.get("subtype") == "success" and not event.get("is_error") and event.get("result"):
+                self.last_text = str(event["result"])
         return None
 
     def progress(self) -> dict[str, Any]:
@@ -228,11 +230,12 @@ class ClaudeParser:
             "usage": result.get("usage"),
             "num_turns": result.get("num_turns"),
         }
-        if self.result and result.get("subtype") == "success" and not result.get("is_error"):
-            return AttemptResult(SUCCESS, text=str(result.get("result") or "") or self.last_text, **common)
-        # From here on `result.result` is an error text, not an answer: keep the
-        # worker's last real message as the text for result.md and handoffs.
-        text = self.last_text
+        succeeded = bool(self.result and result.get("subtype") == "success" and not result.get("is_error"))
+        # A successful result is still useful if the process failed afterward.
+        # Error results contain diagnostics; keep the last answer for those.
+        text = (str(result.get("result") or "") or self.last_text) if succeeded else self.last_text
+        if succeeded and exit_code == 0:
+            return AttemptResult(SUCCESS, text=text, **common)
         if result.get("subtype") == "error_max_turns":
             return AttemptResult(MAX_TURNS, message="stopped at the max_turns limit", text=text, **common)
 
@@ -256,7 +259,12 @@ class ClaudeParser:
             )
         if result.get("api_error_status") == 401 or AUTH_RE.search(haystack):
             return AttemptResult(AUTH, message=_first_line(haystack) or "authentication failed", text=text, **common)
-        message = _first_line(haystack) or f"claude exited with status {exit_code} and no result"
+        message = f"claude exited with status {exit_code}"
+        detail = _first_line(haystack)
+        if detail:
+            message += f": {detail}"
+        elif not self.result:
+            message += " and no result"
         return AttemptResult(ERROR, message=message, text=text, **common)
 
 
