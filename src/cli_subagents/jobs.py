@@ -32,6 +32,7 @@ from cli_subagents.fsutil import (
     pid_alive,
     python_executable,
     read_json,
+    read_text,
     same_process,
     spawn_detached,
     write_json,
@@ -325,7 +326,7 @@ def wait_for(job_id: str, seconds: float) -> dict[str, Any]:
 def read_result(job_id: str, max_chars: int = 20000) -> dict[str, Any]:
     status = read_status(job_id)
     path = job_dir(job_id) / "result.md"
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    text = read_text(path) if path.exists() else ""
     truncated = len(text) > max_chars
     return {
         **status,

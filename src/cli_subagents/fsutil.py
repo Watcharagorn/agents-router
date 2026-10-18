@@ -24,9 +24,24 @@ else:  # pragma: no cover - exercised on POSIX only
 
 def read_json(path: Path, default: Any = None) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_text(path))
     except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
         return default
+
+
+def read_text(path: Path) -> str:
+    """Read a UTF-8 file that another process may be replacing with write_private."""
+
+    attempt = 0
+    while True:
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            # Windows refuses to open a file for a moment while os.replace swaps it.
+            attempt += 1
+            if os.name != "nt" or attempt == 20:
+                raise
+            time.sleep(0.05)
 
 
 def make_private_dir(path: Path) -> None:

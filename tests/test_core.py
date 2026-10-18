@@ -2,6 +2,10 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -12,7 +16,7 @@ import re
 
 from cli_subagents import accounts, jobs, mcp_server, runner, sync
 from cli_subagents.config import load_config
-from cli_subagents.fsutil import is_link
+from cli_subagents.fsutil import is_link, read_json, write_json
 from cli_subagents.runtimes.base import clean_environment
 from cli_subagents.runtimes.claude import ClaudeParser, ClaudeRuntime
 
@@ -39,6 +43,57 @@ class EnvironmentTests(unittest.TestCase):
             cleaned,
             {"PATH": "x", "HOME": "h", "CLAUDE_CODE_GIT_BASH_PATH": "C:/git/bash.exe", "CLI_SUBAGENTS_HOME": "keep"},
         )
+
+
+REPLACE_LOOP = """
+import sys, time
+from pathlib import Path
+from cli_subagents.fsutil import write_json
+path, stop_at, count = Path(sys.argv[1]), float(sys.argv[2]), 0
+while time.time() < stop_at:
+    try:
+        write_json(path, {"count": count})
+    except OSError:
+        pass  # like the runner's heartbeat: a busy file skips one write
+    count += 1
+"""
+
+
+class ReplacedFileTests(unittest.TestCase):
+    """status.json is read while the runner replaces it, so reads must ride out the swap."""
+
+    def test_reads_while_other_processes_replace_the_file(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+            path = Path(temp) / "status.json"
+            write_json(path, {"count": -1})
+            stop_at = time.time() + 2.0
+            src = Path(__file__).resolve().parents[1] / "src"
+            writers = [
+                subprocess.Popen(
+                    [sys.executable, "-c", REPLACE_LOOP, str(path), str(stop_at)],
+                    env={**os.environ, "PYTHONPATH": str(src)},
+                )
+                for _ in range(2)
+            ]
+            values, errors = [], []
+
+            def keep_reading():
+                while time.time() < stop_at:
+                    try:
+                        values.append(read_json(path))
+                    except OSError as exc:
+                        errors.append(exc)
+                    time.sleep(0.001)  # pollers pause between reads; nonstop readers would starve the writers
+
+            readers = [threading.Thread(target=keep_reading) for _ in range(4)]
+            for reader in readers:
+                reader.start()
+            for reader in readers:
+                reader.join()
+            self.assertEqual([writer.wait(timeout=60) for writer in writers], [0, 0])
+        self.assertEqual(errors, [])
+        self.assertTrue(values)
+        self.assertTrue(all(isinstance(value, dict) for value in values))
 
 
 class ParserTests(unittest.TestCase):
