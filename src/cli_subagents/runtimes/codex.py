@@ -633,6 +633,10 @@ class CodexRuntime:
         if config.web_search is not None:
             argv += ["-c", f"web_search={json.dumps(config.web_search)}"]
         argv += windows_sandbox_args(config, account.home, spec.access)
+        if spec.access == "edit" and config.network_access:
+            # Codex's workspace-write sandbox blocks network by default, on Windows (mxc) even
+            # local sockets, so test runners such as VSTest hang. Claude edit jobs have network too.
+            argv += ["-c", "sandbox_workspace_write.network_access=true"]
         argv += no_nesting
         argv += _parent_overrides(spec.job_id)
         env = self.account_env(config, account)

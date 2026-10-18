@@ -64,6 +64,19 @@ Updating Codex alone won't fix this; the setting has to be there.
 - So CLI Subagents adds `-c windows.sandbox="unelevated"` to `read` and `edit` jobs on Windows, also when resuming, unless the Codex config the run reads already sets `[windows] sandbox`. `full` jobs get nothing. The `[codex] windows_sandbox` key (`"unelevated"` default, `"elevated"`, `"off"`) changes this.
 - `csa doctor --runtime codex` prints one line on Windows saying which sandbox jobs will use.
 
+## Network and local sockets (tested 2026-10-18, Windows, Codex 0.162.1)
+
+A job in a .NET project reported that `dotnet test` can't run in Codex's sandbox: VSTest's test host couldn't connect to its runner on 127.0.0.1 (`SocketException 10013`), and a retry with `require_escalated` still hung. The owner's Codex config sets `[windows] sandbox = "mxc"`, and csa keeps a sandbox the user set. Each cell below is a `codex exec` run in workspace-write with approvals off, on a throwaway folder: a Python script that opens a TCP server on 127.0.0.1 and connects to it, and `dotnet test --no-restore` on a new one-test xunit project.
+
+| Sandbox | `network_access` | Local socket | `dotnet test` |
+|---|---|---|---|
+| `mxc` | false (Codex default) | blocked, WinError 10013 | hangs |
+| `mxc` | true | works | passes |
+| `unelevated` | false | works | passes |
+| `unelevated` | true | works | passes |
+
+With `--approve-for-me` (what csa uses for edit jobs) the results matched. An escalated command (approved by Codex's auto-review) opened the local socket under `mxc` too, but escalation is a per-command detour. Since 0.2.7, csa passes `-c sandbox_workspace_write.network_access=true` to edit jobs (`[codex] network_access`, default true).
+
 ## Sources
 
 - openai/codex: PRs #11341, #42353, #47375, #50437, #51256; `codex-rs/core/src/features.rs` at `rust-v0.100.0`; `codex-rs/core/src/windows_sandbox.rs` and `codex-rs/cli/src/doctor/sandbox.rs` at `rust-v0.162.1`; releases `rust-v0.162.0` and `rust-v0.162.1`.

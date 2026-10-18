@@ -29,13 +29,14 @@ enabled = true
 primary = "~/.codex"        # default: CODEX_HOME or ~/.codex
 failover = "on-limit"
 # windows_sandbox = "unelevated"   # on Windows: "unelevated", "elevated" or "off" (see docs/codex.md)
+# network_access = true            # edit jobs get network inside the sandbox; false keeps Codex's default (off)
 
 [[codex.accounts]]
 name = "plus-2"
 home = "~/.cli-subagents/homes/codex/plus-2"
 ```
 
-The `[codex]` section takes the same keys as `[claude]`, but ignores `connectors` and `edit_permission_mode`. `connectors` only applies to Claude. Codex uses its own approval and sandbox flags for each `access` level; see [Codex](codex.md#using-it). `share_parent_mcp` (default `true`) applies to Codex and Antigravity: workers started from Claude Code get its MCP servers (see [codex.md](codex.md#what-a-worker-gets-from-a-claude-code-session)); for Antigravity your own Gemini servers win when two have the same name. `web_search` only applies to Codex: `"disabled"`, `"cached"`, `"indexed"` or `"live"`, passed as `-c web_search="<value>"` on new and resumed runs. Leaving it unset preserves Codex's own default (`"cached"`). `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `[antigravity]` takes `binary`, `default_model`, `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it) and `share_parent_mcp`, the review keys below, and the account keys further down.
+The `[codex]` section takes the same keys as `[claude]`, but ignores `connectors` and `edit_permission_mode`. `connectors` only applies to Claude. Codex uses its own approval and sandbox flags for each `access` level; see [Codex](codex.md#using-it). `share_parent_mcp` (default `true`) applies to Codex and Antigravity: workers started from Claude Code get its MCP servers (see [codex.md](codex.md#what-a-worker-gets-from-a-claude-code-session)); for Antigravity your own Gemini servers win when two have the same name. `web_search` only applies to Codex: `"disabled"`, `"cached"`, `"indexed"` or `"live"`, passed as `-c web_search="<value>"` on new and resumed runs. Leaving it unset preserves Codex's own default (`"cached"`). `windows_sandbox` only applies to Codex: on Windows, read and edit jobs get `-c windows.sandbox="<value>"` unless your Codex `config.toml` already sets `[windows] sandbox`; `"off"` adds nothing. `network_access` only applies to Codex and defaults to `true`: `edit` jobs get `-c sandbox_workspace_write.network_access=true`, so commands in the sandbox can reach the network and open local sockets (test runners such as VSTest need them). Set it to `false` to keep Codex's own default, which blocks both; see [codex.md](codex.md#using-it). `[antigravity]` takes `binary`, `default_model`, `edit_permission_mode` (`accept-edits` by default, or `auto` where the account supports it) and `share_parent_mcp`, the review keys below, and the account keys further down.
 
 ```toml
 [antigravity]

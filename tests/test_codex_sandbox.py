@@ -66,6 +66,28 @@ class WindowsSandboxTests(TempHome):
         with self.assertRaises(ValueError):
             load_config()
 
+    def test_edit_jobs_get_network_in_the_sandbox(self):
+        network = "sandbox_workspace_write.network_access=true"
+        for resume in (None, "thread-1"):
+            argv = self.argv("edit", resume=resume, config_text='[windows]\nsandbox = "mxc"\n')
+            self.assertIn(network, argv)
+            self.assertEqual(argv[argv.index(network) - 1], "-c")
+        for access in ("read", "full"):
+            self.assertNotIn(network, self.argv(access))
+        self.assertNotIn(network, self.argv("edit", extra="network_access = false"))
+
+    def test_network_access_must_be_a_codex_boolean(self):
+        for text in ('[codex]\nnetwork_access = "yes"\n', '[claude]\nnetwork_access = true\n'):
+            (self.home / "config.toml").write_text(text, encoding="utf-8")
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                load_config()
+
+    def test_network_access_off_survives_a_save(self):
+        from cli_subagents.config import save_config
+        (self.home / "config.toml").write_text("[codex]\nnetwork_access = false\n", encoding="utf-8")
+        save_config(load_config())
+        self.assertFalse(load_config().runtime("codex").network_access)
+
     def test_doctor_summary(self):
         (self.home / "config.toml").write_text(f"[codex]\nprimary = {json.dumps(str(self.primary))}\n", encoding="utf-8")
         config = load_config().runtime("codex")

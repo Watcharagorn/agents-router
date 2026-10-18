@@ -118,6 +118,7 @@ class RuntimeConfig:
     max_jobs_by_room: list[list[float | int]] = field(default_factory=list)
     pools: list[QuotaPool] = field(default_factory=list)
     web_search: str | None = None  # [codex] only; unset preserves Codex's default
+    network_access: bool = True  # [codex] only: network inside the sandbox for edit jobs (local test sockets too)
     accounts: list[Account] = field(default_factory=list)
 
     def primary_account(self) -> Account:
@@ -276,6 +277,9 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     web_search = data.get("web_search")
     if web_search is not None and (name != "codex" or web_search not in WEB_SEARCH_MODES):
         raise ValueError(f"[{name}] web_search must be under [codex] and one of {WEB_SEARCH_MODES}")
+    network_access = data.get("network_access", True)
+    if not isinstance(network_access, bool) or ("network_access" in data and name != "codex"):
+        raise ValueError(f"[{name}] network_access must be true or false, under [codex] only")
     ceiling = float(data.get("usage_ceiling", 0.95))
     if not 0 < ceiling <= 1:
         raise ValueError(f"[{name}] usage_ceiling must be above 0 and at most 1")
@@ -307,6 +311,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         max_jobs_by_room=_room_steps(name, data.get("max_jobs_by_room")),
         pools=_quota_pools(name, data.get("pools", [])),
         web_search=web_search,
+        network_access=network_access,
         accounts=accounts,
     )
 
@@ -389,6 +394,8 @@ def dump_config(config: Config) -> str:
             lines.append(f"max_jobs_by_room = {json.dumps(runtime.max_jobs_by_room)}")
         if name == "codex" and runtime.web_search is not None:
             lines.append(f"web_search = {_toml_value(runtime.web_search)}")
+        if name == "codex" and not runtime.network_access:
+            lines.append("network_access = false")
         for pool in runtime.pools:
             lines += ["", f"[[{name}.pools]]", f"name = {_toml_value(pool.name)}", f"models = {json.dumps(pool.models)}"]
             for key in ("per_account", "total", "weekly_jobs", "cooldown_minutes"):
