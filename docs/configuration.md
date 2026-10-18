@@ -85,7 +85,7 @@ Plan presets and extra caps are opt-in. By default, each account runs one worker
 
 Order for one account: its own `max_jobs`, then its plan preset, then `max_jobs_per_account`. A `fallback = true` account still comes after every other account.
 
-`when_full = "queue"` skips admission checks for global and fixed runtime `max_jobs`. It still checks model allowlists, `max_jobs_by_room` and pool weekly budgets. The runner waits up to 15 minutes for busy account or pool slots. It re-checks account eligibility, model allowlists, cooldowns, account caps and pool limits. It does not re-check global or runtime caps (including `max_jobs_by_room`) or enforce `usage_ceiling`. If no eligible account remains, such as when all accounts are cooling down, the job can end with `no_account` at once.
+`when_full = "queue"` skips admission checks for global and fixed runtime `max_jobs`. It still checks model allowlists, `max_jobs_by_room` and pool weekly budgets. The runner waits up to 15 minutes for busy account, pool, global or runtime slots (including `max_jobs_by_room`). It re-checks account eligibility, model allowlists, cooldowns, account caps and pool limits. It does not enforce `usage_ceiling` again. If no eligible account remains, such as when all accounts are cooling down, the job can end with `no_account` at once.
 
 ```toml
 [codex]
@@ -104,12 +104,27 @@ A refusal looks like this:
 
 ```
 Codex is at its limit: 4 of 4 subagents running (plan preset plus: 4 per account; change with max_jobs). Start this with runtime claude, or wait for one to finish.
+Only if the user explicitly asked for more parallel jobs, start again with override=<their words>; otherwise ask the user (say how much of the 5-hour window is left) or use the home model.
 Room: Claude 2 accounts (no usage data) · Codex primary 8% left (5h, resets 03:12)
 ```
 
 The `Room:` line is also in the `subagent_start` and `subagent_accounts` results. With quota steps or pools configured, it appears in the `csa run --follow` header too. It shows what is already known, marks old data with its age (`as of 2 h ago`) and leaves out accounts with no data. Codex usage is read from the newest rollout file in each Codex account folder (the `rate_limits` field only). Claude usage comes from the events of jobs that already ran. Antigravity shows job counts and cooldowns, with no remaining-quota estimate. Nothing starts a job to measure usage.
 
 `csa accounts`, `subagent_accounts` and `csa doctor` list each account's cap, effort cap and model list, and where each one comes from. Where usage is known, they show each window's percentage used (`usage`) and when it resets (`usage_resets`), in local time with a countdown, for example `"five_hour": "2026-10-18 01:26 (in 4 h 15 min)"`. For Claude accounts they also suggest a plan (read from `oauthAccount.userRateLimitTier` and `organizationRateLimitTier` in the account's `.claude.json`, nothing else). A suggestion is not applied until you set `plan`.
+
+### A user-authorized override
+
+For one start, `override` holds the user's own words authorizing more parallel jobs, for example `"user asked for 6 Codex agents"`. Empty or whitespace-only values are rejected. Pass it as `override=...` in a relay prompt, the `override` field of `subagent_start`, or `--override "..."` on `csa run` and `csa start`:
+
+```bash
+csa run --runtime codex --override "user asked for 6 Codex agents" "Review the parser"
+```
+
+Never set override on your own judgment; use it only when the user asked for more jobs in this conversation, or confirmed after you warned them and told them how much of the 5-hour window is left. Otherwise follow the refusal's suggestion or use the home model. Use the reported usage and reset time; if the 5-hour window is unknown, say so.
+
+Override bypasses csa's global, runtime and per-account job caps (including plan presets and `max_jobs_per_account`), `max_jobs_by_room`, `usage_ceiling`, pool `per_account`, `total` and `weekly_jobs`, and `when_full` queueing. Real quota or usage-limit cooldowns still apply, including pool cooldowns. Account `models` and `max_effort`, login requirements, depth limits and access levels still apply too.
+
+Override jobs count toward later starts and keep their normal quota records. The override text is stored in the job's spec and status, and shown by `csa jobs`, the `csa run --follow` header, `subagent_status` and `subagent_result`. It applies to that start only; continuing a finished job does not inherit it.
 
 ### Quota-scaled caps
 

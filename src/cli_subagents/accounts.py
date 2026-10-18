@@ -239,38 +239,67 @@ def _take_slot(lock_path: Path) -> BinaryIO | None:
     return handle
 
 
-def try_lease(runtime: RuntimeConfig, account: Account) -> Lease | None:
+def _take_capped_slot(folder: Path, cap: int, *, override: bool = False) -> tuple[BinaryIO, Path] | None:
+    """Lease a slot, counting overflow slots too. Only override may exceed the cap.
+
+    Serialize selection so a normal job cannot use a gap while overflow jobs
+    still occupy the full allowance. Owner records keep orphaned workers counted.
+    """
+
+    available = None
+    with file_lock(folder / "selection.lock", timeout=30):
+        indices = sorted(int(path.stem) for path in folder.glob("*.lock") if path.stem.isdecimal())
+        busy = 0
+        try:
+            for index in indices:
+                path = folder / f"{index}.lock"
+                handle = _take_slot(path)
+                if handle is None:
+                    busy += 1
+                elif available is None:
+                    available = (handle, path)
+                else:
+                    unlock(handle)
+            if not override and busy >= cap:
+                return None
+            if available is not None:
+                result, available = available, None
+                return result
+            index = next((i for i, used in enumerate(indices) if i != used), len(indices))
+            path = folder / f"{index}.lock"
+            handle = _take_slot(path)
+            return (handle, path) if handle is not None else None
+        finally:
+            if available is not None:
+                unlock(available[0])
+
+
+def try_lease(runtime: RuntimeConfig, account: Account, *, override: str | None = None) -> Lease | None:
     """Take one of the account's job slots, or None if all are busy."""
 
-    for slot in range(account_cap(runtime, account)):
-        path = _slot_path(runtime, account, slot)
-        handle = _take_slot(path)
-        if handle is not None:
-            return Lease(runtime.runtime, account, handle, path)
-    return None
+    slot = _take_capped_slot(_slot_path(runtime, account, 0).parent, account_cap(runtime, account), override=bool(override))
+    return Lease(runtime.runtime, account, *slot) if slot is not None else None
 
 
-def _lease_pool(lease: Lease, runtime: RuntimeConfig, pool: QuotaPool) -> bool:
+def _lease_pool(lease: Lease, runtime: RuntimeConfig, pool: QuotaPool, *, override: str | None = None) -> bool:
     root = state_dir() / "leases" / runtime.runtime / "pools" / pool.name
     for folder, cap in ((root / _home_key(lease.account.home), pool.per_account), (root / "total", pool.total)):
         if cap is None:
             continue
-        for slot in range(cap):
-            path = folder / f"{slot}.lock"
-            handle = _take_slot(path)
-            if handle is not None:
-                lease.pool_slots.append((handle, path))
-                break
-        else:
+        slot = _take_capped_slot(folder, cap, override=bool(override))
+        if slot is None:
             lease.release()
             return False
+        lease.pool_slots.append(slot)
     return True
 
 
 def busy_slots(runtime: RuntimeConfig, account: Account) -> int:
     busy = 0
-    for slot in range(account_cap(runtime, account)):
-        path = _slot_path(runtime, account, slot)
+    folder = _slot_path(runtime, account, 0).parent
+    for path in folder.glob("*.lock"):
+        if not path.stem.isdecimal():
+            continue
         handle = try_lock(path)
         if handle is None:
             busy += 1
@@ -343,6 +372,7 @@ def _acquire(
     prefer: str | None = None,
     model: str | None = None,
     job_id: str | None = None,
+    override: str | None = None,
 ) -> tuple[Lease | None, float | None, bool]:
     """Lease the best free account.
 
@@ -357,18 +387,18 @@ def _acquire(
     accounts, earliest = ranked_accounts(
         runtime, pinned=pinned, exclude=exclude, prefer=prefer, model=model or runtime.default_model, pool=pool
     )
-    if pool and pool.total is not None and state.executing_totals.get(pool.name, 0) >= pool.total:
+    if not override and pool and pool.total is not None and state.executing_totals.get(pool.name, 0) >= pool.total:
         return None, earliest, bool(accounts)
     budget_blocked = 0
     for account in accounts:
-        if pool and pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
+        if not override and pool and pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
             budget_blocked += 1
             continue
-        if pool and pool.per_account is not None and state.executing.get((account.name, pool.name), 0) >= pool.per_account:
+        if not override and pool and pool.per_account is not None and state.executing.get((account.name, pool.name), 0) >= pool.per_account:
             continue
-        lease = try_lease(runtime, account)
+        lease = try_lease(runtime, account, override=override)
         if lease is not None:
-            if pool and not _lease_pool(lease, runtime, pool):
+            if pool and not _lease_pool(lease, runtime, pool, override=override):
                 continue
             if pool and job_id:
                 from cli_subagents.jobs import update_status

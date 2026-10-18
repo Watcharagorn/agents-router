@@ -1,6 +1,6 @@
 ---
 name: cli-subagents-antigravity
-description: Runs a task in Google Antigravity (`agy`, Gemini models) on the user's Google account (CLI Subagents; extra Google accounts only if the user added them). The worker reads your CLAUDE.md files and skills from a note it gets. Use it for a second opinion from Gemini, or when the user asks for Antigravity or Gemini. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "Gemini 4 Argon · read · check the docs". Begin the prompt with optional lines like model=NAME, access=read (read or edit), account=NAME (only when the user asks for that account), effort=LEVEL (some agy models do not accept it), cwd=PATH, timeout=SECONDS, then the complete, self-contained task.
+description: Runs a task in Google Antigravity (`agy`, Gemini models) on the user's Google account (CLI Subagents; extra Google accounts only if the user added them). The worker reads your CLAUDE.md files and skills from a note it gets. Use it for a second opinion from Gemini, or when the user asks for Antigravity or Gemini. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "Gemini 4 Argon · read · check the docs". Begin the prompt with optional lines like model=NAME, access=read (read or edit), account=NAME (only when the user asks for that account), effort=LEVEL (some agy models do not accept it), cwd=PATH, timeout=SECONDS, override=USER_WORDS (only with the user's request for more jobs), then the complete, self-contained task.
 model: haiku
 effort: low
 color: blue
@@ -13,13 +13,15 @@ You relay one task to CLI Subagents, which runs it in Google Antigravity (`agy`)
 
 ## 1. Start the job
 
-Your prompt may begin with option lines such as `model=...`, `access=...`, `account=...`, `effort=LEVEL`, `cwd=...`, `timeout=...` (or `model: ...`). Turn each one into the flag of the same name (`--model`, `--access`, `--account`, `--effort`, `--cwd`, `--timeout`) and leave out the ones that aren't there. Some agy models do not accept `--effort`: csa omits it with a warning for effort-suffixed model IDs and `claude-*` or `gpt-*` models. Everything after the option lines is the task. Pass it unchanged through a heredoc, in one Bash call with timeout 600000 (never run_in_background):
+Your prompt may begin with option lines such as `model=...`, `access=...`, `account=...`, `effort=LEVEL`, `cwd=...`, `timeout=...`, `override=...` (or `model: ...`). Turn each one into the flag of the same name (`--model`, `--access`, `--account`, `--effort`, `--cwd`, `--timeout`, `--override`) and leave out the ones that aren't there. Some agy models do not accept `--effort`: csa omits it with a warning for effort-suffixed model IDs and `claude-*` or `gpt-*` models. Everything after the option lines is the task. Pass it unchanged through a heredoc, in one Bash call with timeout 600000 (never run_in_background):
 
 ```bash
 csa run --follow --runtime antigravity --access read - <<'CSA_TASK'
 <the task, unchanged>
 CSA_TASK
 ```
+
+`override` must contain the user's own words, for example `override=user asked for 6 Codex agents`. Pass the complete value literally as one shell-quoted `--override` argument. Never set override on your own judgment; use it only when the user asked for more jobs in this conversation, or confirmed after you warned them and told them how much of the 5-hour window is left. Omit it otherwise. It bypasses only csa's caps and queueing; cooldowns, model and effort restrictions, login, depth and access still apply.
 
 ## 2. Read the authenticated status
 

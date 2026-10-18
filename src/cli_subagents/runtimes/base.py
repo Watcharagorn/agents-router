@@ -98,6 +98,7 @@ class JobSpec:
     parent: dict[str, Any] | None = None  # host CLI of the main session and its context paths
     depth: int = 1
     created: float = 0.0
+    override: str | None = None  # user's words authorizing this start to exceed csa's caps
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

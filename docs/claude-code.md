@@ -106,7 +106,7 @@ From a terminal, the same jobs are available through `csa run` (add `--follow` t
 
 `access` controls permissions:
 
-- `read` runs the worker in `dontAsk` mode with an allowlist of read-only tools (`Read`, `Grep`, `Glob`, web search and fetch, native subagents) and read-only shell commands (`git status`, `git diff`, `git log`, `ls`, `cat`, `grep`, `rg` and a few more). Anything else is refused. Plan mode isn't used because it blocks every MCP call, including the channel to the main session.
+- `read` runs the worker in `dontAsk` mode with an allowlist of read-only tools (`Read`, `Grep`, `Glob`, web search and fetch, native subagents) and shell commands (`git status`, `git diff`, `git log`, `git show`, `git blame`, `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, and PowerShell's `Get-ChildItem`, `Get-Content`, `Measure-Object`). A worker-only `PreToolUse` hook checks commands and their options against a read-only allowlist and checks named paths for secrets. It denies unknown options, writes and execution helpers such as `git diff --output=FILE`, `git diff --ext-diff`, and `rg --pre=CMD`. Safe commands continue through the normal permission rules. If the check itself can't start or times out, the command is blocked (`onFailure: "block"`, Claude Code 2.1.295 or later). Plan mode isn't used because it blocks every MCP call, including the channel to the main session.
 - `edit` uses Claude Code's auto mode by default (edits allowed, with Claude's own classifier checking risky actions). Change it with `edit_permission_mode`.
 - `full` skips permission checks and is only for when you ask for it.
 
@@ -165,6 +165,8 @@ failover = "off"
 ## Limits
 
 csa counts the running jobs on the machine and refuses a start when your cap for that account or runtime is reached. It replies with one line, for example `Claude is at its limit: 2 of 2 subagents running (plan preset pro: 2 per account; change with max_jobs). Start this with runtime codex, or wait for one to finish.` Follow the suggestion; there is nothing to calculate. Set `plan`, `max_jobs`, optional `max_jobs_by_room` steps or model `pools` in `config.toml` to cap new starts. Pools can also set `per_account`, `total`, `weekly_jobs` and `cooldown_minutes` for model globs; other models keep working during a pool cooldown. If you set `plan = "auto"`, csa reads your plan from the account's login info. See [Configuration](configuration.md#limits).
+
+Only the user can authorize extra parallel jobs. Never set override on your own judgment; use it only when the user asked for more jobs in this conversation, or confirmed after you warned them and told them how much of the 5-hour window is left. Put their words in a relay option line such as `override=user asked for 6 Codex agents`, the `override` field of `subagent_start`, or `--override "user asked for 6 Codex agents"` on `csa run` or `csa start`. The value must contain text. It bypasses csa's job caps, quota steps, usage ceiling, pool budgets and queueing. Cooldowns after real usage-limit errors, model and effort restrictions, login, depth and access still apply. Override jobs still count toward later starts. Their override text appears in `csa jobs`, the follow header and status/result summaries. See [override details](configuration.md#a-user-authorized-override).
 
 ## Interactive sessions with the shared setup
 

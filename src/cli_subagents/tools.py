@@ -55,6 +55,13 @@ DEFINITIONS = [
                 "account": {"type": "string", "description": "Run on this account only. Omit to let the pool pick."},
                 "model": {"type": "string", "description": "Model alias or ID, e.g. 'sonnet', 'opus', 'haiku'."},
                 "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]},
+                "override": {
+                    "type": "string", "minLength": 1, "pattern": "\\S",
+                    "description": "The user's own words authorizing more parallel jobs, e.g. 'user asked for 6 Codex agents'. "
+                    "Bypasses only csa's caps and queueing, never cooldowns, model or effort restrictions, login, depth or access. "
+                    "Never set this on your own judgment. Use it only when the user asked for more jobs in this conversation "
+                    "or confirmed after you warned them and told them how much of the 5-hour window is left.",
+                },
                 "access": {
                     "type": "string",
                     "enum": list(ACCESS_LEVELS),
@@ -173,7 +180,7 @@ def summarize(status: dict[str, Any]) -> dict[str, Any]:
 
     keys = (
         "job_id", "runtime", "state", "outcome", "message", "account", "session_id",
-        "cwd", "progress", "cost_usd", "warnings",
+        "cwd", "progress", "cost_usd", "warnings", "override",
     )
     summary = {key: status.get(key) for key in keys if status.get(key) not in (None, [], {})}
     notes = [*(status.get("warnings") or []), *(status.get("limit_notes") or [])]
@@ -327,6 +334,7 @@ def _call(name: str, arguments: dict[str, Any], progress=None, client: str | Non
             account=arguments.get("account"),
             model=arguments.get("model"),
             effort=arguments.get("effort"),
+            override=arguments.get("override"),
             access=str(arguments.get("access") or "edit"),
             max_turns=arguments.get("max_turns"),
             timeout_seconds=int(arguments.get("timeout_seconds") or 1800),

@@ -10,50 +10,99 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable
+from typing import Callable, NamedTuple
 
 # Characters that expand, redirect, chain or start subshells in sh, cmd or PowerShell.
 UNSAFE_CHARS = set("`$%<>;&(){}^!@\r\n")
 
 SIMPLE_READERS = {
     "ls", "dir", "gci", "get-childitem", "cat", "type", "gc", "get-content", "head", "tail", "wc", "pwd",
-    "get-location", "echo", "write-output", "tree", "which", "where.exe", "get-command", "gcm", "file", "stat",
+    "get-location", "echo", "write-output", "tree", "which", "where.exe", "file", "stat",
     "du", "select-string", "sls", "findstr", "grep", "egrep", "fgrep", "test-path", "resolve-path",
     "get-item", "gi", "measure-object", "measure", "select-object", "select", "sort-object", "format-table",
     "ft", "format-list", "fl", "out-string", "get-filehash", "nl", "basename", "dirname", "realpath", "date",
     "get-date", "whoami", "hostname", "uname", "rg", "find", "fd", "sort", "diff", "cmp", "md5sum",
     "sha256sum", "certutil",
 }
-VERSION_ONLY = {
-    "python", "python3", "py", "node", "npm", "npx", "pnpm", "yarn", "pip", "pip3", "uv", "cargo", "rustc",
-    "go", "java", "javac", "dotnet", "gcc", "clang", "make", "cmake", "ruby", "php", "deno", "bun", "gh",
-    "docker", "kubectl", "terraform", "pwsh", "powershell", "bash", "sh", "code", "agy", "claude", "codex", "csa",
+# Version spellings are command-specific: `npm version` writes package files,
+# `java version` runs a class, and `make --version` can read a hostile makefile.
+VERSION_ONLY = {"python", "python3", "node"}
+VERSION_FLAGS = {"--version"}
+
+# Each entry is (flags, options requiring one value). Unknown options go to
+# review, including GNU abbreviations. Values are checked as paths as well as
+# operands, so -fFILE/--option=FILE cannot hide an unchecked input path.
+# Commands with no entry accept operands only. Do not add indirect file-list,
+# magic database, config, output, pager, exec or decompression options here.
+READ_OPTIONS: dict[str, tuple[str, str]] = {
+    "ls": ("-a -A -l -h -R -r -t -S -d -F -1 -n -i --all --almost-all --long --human-readable --recursive", ""),
+    "dir": ("/b /s /a /ad /a-d", ""),
+    "cat": ("-n -b -s -v -E -T -A --number --number-nonblank --squeeze-blank", ""),
+    "head": ("-q -v --quiet --verbose", "-n -c --lines --bytes"),
+    "tail": ("-q -v --quiet --verbose", "-n -c --lines --bytes"),
+    "wc": ("-l -w -c -m -L --lines --words --bytes --chars --max-line-length", ""),
+    "tree": ("-a -d -f /f /a", "-L"),
+    "which": ("-a --all", ""),
+    "where.exe": ("/q /f /t", "/r"),
+    "file": ("-b -i -L -h --brief --mime --mime-type --mime-encoding --dereference --no-dereference", ""),
+    "stat": ("-L -f --dereference --file-system", "-c --format --printf"),
+    "du": ("-a -s -h -c -b -k -m -L -P --all --summarize --human-readable --total", "-d --max-depth"),
+    "grep": ("-i -v -n -H -h -l -L -c -q -s -E -F -w -x -r -R -o -a -I --ignore-case --invert-match --line-number --files-with-matches --files-without-match --count --quiet --recursive --dereference-recursive --fixed-strings --extended-regexp", "-e -A -B -C -m --regexp --after-context --before-context --context --max-count"),
+    "findstr": ("/i /l /r /s /n /m /v /x /b /e /p /off /offline", "/c"),
+    "rg": ("-i -v -n -N -H -l -c -q -s -S -F -w -x -o -a -U -u -L -0 --hidden --no-ignore --no-ignore-vcs --no-ignore-dot --files --files-with-matches --files-without-match --count --count-matches --line-number --no-line-number --ignore-case --smart-case --case-sensitive --fixed-strings --word-regexp --line-regexp --only-matching --text --multiline --follow --null --no-config", "-e -g -t -T -A -B -C -m -j --regexp --glob --iglob --type --type-not --after-context --before-context --context --max-count --threads --max-depth --max-filesize --color"),
+    "find": ("-H -L -P -print -print0 -ls -empty -readable -writable -executable -true -false -a -and -o -or -not", "-name -iname -path -ipath -type -maxdepth -mindepth -size -mtime -mmin -user -group"),
+    "fd": ("-H -I -i -s -g -a -L -0 --hidden --no-ignore --ignore-case --case-sensitive --glob --absolute-path --follow --print0", "-e -t -d -E --extension --type --max-depth --exclude"),
+    "sort": ("-b -d -f -g -h -i -M -n -r -R -s -u -V -z -c -C --ignore-leading-blanks --dictionary-order --ignore-case --general-numeric-sort --human-numeric-sort --numeric-sort --reverse --stable --unique --version-sort --zero-terminated --check", "-k -t --key --field-separator"),
+    "diff": ("-a -b -B -i -q -r -s -u -w -y --text --ignore-space-change --ignore-blank-lines --ignore-case --brief --recursive --report-identical-files", "-U --unified"),
+    "cmp": ("-b -l -s --print-bytes --verbose --silent --quiet", "-n -i --bytes --ignore-initial"),
+    "md5sum": ("-b -t --binary --text", ""),
+    "sha256sum": ("-b -t --binary --text", ""),
+    "nl": ("-p --no-renumber", "-b -d -f -h -i -l -n -s -v -w --body-numbering --number-format --number-width --number-separator"),
+    "realpath": ("-e -m -s -z --canonicalize-existing --canonicalize-missing --no-symlinks --zero", ""),
+    "basename": ("-a -z --multiple --zero", "-s --suffix"),
+    "dirname": ("-z --zero", ""),
+    "date": ("-u -I -R --utc --universal --iso-8601 --rfc-email", ""),
+    "uname": ("-a -s -n -r -v -m -p -i -o --all", ""),
+    "whoami": ("/user /groups /priv /all /fo /nh", ""),
+    "certutil": ("-hashfile", ""),
 }
-VERSION_FLAGS = {"--version", "-v", "-V", "version", "-version"}
-OPTION_DENY = {
-    # options that write files or run other programs
-    "find": ("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"),
-    "fd": ("-x", "-X", "--exec", "--exec-batch"),
-    "rg": ("--pre", "--pre-glob"),
-    "sort": ("-o", "--output", "--compress-program"),
-    "certutil": ("-urlcache", "-decode", "-encode", "-f", "-split"),
+
+PS_OPTIONS = {
+    "get-childitem": ("-Recurse -Force -File -Directory -Name -Hidden", "-Path -LiteralPath -Filter -Include -Exclude -Depth"),
+    "get-content": ("-Raw", "-Path -LiteralPath -TotalCount -Tail -Encoding -ReadCount"),
+    "get-location": ("", ""),
+    "select-string": ("-CaseSensitive -SimpleMatch -List -Quiet -NotMatch -AllMatches", "-Path -LiteralPath -Pattern -Context -Encoding"),
+    "test-path": ("-IsValid", "-Path -LiteralPath -PathType"),
+    "resolve-path": ("-Relative", "-Path -LiteralPath"),
+    "get-item": ("-Force", "-Path -LiteralPath"),
+    "measure-object": ("-Line -Word -Character -Sum -Average -Minimum -Maximum", "-Property"),
+    "select-object": ("-Unique", "-Property -Skip -Last -First"),
+    "sort-object": ("-Descending -Unique -CaseSensitive", "-Property"),
+    "format-table": ("-AutoSize -Wrap -HideTableHeaders", "-Property"),
+    "format-list": ("", "-Property"),
+    "out-string": ("-Stream", "-Width"),
+    "get-filehash": ("", "-Path -LiteralPath -Algorithm"),
+    "get-date": ("-AsUTC", "-Format -UFormat"),
 }
-CERTUTIL_OK = ("-hashfile",)
+ALIASES = {
+    "gci": "get-childitem", "gc": "get-content", "sls": "select-string", "gi": "get-item",
+    "measure": "measure-object", "select": "select-object", "ft": "format-table", "fl": "format-list",
+    "egrep": "grep", "fgrep": "grep",
+}
 # PowerShell drives that aren't files: environment variables, registry, certificates and the like.
 PROVIDER_RE = re.compile(r"^(.*\\)?(env|hklm|hkcu|hkcr|hku|hkcc|cert|variable|function|alias|wsman|registry)::?", re.IGNORECASE)
 
-GIT_READ = {
-    "status", "log", "diff", "show", "blame", "annotate", "rev-parse", "ls-files", "ls-tree", "describe",
-    "shortlog", "cat-file", "grep", "whatchanged", "rev-list", "merge-base", "name-rev", "count-objects",
-    "show-ref", "version", "branch", "tag", "stash", "worktree", "reflog",
+GIT_GLOBAL_OK = {"--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs"}
+GIT_OPTIONS = {
+    "status": ("-s -b -v --short --branch --porcelain --long --show-stash --no-renames", "--untracked-files --ignored"),
+    "log": ("--oneline --stat --name-only --name-status --all --graph --decorate --no-decorate --reverse --first-parent --no-merges --merges -p --patch --no-patch --no-ext-diff --no-textconv --no-color", "-n --max-count --skip --format --pretty --since --until --author --grep"),
+    "diff": ("-p -u -w -b --patch --stat --numstat --shortstat --name-only --name-status --check --cached --staged --no-ext-diff --no-textconv --no-color --no-renames --quiet --exit-code", "-U --unified"),
+    "show": ("-p --patch --stat --name-only --name-status --no-patch --no-ext-diff --no-textconv --no-color", "--format --pretty"),
+    "blame": ("-w -l -s -e --line-porcelain --porcelain --no-textconv", "-L"),
+    "branch": ("-a -r -v --list --all --remotes --show-current --verbose --no-color --no-column", "--contains --no-contains --merged --no-merged --points-at --sort"),
+    "ls-files": ("-z -c -d -m -o -i -s -u --cached --deleted --modified --others --ignored --stage --unmerged --exclude-standard", "--exclude"),
+    "ls-tree": ("-r -t -l -z --name-only --name-status --full-name --full-tree", ""),
 }
-GIT_GLOBAL_OK = {"--no-pager", "-p", "-P", "--paginate", "--no-optional-locks", "--literal-pathspecs"}
-GIT_OPTION_DENY = ("--output", "-o", "--open-files-in-pager", "-O", "--ext-diff", "--exec", "--upload-pack")
-GIT_BRANCH_FLAGS = {
-    "-a", "-r", "-v", "-vv", "--list", "-l", "--all", "--remotes", "--show-current", "--verbose",
-    "--no-color", "--color", "--column", "--no-column",
-}
-GIT_BRANCH_WITH_VALUE = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort"}
 
 # Hard denials: (pattern, reason). Matched on the lowercased command with "\" turned into "/".
 _DENY_PATTERNS: list[tuple[str, str]] = [
@@ -222,13 +271,6 @@ def touches_protected(command: str) -> bool:
     return any(marker in text for marker in PROTECTED_MARKERS)
 
 
-def _path_like(word: str) -> bool:
-    return (
-        "/" in word or "\\" in word or word.startswith((".", "~")) or bool(re.match(r"^[a-zA-Z]:", word))
-        or word.lower().startswith("env:")
-    )
-
-
 def _option_value(word: str) -> str:
     """The value part of `--opt=value` or PowerShell's `-Param:value`; the word itself otherwise."""
 
@@ -240,21 +282,11 @@ def _option_value(word: str) -> str:
     return word
 
 
-def _candidate_paths(words: list[str]) -> list[str]:
-    paths = []
-    for word in words:
-        if _flag(word) and not word.startswith("-"):
-            continue
-        value = _option_value(word)
-        if not value or value.startswith("-"):
-            continue
-        if _path_like(value) or "." in value:
-            paths.append(value)
-    return paths
-
-
 GLOB_CHARS = set("*?[")
 MAX_GLOB_MATCHES = 200
+# These list names and have no file-writing or program-executing options for
+# a shell glob to inject. find, fd and tree do have such options.
+GLOB_SAFE_PROGRAMS = {"ls", "dir", "gci", "get-childitem"}
 
 
 def path_words(command: str, cwd: str | None = None) -> list[str]:
@@ -276,7 +308,7 @@ def path_words(command: str, cwd: str | None = None) -> list[str]:
                 if ":" in value and not re.match(r"^[a-zA-Z]:[\\/]", value):
                     candidates.append(value.split(":", 1)[1])
                 for candidate in candidates:
-                    if candidate and (_path_like(candidate) or "." in candidate):
+                    if candidate:
                         found.append(candidate)
                     if cwd and candidate and GLOB_CHARS & set(candidate):
                         found += expand(candidate, cwd)
@@ -296,6 +328,81 @@ def expand(pattern: str, cwd: str) -> list[str]:
         return []
 
 
+class _Arguments(NamedTuple):
+    values: list[str]  # operands and option values, all checked for paths
+    positional: list[str]
+    options: set[str]
+
+
+def _arguments(
+    words: list[str], spec: tuple[str, str], *, powershell: bool = False, numeric: bool = False,
+) -> _Arguments | None:
+    """Parse only known options, returning every operand and option value.
+
+    Short clusters are parsed left to right; a value option consumes the rest
+    of its word or the next word. Unknown spellings fail closed. PowerShell
+    parameter abbreviations are deliberately not accepted.
+    """
+
+    fold = str.casefold if powershell else str
+    flags, values = ({fold(item) for item in group.split()} for group in spec)
+    result = _Arguments([], [], set())
+    index = 0
+    ended = False
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if ended:
+            result.values.append(word)
+            result.positional.append(word)
+            continue
+        if word == "--":
+            ended = True
+            continue
+        separator = ":" if powershell or word.startswith("/") else "="
+        key, sep, value = word.partition(separator)
+        key = fold(key)
+        if key in values:
+            result.options.add(key)
+            if not sep:
+                if index >= len(words):
+                    return None
+                value = words[index]
+                index += 1
+            result.values.append(value)
+            continue
+        if key in flags and not sep:
+            result.options.add(key)
+            continue
+        if numeric and re.fullmatch(r"-\d+", word):
+            continue
+        if word.startswith("-") and word != "-":
+            if powershell or word.startswith("--"):
+                return None
+            # GNU short options, including -oFILE and -xo FILE. A one-dash
+            # long option (find -exec, for example) also fails here.
+            for pos, char in enumerate(word[1:], 1):
+                option = "-" + char
+                result.options.add(option)
+                if option in values:
+                    value = word[pos + 1 :]
+                    if not value:
+                        if index >= len(words):
+                            return None
+                        value = words[index]
+                        index += 1
+                    result.values.append(value)
+                    break
+                if option not in flags:
+                    return None
+            continue
+        if os.name == "nt" and re.match(r"^/[A-Za-z]", word):
+            return None  # unknown cmd.exe switch; do not treat it as a path
+        result.values.append(word)
+        result.positional.append(word)
+    return result
+
+
 def _git_ok(words: list[str], path_ok: Callable[[str], bool]) -> bool:
     if len(words) == 2 and words[1] in ("--version", "version"):
         return True
@@ -312,38 +419,33 @@ def _git_ok(words: list[str], path_ok: Callable[[str], bool]) -> bool:
         index += 1
     if index >= len(words):
         return False
-    sub, rest = words[index].lower(), words[index + 1 :]
-    if sub not in GIT_READ:
+    sub, rest = words[index], words[index + 1 :]
+    if sub not in GIT_OPTIONS:
         return False
-    for word in rest:
-        lowered = word.lower()
-        if any(lowered == option or lowered.startswith(option + "=") for option in GIT_OPTION_DENY):
+    # `git branch NAME` creates a branch, even without a mutating flag. Keep
+    # branch queries to flags alone; --list patterns can use the reviewer.
+    if sub == "branch" and any(not word.startswith("-") for word in rest):
+        return False
+    # After --, every operand is a literal path, including HEAD~1. Before it,
+    # Git's HEAD ancestry and rev:path syntax denote revisions/object paths.
+    # Do not mistake HEAD~1 for a Windows DOS short filename.
+    if "--" in rest:
+        separator = rest.index("--")
+        if not all(path_ok(path) for path in rest[separator + 1 :]):
             return False
-    if sub == "branch":
-        expect_value = False
-        for word in rest:
-            if expect_value:
-                expect_value = False
+        rest = rest[:separator]
+    operands = _arguments(rest, GIT_OPTIONS[sub], numeric=sub == "log")
+    if operands is None:
+        return False
+    for value in operands.values:
+        if sub in ("log", "diff", "show", "blame"):
+            if re.fullmatch(r"HEAD(?:~\d+)+", value):
                 continue
-            name = word.split("=", 1)[0]
-            if name in GIT_BRANCH_WITH_VALUE:
-                expect_value = "=" not in word
-                continue
-            if word not in GIT_BRANCH_FLAGS:
-                return False
-    elif sub == "tag":
-        if rest and rest[0] not in ("-l", "--list"):
+            if ":" in value and not re.match(r"^[a-zA-Z]:[\\/]", value):
+                value = value.split(":", 1)[1]
+        if not path_ok(value):
             return False
-    elif sub == "stash":
-        if not rest or rest[0] not in ("list", "show"):
-            return False
-    elif sub == "worktree":
-        if rest[:1] != ["list"]:
-            return False
-    elif sub == "reflog":
-        if rest and rest[0] not in ("show",) and not rest[0].startswith("-"):
-            return False
-    return all(path_ok(path) for path in _candidate_paths(rest) if _path_like(path))
+    return True
 
 
 def read_only(command: str, *, cwd: str, path_ok: Callable[[str], bool]) -> bool:
@@ -354,16 +456,24 @@ def read_only(command: str, *, cwd: str, path_ok: Callable[[str], bool]) -> bool
 
     if not command.strip() or any(char in UNSAFE_CHARS for char in command):
         return False
+    # This grammar is shared by sh, cmd and PowerShell. Single quotes do not
+    # group arguments in cmd, and backslash escapes in sh can turn a supposed
+    # operand into an option (sort \\-oFILE). Do not prove safety using a
+    # tokenization that can differ from the shell that will run it.
+    if "'" in command or '\\"' in command or (os.name != "nt" and "\\" in command):
+        return False
     segments = tokenize(command)
     if not segments or any(not words for words in segments):
         return False
     for words in segments:
         name = program_name(words[0])
-        if _shadowed(words[0], cwd):
+        if "/" in words[0] or "\\" in words[0] or _shadowed(words[0], cwd):
             return False
         if any(PROVIDER_RE.match(_option_value(word) if word.startswith("-") else word) for word in words[1:]):
             return False  # PowerShell drives such as env:, hklm:, cert: (environment variables, registry, keys)
         rest = words[1:]
+        if name not in GLOB_SAFE_PROGRAMS and any(GLOB_CHARS & set(word) for word in rest):
+            return False
         if name == "git":
             if not _git_ok(words, path_ok):
                 return False
@@ -372,21 +482,64 @@ def read_only(command: str, *, cwd: str, path_ok: Callable[[str], bool]) -> bool
             if len(rest) != 1 or rest[0] not in VERSION_FLAGS:
                 return False
             continue
-        if name not in SIMPLE_READERS or ("/" in words[0] or "\\" in words[0]):
+        if "/" in words[0] or "\\" in words[0]:
             return False
-        denied = OPTION_DENY.get(name, ())
-        for word in rest:
-            option = word.split("=", 1)[0].lower()
-            if any(option == item.lower() or (item.startswith("--") and option.startswith(item)) for item in denied):
-                return False
-            if name in ("sort", "fd") and re.fullmatch(r"-[a-zA-Z]*[oxX][a-zA-Z]*", word):
-                return False  # combined short flags such as -no or -Hx
-        if name == "certutil" and (not rest or rest[0].lower() not in CERTUTIL_OK):
+        if name not in SIMPLE_READERS:
             return False
-        for path in _candidate_paths(rest):
-            if (_path_like(path) or os.path.splitext(path)[1]) and not path_ok(path):
-                return False
+        name = ALIASES.get(name, name)
+        powershell = name in PS_OPTIONS
+        spec = PS_OPTIONS[name] if powershell else READ_OPTIONS.get(name, ("", ""))
+        operands = _arguments(rest, spec, powershell=powershell, numeric=name in ("head", "tail"))
+        if operands is None:
+            return False
+        if name == "certutil" and (len(rest) not in (2, 3) or rest[0].lower() != "-hashfile"):
+            return False
+        if name == "hostname" and rest:
+            return False  # a positional name changes the machine's hostname
+        if name == "date" and any(not value.startswith("+") for value in operands.positional):
+            return False  # a bare timestamp sets the clock, even without -s
+        if not all(path_ok(path) for path in operands.values):
+            return False
     return True
+
+
+def content_read_review(command: str, cwd: str) -> str | None:
+    """Why a read command can reach files not checked as literal arguments.
+
+    Do not enumerate globs or directory trees to prove safety: expansions can
+    exceed a cap, follow links, or differ between shells (including hidden
+    files). A reviewer must assess these reads. Listing filenames is fine.
+    """
+
+    segments = tokenize(command)
+    if not segments:
+        return None
+    if len(segments) > 1:
+        return "a pipeline can supply unchecked filenames to a content reader"
+    words = segments[0]
+    if not words:
+        return None
+    name = ALIASES.get(program_name(words[0]), program_name(words[0]))
+    rest = words[1:]
+    if name not in GLOB_SAFE_PROGRAMS and any(GLOB_CHARS & set(word) for word in rest):
+        return "wildcards can include unchecked key or secrets files"
+    if name in ("grep", "diff"):
+        if any(word in ("--recursive", "--dereference-recursive") or
+               (word.startswith("-") and not word.startswith("--") and any(c in word[1:] for c in "rR"))
+               for word in rest):
+            return "a recursive content reader can reach unchecked key or secrets files"
+    if name == "findstr" and any(word.lower() == "/s" for word in rest):
+        return "a recursive content reader can reach unchecked key or secrets files"
+    if name == "rg" and "--files" not in rest:
+        operands = _arguments(rest, READ_OPTIONS["rg"])
+        # Ripgrep recurses by default. Only the simple pattern + explicitly
+        # named regular files form has a bounded set of content inputs.
+        inputs = [] if operands is None else (
+            operands.positional if operands.options & {"-e", "--regexp"} else operands.positional[1:]
+        )
+        if not inputs or not all(os.path.isfile(os.path.join(cwd, value)) for value in inputs):
+            return "ripgrep can search unchecked files recursively; name individual files"
+    return None
 
 
 def _shadowed(word: str, cwd: str) -> bool:

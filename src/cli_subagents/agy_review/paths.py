@@ -88,22 +88,47 @@ def inside_any(path: str, roots: Iterable[str]) -> bool:
     return any(root and inside(path, root) for root in roots)
 
 
+def _security_path(path: str) -> str:
+    """Canonical spelling for deny matching, including Windows file aliases.
+
+    NTFS streams belong to the file before the colon, and Win32 strips trailing
+    dots/spaces on each component. Apply these deny checks on every platform so
+    a Windows spelling cannot evade review just because the gate is tested on
+    Unix. Preserve the drive colon and the ordinary dot path components.
+    """
+
+    parts = []
+    for part in path.replace("\\", "/").split("/"):
+        if re.fullmatch(r"[a-zA-Z]:", part):
+            parts.append(part)
+        else:
+            stem = part.split(":", 1)[0]
+            parts.append(stem if stem in (".", "..") else stem.rstrip(" ."))
+    return _fold("/".join(parts))
+
+
 def _parts(path: str) -> list[str]:
-    return [part for part in _fold(path).split("/") if part]
+    return [part for part in _security_path(path).split("/") if part]
 
 
 def secret_reason(path: str, homes: Iterable[str] = ()) -> str | None:
     """Why `path` must never be read or written, or None."""
 
-    folded = _fold(path)
+    folded = _security_path(path)
     parts = _parts(path)
+    # Resolving an existing Windows path usually expands its DOS short name.
+    # For unresolved names, volumes with 8.3 disabled, and cross-platform
+    # checks, its target cannot be established safely. Deny the ambiguity.
+    if any(re.fullmatch(r"[^/]*~[0-9]+(?:\.[^/]*)?", part) for part in parts):
+        return "it uses an ambiguous DOS short filename that may name credentials"
     names = {part.casefold() for part in parts}
     if names & SECRET_DIRS:
         return "it is a credential folder"
     for home in homes:
-        if not home or not inside(path, home):
+        canonical_home = _security_path(os.path.normpath(home)).rstrip("/")
+        if not home or not inside(folded, canonical_home):
             continue
-        relative = folded[len(_fold(os.path.normpath(home)).rstrip("/")) + 1 :]
+        relative = folded[len(canonical_home) + 1 :]
         for entry in HOME_SECRETS:
             if relative == entry or relative.startswith(entry + "/"):
                 return "it holds a login, token or browser profile"

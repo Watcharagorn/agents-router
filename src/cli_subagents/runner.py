@@ -226,14 +226,14 @@ class Runner:
                           pinned: str | None = None) -> accounts.Lease | None:
         queued_since = time.time()
         while True:
-            slots = limits.acquire_execution_slots(self.config, self.spec.runtime, self.spec.model)
+            slots = limits.acquire_execution_slots(self.config, self.spec.runtime, self.spec.model, override=self.spec.override)
             try:
                 if slots is None:
                     lease, all_busy = None, True
                 else:
                     lease, _earliest, all_busy = accounts.acquire(
                         self.runtime_config, pinned=pinned or self.spec.account, exclude=excluded,
-                        prefer=prefer, model=self.spec.model, job_id=self.job_id,
+                        prefer=prefer, model=self.spec.model, job_id=self.job_id, override=self.spec.override,
                     )
                     if lease is not None:
                         lease.pool_slots.extend(slots)

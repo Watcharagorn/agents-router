@@ -93,7 +93,7 @@ Each adapter implements: detect the binary and version, build the command and en
 
 | Runtime | Command | Events | Real read-only | Native reviewer |
 |---|---|---|---|---|
-| Claude Code | `claude -p --output-format stream-json --verbose` | `system/init`, assistant, tool, `api_retry`, `rate_limit_event`, `result` | `dontAsk` with an allowlist of read-only tools and shell commands | auto mode (works in `-p`) |
+| Claude Code | `claude -p --output-format stream-json --verbose` | `system/init`, assistant, tool, `api_retry`, `rate_limit_event`, `result` | `dontAsk` with read-only tools and shell prefixes; a worker `PreToolUse` hook checks shell options and named paths | auto mode (works in `-p`) |
 | Codex | `codex exec --json` (app-server later for quota and live control) | `thread.*`, `turn.*`, `item.*` | `--sandbox read-only` | `--approve-for-me` |
 | Antigravity | `agy --print --output-format stream-json --print-timeout` | JSON statuses, `denied_actions` | `--mode plan` | CLI Subagents' review gate (`agy_review`): a PreToolUse hook with fixed rules and a tool-less reviewer; edit jobs add `--sandbox` |
 

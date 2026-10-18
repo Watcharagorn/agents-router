@@ -24,6 +24,15 @@ STALE_RUNNER_SECONDS = 15
 IGNORE_JOBS_OLDER_THAN = 7 * 3600  # a job can run 6 hours at most
 NAMES = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
 WAIT = "wait for one to finish"
+OVERRIDE_HINT = (
+    "Only if the user explicitly asked for more parallel jobs, start again with override=<their words>; "
+    "otherwise ask the user (say how much of the 5-hour window is left) or use the home model."
+)
+
+
+def validate_override(override: str | None) -> None:
+    if override is not None and (not isinstance(override, str) or not override.strip()):
+        raise ValueError("override must be a non-empty string containing the user's own words")
 
 
 class LimitError(ValueError):
@@ -133,14 +142,15 @@ def _source(limits: Limits) -> str:
     return f"{limits.max_jobs_source}: {limits.max_jobs} per account; change with max_jobs"
 
 
-def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | None, model: str | None, now: float) -> Room:
+def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | None, model: str | None,
+         now: float, override: str | None = None) -> Room:
     runtime = config.runtime(runtime_name)
     usage = accounts.load_usage(runtime_name)
     ranked, earliest = accounts.ranked_accounts(runtime, pinned=pinned, now=now)
     pool = quota.pool_for(runtime, model)
     state = quota.pool_state(runtime, counts, now)
     result = Room(cooldown_end=earliest, pool=pool)
-    if pool and pool.total is not None and state.totals.get(pool.name, 0) >= pool.total:
+    if not override and pool and pool.total is not None and state.totals.get(pool.name, 0) >= pool.total:
         result.pool_total_hit = True
     allowed = []
     for account in ranked:
@@ -153,26 +163,26 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
     if ranked and not allowed:
         result.model_blocked = True
         return result
-    if pool and allowed and pool.weekly_jobs is not None:
+    if not override and pool and allowed and pool.weekly_jobs is not None:
         budget_counts = [state.budget_used(account.name, pool.name) for account, _ in allowed]
         result.pool_budget_hit = all(used >= pool.weekly_jobs for used in budget_counts)
         result.pool_budget_used = min(budget_counts)
     free_total = 0
     for account, limits in allowed:
         if pool:
-            if pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
+            if not override and pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
                 continue
             until = accounts.pool_cooldown_until(usage.get(account.name), pool.name, now)
             if until:
                 result.cooldown_end = min(result.cooldown_end or until, until)
                 continue
-            if pool.per_account is not None and state.running.get((account.name, pool.name), 0) >= pool.per_account:
+            if not override and pool.per_account is not None and state.running.get((account.name, pool.name), 0) >= pool.per_account:
                 result.pool_full = True
                 continue
             if result.pool_total_hit:
                 continue
         used = utilization(usage.get(account.name), now)
-        if used is not None and used >= runtime.usage_ceiling:
+        if not override and used is not None and used >= runtime.usage_ceiling:
             result.ceiling_hit = max(result.ceiling_hit or 0.0, used)
             continue
         running = counts.on_account(runtime_name, account.name)
@@ -183,11 +193,11 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
         # Only a cap the user or a plan set refuses jobs. The plain max_jobs_per_account default
         # keeps its old behaviour: the job starts and waits in the runner for a slot.
         explicit = limits.max_jobs_source != "max_jobs_per_account"
-        free = limits.max_jobs - running if explicit else 1 << 20
+        free = limits.max_jobs - running if explicit and not override else 1 << 20
         if free > 0:
             free_total += free
             result.accounts.append((account, limits))
-    if not pinned and result.accounts and free_total <= counts.unassigned.get(runtime_name, 0):
+    if not override and not pinned and result.accounts and free_total <= counts.unassigned.get(runtime_name, 0):
         result.accounts = []  # jobs that already wait for an account will take the free slots
     result.full = not result.accounts and result.cap > 0
     return result
@@ -234,11 +244,13 @@ def _tail(found: list[str], wait: str) -> str:
     return f"{wait[0].upper()}{wait[1:]}."
 
 
-def _refusal(config: Config, message: str) -> LimitError:
+def _refusal(config: Config, message: str, *, overridable: bool = True) -> LimitError:
     """The refusal with the one-line "Room: ..." summary under it, when usage is known."""
 
     from cli_subagents import usage_view
 
+    if overridable:
+        message += " " + OVERRIDE_HINT
     try:
         line = usage_view.room_line(config)
     except Exception:
@@ -253,7 +265,8 @@ class Admission:
     warnings: list[str] = field(default_factory=list)
 
 
-def acquire_execution_slots(config: Config, runtime_name: str, model: str | None = None) -> list | None:
+def acquire_execution_slots(config: Config, runtime_name: str, model: str | None = None,
+                            *, override: str | None = None) -> list | None:
     """Lease the global and runtime caps at execution, including jobs admitted to queue.
 
     These slots join the account lease, so its owner tracking and cleanup cover
@@ -269,14 +282,10 @@ def acquire_execution_slots(config: Config, runtime_name: str, model: str | None
         for name, cap in caps:
             if cap is None:
                 continue
-            for index in range(cap):
-                path = state_dir() / "leases" / "execution" / name / f"{index}.lock"
-                handle = accounts._take_slot(path)
-                if handle is not None:
-                    slots.append((handle, path))
-                    break
-            else:
+            slot = accounts._take_capped_slot(state_dir() / "leases" / "execution" / name, cap, override=bool(override))
+            if slot is None:
                 return None
+            slots.append(slot)
         result, slots = slots, []
         return result
     finally:
@@ -291,20 +300,22 @@ def admit(
     account: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    override: str | None = None,
     now: float | None = None,
 ) -> Admission:
     """Raise LimitError if the job can't start now; else say which account is expected to take it."""
 
     from cli_subagents import usage_view
 
+    validate_override(override)
     now = now or time.time()
     runtime = config.runtime(runtime_name)
     if runtime_name == "codex":
         usage_view.refresh_codex(config)  # reads local files only
     counts = count_active(now)
-    queue = runtime.when_full == "queue"
+    queue = runtime.when_full == "queue" and not override
     name = NAMES.get(runtime_name, runtime_name)
-    if not queue:
+    if not queue and not override:
         if config.max_jobs and counts.total >= config.max_jobs:
             raise _refusal(config, 
                 f"csa is at its global limit: {counts.total} of {config.max_jobs} subagents running "
@@ -319,13 +330,13 @@ def admit(
             )
     cap, left = quota.room_cap(runtime, now, model)
     running = counts.by_runtime.get(runtime_name, 0)
-    if cap is not None and running >= cap:
+    if not override and cap is not None and running >= cap:
         found = _alternatives(config, runtime_name, counts, now)
         detail = f"has {left:g}% of its quota left" if left is not None else "has no quota data"
         tail = (f"Run this on {' or '.join(NAMES[other] for other in found)}, or {WAIT}."
                 if found else "Wait for quota to reset or a running job to finish.")
         raise _refusal(config, f"{name} {detail}, so {cap} jobs at a time (max_jobs_by_room); {running} are running. {tail}")
-    current = room(config, runtime_name, counts, pinned=account, model=model, now=now)
+    current = room(config, runtime_name, counts, pinned=account, model=model, now=now, override=override)
     admission = Admission(effort=effort)
     if current.accounts:
         chosen, limits = current.accounts[0]
@@ -342,7 +353,8 @@ def admit(
         listed = ", ".join(current.allowed_models)
         raise _refusal(config, 
             f"No {runtime_name} account allows model '{model or runtime.default_model}' "
-            f"(allowed: {listed}; from {current.models_source}). {_tail(found, 'use one of those models')}"
+            f"(allowed: {listed}; from {current.models_source}). {_tail(found, 'use one of those models')}",
+            overridable=False,
         )
     if current.pool_budget_hit:
         pool = current.pool
@@ -375,5 +387,6 @@ def admit(
         )
     if current.cooldown_end:
         until = time.strftime("%H:%M", time.localtime(current.cooldown_end))
-        raise _refusal(config, f"{where} is at its usage limit until {until}. {_tail(found, f'try again after {until}')}")
+        raise _refusal(config, f"{where} is at its usage limit until {until}. {_tail(found, f'try again after {until}')}",
+                       overridable=False)
     return admission  # no accounts at all: the runner reports that as before

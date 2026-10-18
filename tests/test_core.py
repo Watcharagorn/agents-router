@@ -262,6 +262,37 @@ class JobTests(TempHome):
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(argv[argv.index("--model") + 1], "haiku")
         self.assertIn("--disallowedTools", argv)
+        disallowed = argv[argv.index("--disallowedTools") + 1].split(",")
+        self.assertNotIn("Bash", disallowed)
+        self.assertNotIn("PowerShell", disallowed)
+        allowed = argv[argv.index("--allowedTools") + 1].split(",")
+        self.assertIn("Read", allowed)
+        self.assertIn("Grep", allowed)
+        for prefix in ("git status", "git diff", "git log", "git show", "git blame", "ls", "wc", "cat", "head", "tail", "grep", "rg"):
+            self.assertIn(f"Bash({prefix}:*)", allowed)
+        for prefix in ("Get-ChildItem", "Get-Content", "Measure-Object"):
+            self.assertIn(f"PowerShell({prefix}:*)", allowed)
+        settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text(encoding="utf-8"))
+        guard = settings["hooks"]["PreToolUse"][-1]
+        self.assertEqual(guard["matcher"], "Bash|PowerShell")
+        self.assertIn("claude_read_hook.py", guard["hooks"][0]["command"])
+        self.assertEqual(guard["hooks"][0]["onFailure"], "block")
+
+    def test_edit_and_full_workers_keep_their_permissions_and_hooks(self):
+        self.write_config(accounts=("a1",))
+        for access, mode in (("edit", "auto"), ("full", "bypassPermissions")):
+            with self.subTest(access=access):
+                job = jobs.create_job(runtime="claude", prompt="task", cwd=str(self.project), access=access)
+                self.assertEqual(self.wait(job["job_id"])["outcome"], "success")
+                argv = self.records()[-1]["argv"]
+                self.assertEqual(argv[argv.index("--permission-mode") + 1], mode)
+                self.assertFalse(any(tool.startswith(("Bash", "PowerShell")) for tool in
+                                     argv[argv.index("--allowedTools") + 1].split(",")))
+                self.assertFalse(any(tool in ("Bash", "PowerShell") for tool in
+                                     argv[argv.index("--disallowedTools") + 1].split(",")))
+                settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text(encoding="utf-8"))
+                self.assertNotIn("PreToolUse", settings["hooks"])
+                self.assertNotIn("disableAllHooks", settings)
 
     def test_auth_error_does_not_fail_over(self):
         self.write_config(failover="on-limit")

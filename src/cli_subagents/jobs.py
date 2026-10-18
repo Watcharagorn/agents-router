@@ -77,6 +77,7 @@ def _create_job(
     account: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    override: str | None = None,
     access: str = "edit",
     max_turns: int | None = None,
     timeout_seconds: int = 1800,
@@ -85,6 +86,7 @@ def _create_job(
     host: str | None = None,
     start: bool = True,
 ) -> dict[str, Any]:
+    limits.validate_override(override)
     config = load_config()
     runtime_config = config.runtime(runtime)
     depth = int(os.environ.get("CLI_SUBAGENTS_DEPTH", "0") or 0)
@@ -132,7 +134,7 @@ def _create_job(
             # The session lives in one account's folder and can't be moved: stay there.
             account = resume_account or account
 
-    admission = limits.admit(config, runtime, account=account, model=model, effort=effort) if start else None
+    admission = limits.admit(config, runtime, account=account, model=model, effort=effort, override=override) if start else None
     if admission is not None:
         effort = admission.effort
 
@@ -146,6 +148,7 @@ def _create_job(
         account=account or None,
         model=model or None,
         effort=effort or None,
+        override=override,
         access=access,
         max_turns=int(max_turns) if max_turns else None,
         timeout_seconds=timeout_seconds,
@@ -163,6 +166,7 @@ def _create_job(
     status = {
         "job_id": spec.job_id,
         "runtime": runtime,
+        "override": override,
         "state": "queued",
         "outcome": None,
         "cwd": spec.cwd,
@@ -356,7 +360,7 @@ def list_jobs(limit: int = 20) -> list[dict[str, Any]]:
         except ValueError:
             continue
         jobs.append(
-            {key: status.get(key) for key in ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd")}
+            {key: status.get(key) for key in ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd", "override")}
         )
     return jobs
 

@@ -10,8 +10,9 @@
 * `inbox` (PostToolUse inside a Claude worker): hands the worker follow-ups the
   main session sent, as additional context next to the tool result.
 
-Hooks must never break the session that runs them: every failure ends quietly
-with exit code 0.
+Notification hooks must never break the session that runs them: every failure
+ends quietly with exit code 0. The read-only shell guard has a separate entry
+point that denies a command when validation fails.
 """
 
 from __future__ import annotations
@@ -292,3 +293,12 @@ def worker_inbox_hook(job_id: str, home: Path) -> dict[str, Any]:
     entry = shell_command([sys.executable, str(shim), "--home", str(home), "hook", "inbox", job_id])
     entry["timeout"] = 15
     return {"hooks": [entry]}  # no matcher: every tool
+
+
+def worker_read_hook() -> dict[str, Any]:
+    """The synchronous shell guard installed only in Claude read workers."""
+
+    script = Path(__file__).resolve().with_name("claude_read_hook.py")
+    entry = shell_command([sys.executable, "-I", str(script)])
+    entry.update(timeout=15, onFailure="block")
+    return {"matcher": "Bash|PowerShell", "hooks": [entry]}

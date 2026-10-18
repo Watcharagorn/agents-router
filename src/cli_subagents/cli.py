@@ -32,6 +32,12 @@ def _job_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--model")
     parser.add_argument("--effort")
+    parser.add_argument(
+        "--override", metavar="USER_WORDS",
+        help="The user's own words authorizing more parallel jobs. Bypass csa's caps and queueing only; "
+        "never set this on your own judgment. Use only when the user asked for more jobs in this conversation "
+        "or confirmed after a warning explaining how much of the 5-hour window is left.",
+    )
     parser.add_argument("--access", default="edit", choices=ACCESS_LEVELS)
     parser.add_argument("--max-turns", type=int)
     parser.add_argument("--timeout", type=int, default=1800, help="Seconds (default 1800).")
@@ -48,6 +54,7 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
         account=args.account,
         model=args.model,
         effort=args.effort,
+        override=args.override,
         access=args.access,
         max_turns=args.max_turns,
         timeout_seconds=args.timeout,
@@ -335,7 +342,8 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 def cmd_jobs(args: argparse.Namespace) -> int:
     for job in jobs.list_jobs(args.limit):
         created = time.strftime("%m-%d %H:%M", time.localtime(job.get("created_at") or 0))
-        print(f"{job['job_id']}  {created}  {job.get('runtime')}  {job.get('state')}/{job.get('outcome') or '-'}  {job.get('account') or '-'}")
+        override = f"  override={json.dumps(job['override'], ensure_ascii=False)}" if job.get("override") else ""
+        print(f"{job['job_id']}  {created}  {job.get('runtime')}  {job.get('state')}/{job.get('outcome') or '-'}  {job.get('account') or '-'}{override}")
     return 0
 
 

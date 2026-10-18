@@ -165,6 +165,11 @@ def _read(name: str, args: dict[str, Any], scope: Scope) -> Verdict:
     targets = path_args(args)
     if not targets:
         return review(f"{name} without a recognised path")
+    if scope.access == "read" and name not in ("list_dir", "find_by_name"):
+        for value in targets:
+            resolved, _reason = scope.check(value)
+            if commands.GLOB_CHARS & set(value) or not os.path.isfile(resolved):
+                return review("a broad content read can reach unchecked key or secrets files; name individual files")
     outside = []
     for value in targets:
         resolved, _reason = scope.check(value)
@@ -229,8 +234,18 @@ def _command(args: dict[str, Any], scope: Scope) -> Verdict:
 
     if not scope.readable(cwd):
         return review("the command runs outside the workspace")
+    if scope.access == "read":
+        broad_read = commands.content_read_review(line, cwd)
+        if broad_read:
+            return review(broad_read)
     if not suspicious and commands.read_only(line, cwd=cwd, path_ok=path_ok):
         return approve("read-only command")
+    # A sandbox may allow writes to the workspace, including .git/hooks and
+    # agent settings that execute later outside it. Never use sandboxing as a
+    # reason to auto-approve arbitrary code in a read job, even when it builds
+    # a protected path dynamically so touches_protected cannot see it.
+    if scope.access == "read":
+        return review("the command isn't plainly read-only and this is a read-only job")
     sandboxed = scope.sandbox and not _bypass(args)
     if sandboxed and scope.access == "edit" and not suspicious:
         if not scope.writable(cwd):

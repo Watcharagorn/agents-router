@@ -519,6 +519,8 @@ class Follower:
         if spec.effort:
             parts.append(f"effort {spec.effort}")
         parts.append(f"access {spec.access}")
+        if spec.override:
+            parts.append(f"override={json.dumps(spec.override, ensure_ascii=False)}")
         if account:
             parts.append(f"account {account}")
             self.announced = account

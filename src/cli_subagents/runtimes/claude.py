@@ -108,6 +108,8 @@ READ_ONLY_TOOLS = (
     "Bash(ls:*)", "Bash(wc:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(grep:*)", "Bash(rg:*)",
     "PowerShell(Get-ChildItem:*)", "PowerShell(Get-Content:*)", "PowerShell(Measure-Object:*)",
 )
+# A read worker also gets a PreToolUse guard: these prefix rules alone cannot
+# exclude options that write files or execute programs (git diff --output, rg --pre).
 
 # Tools of this server inside a worker, denied so workers can't fan out further.
 SELF_TOOLS = "mcp__cli-subagents,mcp__cli_subagents,mcp__plugin_cli-subagents_cli-subagents"
@@ -514,7 +516,7 @@ class ClaudeRuntime:
         if spec.max_turns:
             argv += ["--max-turns", str(spec.max_turns)]
         warnings: list[str] = []
-        argv += ["--settings", str(self._job_settings(spec.job_id, setup, warnings))]
+        argv += ["--settings", str(self._job_settings(spec.job_id, setup, warnings, access=spec.access))]
         servers = dict((read_json(Path(setup["mcp_config_path"]), {}) or {}).get("mcpServers") or {}) if setup.get("mcp_config_path") else {}
         servers[PARENT_SERVER] = parent_server(spec.job_id)
         job_mcp = jobs_dir() / spec.job_id / "mcp.json"
@@ -544,13 +546,13 @@ class ClaudeRuntime:
         stdin = ("" if spec.resume_session else parent_note(spec.parent, "claude")) + prompt
         return Launch(argv=argv, env=env, stdin=stdin, session_id=session_id, warnings=warnings)
 
-    def _job_settings(self, job_id: str, setup: dict[str, Any], warnings: list[str]) -> Path:
-        """The account's settings overlay plus a PostToolUse hook that hands the worker its follow-ups.
+    def _job_settings(self, job_id: str, setup: dict[str, Any], warnings: list[str], *, access: str = "edit") -> Path:
+        """The account's overlay plus inbox delivery and, for read jobs, shell validation.
 
         The hook is added next to the user's own hooks, never in place of them.
         """
 
-        from cli_subagents.hooks import worker_inbox_hook  # imported here: hooks imports jobs, which imports this module
+        from cli_subagents.hooks import worker_inbox_hook, worker_read_hook  # hooks imports jobs, which imports this module
 
         settings = read_json(Path(setup["settings_path"]), {}) if setup.get("settings_path") else {}
         settings = dict(settings) if isinstance(settings, dict) else {}
@@ -561,6 +563,16 @@ class ClaudeRuntime:
             settings["hooks"] = hooks
         else:
             warnings.append("settings.json hooks are not in the expected shape; the worker inbox hook was not added")
+        if access == "read":
+            hooks = settings.get("hooks", {})
+            if not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse", []), list):
+                raise ValueError("cannot install the read-only shell guard: settings.json hooks are not in the expected shape")
+            if settings.get("disableAllHooks"):
+                raise ValueError("cannot install the read-only shell guard: disableAllHooks is enabled")
+            settings["hooks"] = {**hooks, "PreToolUse": [*hooks.get("PreToolUse", []), worker_read_hook()]}
+            # A primary account/project can disable hooks too. The job overlay
+            # must keep this enforcement hook enabled.
+            settings["disableAllHooks"] = False
         path = jobs_dir() / job_id / "settings.json"
         write_json(path, settings)
         return path

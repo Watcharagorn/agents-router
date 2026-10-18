@@ -105,6 +105,23 @@ class TempCase(unittest.TestCase):
 
 
 class PathsTests(TempCase):
+    def test_windows_secret_aliases(self) -> None:
+        for spelling in (
+            ".env::$DATA", ".env:stream", ".ENV", ".env.", ".env ", ".env. :stream",
+            "credentials.json::$DATA", "CREDEN~1.JSO", "SERVER~1.PEM", "KEYS~1/key.txt",
+            ".SSH. /id_rsa.pub", ".codex. /AUTH.JSON:stream", ".gemini /oauth_creds.json. ",
+        ):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(paths.check(spelling, base=str(self.ws), homes=[])[2])
+        for spelling in ("README.md", ".env.example", ".env.example::$DATA"):
+            with self.subTest(spelling=spelling):
+                self.assertIsNone(paths.secret_reason(str(self.ws / spelling)))
+
+    def test_windows_write_protection_aliases(self) -> None:
+        for spelling in (".git. /hooks/pre-commit", ".claude::$DATA/settings.json", ".CODEX /config.toml"):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(paths.write_protection(str(self.ws / spelling)))
+
     def test_secret_folders_and_files(self) -> None:
         home = str(self.user_home)
         proj = self.ws
@@ -202,6 +219,59 @@ class CommandsTests(TempCase):
         self.assertTrue(self.ro("git status"))
         (self.ws / "git.bat").write_text("@echo hi", encoding="utf-8")
         self.assertFalse(self.ro("git status"))
+
+    def test_options_that_write_execute_or_read_indirect_files(self) -> None:
+        for command in (
+            "sort -oFILE in.txt", "sort -o FILE in.txt", "sort --output=FILE in.txt", "sort -noFILE in.txt",
+            "sort -xo FILE in.txt", "sort --compress-program=sh in.txt", "sort --files0-from=paths.txt",
+            "sort --random-source=secrets.txt", "file -C -m FILE", "file -CmFILE", "file --compile",
+            "file --magic-file=FILE README.md", "file -fpaths.txt", "file -z README.md",
+            "rg --pre=sh foo README.md", "rg --hostname-bin=sh foo README.md", "rg --search-zip foo .",
+            "rg -nz foo .", "rg -fpatterns.txt .", "rg --ignore-file=FILE foo .", "rg --pre-glob=FILE foo .",
+            "find . -exec sh", "find . -execdir sh", "find . -delete", "find . -fprint FILE",
+            "find . -fprintf FILE", "find . -files0-from paths.txt", "fd -xsh", "fd -Hxsh", "fd --exec=sh",
+            "fd -l", "fd -Hl", "fd --list-details", "Get-Command some-script", "gcm some-script",
+            "grep -fpatterns.txt README.md", "grep --file=patterns.txt README.md", "wc --files0-from=paths.txt",
+            "md5sum --check=paths.txt", "sha256sum -c paths.txt", "date -s tomorrow", "date --set=tomorrow",
+            "date -f FILE", "date 101812002026", "hostname new-name", "diff --from-file=FILE README.md", "diff --to-file=FILE README.md",
+            "certutil -decode in.txt out.txt", "Get-Content -Stream stream README.md",
+            "Get-Content -OutFile FILE README.md", "Get-ChildItem -OutVariable result",
+            "npm version", "java version", "make --version", "python -v", "bash --version",
+            "git diff --output=FILE", "git show --output=FILE", "git log --output=FILE", "git diff -oFILE",
+            "git diff --ext-diff", "git show --textconv", "git blame --textconv README.md",
+            "git --paginate log", "git -p log", "git -c core.pager=sh log", "git -ccore.pager=sh log",
+            "git grep -Osh foo", "git cat-file --filters HEAD:README.md", "git tag --list --delete TAG",
+            "git status --made-up-option", "rg --made-up-option foo README.md", "./git status", "./python --version",
+            "sort *", "file *", "find . -name *", "fd *", "tree *", "git diff *",
+            "sort 'README.md /o FILE'", "file '-C -m FILE'",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(self.ro(command))
+
+    def test_unix_backslash_cannot_disguise_an_option(self) -> None:
+        with mock.patch.object(commands.os, "name", "posix"):
+            for line in (r"sort \-oFILE README.md", r"file \-C \-m FILE", r"rg \--pre=sh foo README.md"):
+                with self.subTest(line=line):
+                    self.assertFalse(self.ro(line))
+
+    def test_attached_values_are_checked_as_paths(self) -> None:
+        def safe_path(value: str) -> bool:
+            return paths.secret_reason(value) is None
+
+        for command in ("head -n.env README.md", "rg -e.env README.md", "rg --regexp=.env README.md",
+                        "Get-Content -Path:.env", "cat id_rsa"):
+            with self.subTest(command=command):
+                self.assertFalse(commands.read_only(command, cwd=str(self.ws), path_ok=safe_path))
+
+    def test_ordinary_options_still_pass(self) -> None:
+        for command in (
+            "sort -nr in.txt", "sort -k1,2 in.txt", "sort --key=1,2 in.txt", "file -bi README.md",
+            "git status --short", "git log --oneline -5", "git diff --cached --stat", "git show HEAD:README.md",
+            "rg -n foo README.md", "rg -efoo README.md", "Get-Content -LiteralPath README.md", "ls -la", "dir",
+            "grep -n foo README.md", "find . -name README.md -type f", "fd -e md .", "wc -l README.md",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(self.ro(command))
 
     def test_denial(self) -> None:
         for command in (
@@ -363,7 +433,74 @@ class GapTests(TempCase):
         for access, sandbox in (("read", False), ("edit", True)):
             with self.subTest(access=access):
                 self.assertEqual(self.run_cmd("cat .en*", access=access, sandbox=sandbox).action, "review")
-                self.assertEqual(self.run_cmd("cat *.py", access=access, sandbox=sandbox).action, "approve")
+                self.assertEqual(self.run_cmd("cat *.py", access=access, sandbox=sandbox).action,
+                                 "review" if access == "read" else "approve")
+
+    def test_recursive_content_reads_require_review(self) -> None:
+        (self.ws / "README.md").write_text("public", encoding="utf-8")
+        (self.ws / "OTHER.md").write_text("public", encoding="utf-8")
+        # No secrets need exist yet: capped glob enumeration is not a proof
+        # that a shell expansion or recursive reader cannot reach one.
+        for line in (
+            "rg --hidden --no-ignore .", "rg foo .", "rg foo", "grep -r foo .", "grep -nr foo .",
+            "grep --recursive foo .", "findstr /s foo .", "diff -r src other", "cat **/*", "cat *.py",
+            "Get-ChildItem -Recurse | Get-Content", "gci -Recurse | gc", "find . -print | cat",
+            "sort *", "file *", "Get-Content -Path **/*",
+            "find . -name *", "fd *", "tree *",
+            "rg -e README.md -e OTHER.md", "rg -eREADME.md --regexp=OTHER.md", "rg -neREADME.md -eOTHER.md",
+        ):
+            for sandbox in (False, True):
+                with self.subTest(line=line, sandbox=sandbox):
+                    self.assertEqual(self.run_cmd(line, access="read", sandbox=sandbox).action, "review")
+
+    def test_native_broad_content_reads_require_review(self) -> None:
+        readme = self.ws / "README.md"
+        readme.write_text("public", encoding="utf-8")
+        for name, args in (
+            ("grep_search", {"SearchPath": str(self.ws)}),
+            ("read_many_files", {"Paths": [str(self.ws / "**" / "*")]}),
+            ("codebase_search", {"SearchPath": str(self.ws)}),
+            ("search_files", {"Path": str(self.ws)}),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(self.decide(name, args, access="read").action, "review")
+        self.assertEqual(self.decide("grep_search", {"SearchPath": str(readme)}, access="read").action, "approve")
+        self.assertEqual(self.decide("view_file", {"AbsolutePath": str(readme)}, access="read").action, "approve")
+
+    def test_read_interpreters_are_never_auto_approved_by_sandbox(self) -> None:
+        for target in (".git/hooks/pre-commit", ".git/config", ".vscode/tasks.json", ".claude/settings.json",
+                       ".claude/settings.local.json", ".gemini/settings.json", ".codex/config.toml"):
+            line = f'python -c "open(\'{target}\', \'w\').write(\'payload\')"'
+            with self.subTest(target=target):
+                self.assertEqual(self.run_cmd(line, access="read", sandbox=True).action, "review")
+        for line in ('python -c "print(1)"', 'python -c "open(chr(46)+\'git/config\', \'w\')"',
+                     'node -e "console.log(1)"'):
+            with self.subTest(line=line):
+                self.assertEqual(self.run_cmd(line, access="read", sandbox=True).action, "review")
+
+    def test_read_job_secret_aliases_are_denied(self) -> None:
+        for spelling in (".env::$DATA", ".env:stream", ".env.", ".env ", ".ENV", "CREDEN~1.JSO", "id_rsa"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(self.run_cmd(f'cat "{spelling}"', access="read").action, "deny")
+                self.assertEqual(self.decide("view_file", {"AbsolutePath": str(self.ws / spelling)},
+                                             access="read").action, "deny")
+
+    def test_read_job_ordinary_reads_still_pass(self) -> None:
+        (self.ws / "README.md").write_text("public", encoding="utf-8")
+        for line in ("git status", "git log", "git diff", "rg -n public README.md", "rg -epublic README.md",
+                     "rg --color=never -A2 -epublic README.md", "rg -e public -e other README.md",
+                     "Get-Content README.md", "Get-Content -LiteralPath README.md", "ls", "dir",
+                     "Get-ChildItem -Recurse", "grep public README.md", "cat README.md", "sort README.md"):
+            with self.subTest(line=line):
+                self.assertEqual(self.run_cmd(line, access="read", sandbox=False).action, "approve")
+
+    def test_unsafe_options_go_to_review_in_read_jobs(self) -> None:
+        for line in ("sort -oFILE README.md", "sort -o FILE README.md", "sort --output=FILE README.md",
+                     "sort -noFILE README.md", "sort -xo FILE README.md", "file -C -m FILE",
+                     "git diff --output=FILE", "git show --output=FILE", "git diff --ext-diff",
+                     "git show --textconv", "rg --pre=sh public README.md", "find . -exec sh", "find . -delete"):
+            with self.subTest(line=line):
+                self.assertIn(self.run_cmd(line, access="read", sandbox=True).action, ("deny", "review"))
 
     def test_git_rev_path_names_a_secret(self) -> None:
         verdict = self.run_cmd("git show HEAD:.env")
@@ -587,6 +724,19 @@ class HookTests(TempCase):
         answer = hook.run(self.raw("view_file", self.read_args(self.other / "x.txt")), env)
         self.assertEqual(answer["decision"], "deny")
         self.assertEqual(store.read_log(self.log)[-1]["source"], "rule")
+
+    def test_read_safety_bypasses_deny_with_reviewer_off(self) -> None:
+        env = self.write_ctx(access="read", sandbox=True)
+        for line in (
+            "sort -oFILE README.md", "sort --output=FILE README.md", "file -C -m FILE",
+            "git diff --output=FILE", "git show --textconv", "rg --pre=sh foo .", "find . -delete",
+            "rg --hidden --no-ignore .", "grep -r foo .", "cat **/*",
+            "Get-ChildItem -Recurse | Get-Content", 'cat ".env:stream"', 'cat "CREDEN~1.JSO"',
+            'python -c "open(\'.git/hooks/pre-commit\', \'w\').write(\'payload\')"',
+        ):
+            with self.subTest(line=line):
+                answer = hook.run(self.raw("run_command", {"CommandLine": line, "Cwd": str(self.ws)}), env)
+                self.assertEqual(answer["decision"], "deny")
 
     def test_reviewer_allow_then_cache(self) -> None:
         count = self.root / "count.txt"

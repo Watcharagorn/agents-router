@@ -99,13 +99,19 @@ The gate is a `PreToolUse` hook in the worker's folder. `agy` calls it before ev
 
 A denial goes back to the worker with its reason, and the worker carries on another way. The same action is reviewed once per job; the answer is reused.
 
+Read-only shell commands use an allowlist of known options. Output files, preprocessors, external diff and textconv helpers, indirect file lists, and unknown options go to review, including attached forms such as `sort -oFILE`. Ordinary commands such as `git status`, `git log`, `git diff`, `Get-Content README.md`, `ls` and `dir` still pass. `rg pattern README.md` passes when the named file exists. Searches of directories (`rg pattern .`, `grep -r`), content globs (`cat **/*`), pipelines, and native directory-wide content searches (`grep_search`) go to review in read jobs because they can reach secret files beyond the literal paths in the call. Name individual files for reads that need no review. With the reviewer off, these broader reads are denied.
+
+Secret-name checks include Windows stream aliases (`.env::$DATA`, `.env:stream`), case differences and trailing dots or spaces. Ambiguous DOS short names such as `CREDEN~1.JSO` are denied.
+
+The shared shell parser also sends single-quoted commands and shell escapes it cannot interpret consistently to review. Globs for commands such as `find`, `fd`, `tree` and `sort` need review because a matching filename could be interpreted as a write or execution option.
+
 If anything goes wrong, the gate fails closed: a missing or broken job file, unreadable input, or a crash means deny. The worker folders keep `toolPermission = "request-review"`, so if the hook doesn't load at all, `agy` falls back to refusing those actions instead of running them.
 
 ### The sandbox
 
 Edit jobs run with `agy --sandbox`. Commands then run in an OS sandbox: they can write only to the project and the temp folders, can't read the rest of your home folder, and have no network. A command that needs more (installing packages, `git push`) asks to leave the sandbox, and the reviewer decides, as in Codex. Checked on Windows with agy 1.3.6; macOS and Linux follow Google's docs but are untested here.
 
-The sandbox doesn't protect `.git` or agent settings inside the project. The gate sends sandboxed commands that name them (`.git/hooks`, `core.hooksPath` and the like) to the reviewer, but a disguised write would get through. Read jobs don't use the sandbox: there, only read-only commands run without review.
+The sandbox doesn't protect `.git` or agent settings inside the project. In edit jobs, the gate sends sandboxed commands that name them (`.git/hooks`, `core.hooksPath` and the like) to the reviewer, but a disguised write can get through. In read jobs, interpreter code and other commands that aren't plainly read-only always go to review, even if sandboxing is enabled. A sandbox that permits workspace writes cannot enforce read access or prevent a script from installing hooks that run later.
 
 ### Compared with Codex and Claude Code
 
@@ -129,7 +135,7 @@ Under `[antigravity]` in `config.toml`: `reviewer` (`"agy"`, `"claude"` or `"off
 
 - `access: "full"` skips the gate and the sandbox.
 - If your primary account's login is a token file in your home folder (`agy` does that when it finds no keyring, as on many Linux servers), its jobs keep running in your real home without the gate, the parent channel or `--sandbox`. Extra accounts always use the gate for read and edit jobs.
-- The rules stop direct reads of `.env` and key files, but a recursive search of the project (agy's `grep_search`, `grep -r`) can still show lines from them.
+- In edit jobs, broad content searches can still show lines from secret files. Read jobs send these searches to review; the reviewer must assess whether their scope excludes secrets.
 - MCP servers that need their own OAuth login are signed in per folder, so they may ask again in a worker folder.
 - `csa launch` on an extra account opens `agy` in a folder that has the gate's hook; outside a job the hook stays out of the way and `agy` asks you as usual.
 - Jobs on your primary account keep their conversations in their folder, not in your own `agy` history.
