@@ -35,7 +35,7 @@ Agent tool:
 - Description: `<model> · <access> · <task in a few words>`. The user reads it to see what runs where.
 - Prompt: option lines first, one per line (`model=...`, `effort=...`, `access=read|edit`, and only when needed `account=NAME`, `cwd=PATH`, `timeout=SECONDS`, `override=USER_WORDS` under the Limits rule below), then a blank line and the complete task written as below. `access` defaults to `edit` in the Claude relay and `read` in the Codex and Antigravity relays.
 - Start it in the background and keep working. Don't poll or wait in a shell; the notice arrives when it finishes.
-- Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. While the job runs, SendMessage "cancel" stops it and anything else goes to the worker as a follow-up. After the job has finished, its relay can't continue it: start a new relay agent with a complete task.
+- Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. While the job runs, SendMessage "cancel" stops it and anything else goes to the worker as a follow-up. After the job has finished, SendMessage to the same relay continues the worker's conversation as a new job; the relay follows it and returns its result.
 
 The MCP tools below work everywhere. They are the only option in Codex and Antigravity, and in Claude Code only when the relay agent types are missing.
 

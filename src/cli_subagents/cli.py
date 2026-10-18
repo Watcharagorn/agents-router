@@ -314,8 +314,22 @@ def cmd_follow(args: argparse.Namespace) -> int:
 
 
 def cmd_message(args: argparse.Namespace) -> int:
+    if args.from_offset is not None:
+        if not args.follow:
+            raise ValueError("--from requires --follow")
+        if args.from_offset < 0:
+            raise ValueError("--from must be 0 or more")
     text = sys.stdin.read() if args.text == "-" else args.text
-    _print(tools.call("subagent_message", {"job_id": args.job_id, "text": text, "reply_to": args.reply_to}))
+    result = tools.call("subagent_message", {"job_id": args.job_id, "text": text, "reply_to": args.reply_to})
+    if args.follow:
+        from cli_subagents.follow import follow
+
+        new_job = result.get("new_job")
+        job_id = new_job["job_id"] if new_job else args.job_id
+        # A continuation has its own event log; an old job's offset cannot apply.
+        start = None if new_job else args.from_offset
+        return follow(job_id, start, args.max_wait)
+    _print(result)
     return 0
 
 
@@ -468,6 +482,13 @@ def build_parser() -> argparse.ArgumentParser:
     message.add_argument("job_id")
     message.add_argument("text", help="The message. Use '-' to read it from stdin.")
     message.add_argument("--reply-to")
+    message.add_argument("--follow", action="store_true",
+                         help="Follow the running job or its new continuation, with an authenticated header and status.")
+    message.add_argument("--from", dest="from_offset", type=int, metavar="OFFSET",
+                         help="With --follow: continue at this event offset if the same job is still running; "
+                         "a new continuation always starts from the beginning.")
+    message.add_argument("--max-wait", type=float, default=540,
+                         help="With --follow: stop watching after this many seconds (default 540).")
     jobs_parser = sub.add_parser("jobs", help="List recent jobs.")
     jobs_parser.add_argument("--limit", type=int, default=20)
 

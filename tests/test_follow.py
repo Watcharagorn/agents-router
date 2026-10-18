@@ -215,6 +215,84 @@ class FollowTests(TempHome):
         self.assertEqual((code, self.body(again)), (0, live))
         self.assertEqual(result_body(again), "done on a1")
 
+    def test_message_follow_continues_finished_conversation_and_follows_to_done(self):
+        self.write_config(accounts=("a1",))
+        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "first task")
+        self.assertEqual(code, 0, text)
+        previous, previous_token = FRAME_RE.search(text.splitlines()[0]).groups()
+        session = jobs.read_status(previous)["session_id"]
+
+        for prompt in ("one more thing\nkeep the context", "and another follow-up"):
+            # Even an offset beyond the new log must be discarded on continuation.
+            code, text = self.csa("message", previous, "--follow", "--from", "9999999", "-", stdin=prompt)
+            self.assertEqual(code, 0, text)
+            lines = text.splitlines()
+            self.assertTrue(lines[0].startswith("[csa] CLI Subagents"), text)
+            current, token = FRAME_RE.search(lines[0]).groups()
+            self.assertNotEqual(current, previous)
+            self.assertNotEqual(token, previous_token)
+            self.assertEqual(FRAME_RE.search(lines[-1]).groups(), (current, token))
+            self.assertTrue(lines[-1].startswith("[csa] DONE"), text)
+            self.assertIn("| tool: Read", lines)
+            self.assertIn("| says: done on a1", lines)
+            self.assertEqual(result_body(text), "done on a1")
+            self.assertEqual(jobs.read_spec(current).prompt, prompt)
+            self.assertEqual(jobs.read_spec(current).resume_session, session)
+            last = self.records()[-1]
+            self.assertEqual(last["argv"][last["argv"].index("--resume") + 1], session)
+            self.assertIn(prompt, last["stdin"])
+            self.assertFalse(jobs.is_pending(current))
+            previous, previous_token = current, token
+
+    def test_message_follow_returns_continuation_failure(self):
+        self.write_config(accounts=("a1",))
+        job_id = self.start()
+        self.assertEqual(jobs.wait_for(job_id, 30)["outcome"], "success")
+        os.environ["FAKE_CLAUDE_SCENARIO"] = "auth"
+        code, text = self.csa("message", job_id, "--follow", "-", stdin="follow-up")
+        self.assertEqual(code, 1, text)
+        lines = text.splitlines()
+        current, token = FRAME_RE.search(lines[0]).groups()
+        self.assertNotEqual(current, job_id)
+        self.assertEqual(FRAME_RE.search(lines[-1]).groups(), (current, token))
+        self.assertTrue(lines[-1].startswith("[csa] FAILED"), text)
+        self.assertIn("Invalid API key", lines[-1])
+        self.assertEqual(result_body(text), "")
+
+    def test_message_follow_running_job_keeps_offset_and_queues_follow_up(self):
+        self.write_config(accounts=("a1",))
+        job_id = self.start(start=False)
+        events = jobs.job_dir(job_id) / "events.jsonl"
+        event = {"type": "assistant", "message": {"content": [{"type": "text", "text": "already shown"}]}}
+        events.write_bytes((json.dumps(event) + "\n").encode())
+        jobs.update_status(job_id, state="running")
+        _, first = self.csa("follow", job_id, "--max-wait", "0")
+        offset = FOLLOW_RE.search(first).group(2)
+        self.assertIn("| says: already shown", first)
+
+        code, text = self.csa("message", job_id, "--follow", "--from", offset, "--max-wait", "0",
+                              "-", stdin="also update the docs")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(FRAME_RE.search(text.splitlines()[0]).group(1), job_id)
+        self.assertTrue(text.splitlines()[-1].startswith("[csa] STILL RUNNING"), text)
+        self.assertEqual(FOLLOW_RE.search(text).group(2), offset)
+        self.assertNotIn("already shown", text)
+        self.assertEqual([item["text"] for item in messages.take_for_worker(job_id)], ["also update the docs"])
+        self.assertEqual(len(list((self.home / "jobs").iterdir())), 1)
+        jobs.update_status(job_id, state="done", outcome="success")
+
+    def test_message_rejects_invalid_offset_before_delivery(self):
+        self.write_config(accounts=("a1",))
+        job_id = self.start(start=False)
+        for options, error in ((("--from", "5"), "--from requires --follow"),
+                               (("--follow", "--from", "-1"), "--from must be 0 or more")):
+            with self.subTest(options=options), contextlib.redirect_stderr(io.StringIO()) as err:
+                code, _ = self.csa("message", job_id, *options, "-", stdin="do not deliver")
+                self.assertEqual(code, 2)
+                self.assertIn(error, err.getvalue())
+                self.assertEqual(messages.take_for_worker(job_id), [])
+        jobs.update_status(job_id, state="done", outcome="success")
+
     def test_failed_job(self):
         self.write_config(accounts=("a1",))
         os.environ["FAKE_CLAUDE_SCENARIO"] = "auth"

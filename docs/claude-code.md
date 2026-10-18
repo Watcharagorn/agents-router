@@ -83,6 +83,8 @@ Claude starts them with its Agent tool like any other subagent, so they show up 
 
 Each one is a small relay on Haiku. It starts the job with `csa run --follow` and prints the worker's steps as they happen: the commands it runs, the tools it calls, the files it edits, what it says, and its reasoning when the CLI reports it. Open the agent to watch. Jobs longer than about nine minutes continue with `csa follow <job> --from <offset>`, one more relay call each time. When the worker asks a question, the relay stops and passes it to the main session; Claude answers with SendMessage and the relay sends the answer on. SendMessage "cancel" stops the job.
 
+Other messages go to the running worker as follow-ups. After the job finishes, SendMessage to the same relay continues the same worker conversation as a new job. The relay uses `csa message <job> --follow --from <offset> -`, adopts the new job and token only from that call's first authenticated header, and follows it to its result. The offset applies only while the original job is running; a new continuation starts from the beginning.
+
 The relay costs a few small Haiku requests per job on the main session's account, roughly a third to half a cent per job at list price, since it only copies the task in and the result out ([details](research/native-subagent-display.md#cost-of-the-relay)). It needs `csa` on PATH. In auto mode, Claude Code's safety check decides on each `csa` call; in the other modes Claude Code asks before the first one, and an allow rule such as `Bash(csa:*)` in your settings skips the prompts.
 
 You can follow any job the same way from a terminal: `csa follow <job>` prints its history and keeps going until it finishes or nine minutes pass (`--max-wait` changes that).
