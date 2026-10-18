@@ -111,15 +111,34 @@ def _parts(path: str) -> list[str]:
     return [part for part in _security_path(path).split("/") if part]
 
 
-def secret_reason(path: str, homes: Iterable[str] = ()) -> str | None:
-    """Why `path` must never be read or written, or None."""
+SHORT_NAME_RE = re.compile(r"[^/]*~[0-9]+(?:\.[^/]*)?")
+
+
+def _supplied_parts(path: str, trusted: str | None) -> list[str]:
+    """The components of `path` below `trusted` (the job's own working folder), else all of them."""
+
+    parts = _parts(path)
+    if trusted:
+        root = _parts(os.path.normpath(trusted))
+        if root and parts[: len(root)] == root:
+            return parts[len(root) :]
+    return parts
+
+
+def secret_reason(path: str, homes: Iterable[str] = (), trusted: str | None = None) -> str | None:
+    """Why `path` must never be read or written, or None.
+
+    `trusted` is the working folder the job was given. Its own spelling may use
+    DOS short names (Windows temp folders such as C:/Users/RUNNER~1/...), so the
+    short-name rule only looks at the components a command supplies below it.
+    """
 
     folded = _security_path(path)
     parts = _parts(path)
     # Resolving an existing Windows path usually expands its DOS short name.
     # For unresolved names, volumes with 8.3 disabled, and cross-platform
     # checks, its target cannot be established safely. Deny the ambiguity.
-    if any(re.fullmatch(r"[^/]*~[0-9]+(?:\.[^/]*)?", part) for part in parts):
+    if any(SHORT_NAME_RE.fullmatch(part) for part in _supplied_parts(path, trusted)):
         return "it uses an ambiguous DOS short filename that may name credentials"
     names = {part.casefold() for part in parts}
     if names & SECRET_DIRS:
@@ -179,5 +198,6 @@ def check(value: str, *, base: str | None, homes: Iterable[str]) -> tuple[str, s
 
     home_list = [home for home in homes if home]
     normal, resolved = forms(value, base, home_list[0] if home_list else None)
-    reason = secret_reason(normal, home_list) or secret_reason(resolved, home_list)
+    reason = (secret_reason(normal, home_list, trusted=base)
+              or secret_reason(resolved, home_list, trusted=resolve(base) if base else None))
     return normal, resolved, reason

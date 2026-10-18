@@ -117,6 +117,13 @@ class PathsTests(TempCase):
             with self.subTest(spelling=spelling):
                 self.assertIsNone(paths.secret_reason(str(self.ws / spelling)))
 
+    def test_short_name_in_the_working_folder_is_trusted(self) -> None:
+        base = self.ws / "RUNNER~1" / "proj"  # like a Windows CI temp folder
+        base.mkdir(parents=True)
+        self.assertIsNone(paths.check("README.md", base=str(base), homes=[])[2])
+        self.assertTrue(paths.check("CREDEN~1.JSO", base=str(base), homes=[])[2])
+        self.assertTrue(paths.check(str(base / "README.md"), base=str(self.ws), homes=[])[2])
+
     def test_windows_write_protection_aliases(self) -> None:
         for spelling in (".git. /hooks/pre-commit", ".claude::$DATA/settings.json", ".CODEX /config.toml"):
             with self.subTest(spelling=spelling):

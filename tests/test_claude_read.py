@@ -28,6 +28,16 @@ class ValidatorTests(unittest.TestCase):
         return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(self.root),
                 "permission_mode": "dontAsk", "hook_event_name": "PreToolUse"}
 
+    def test_short_name_in_the_working_folder_itself_is_allowed(self):
+        # GitHub's Windows runners keep temp folders under C:\Users\RUNNER~1.
+        root = self.root / "RUNNER~1" / "proj"
+        root.mkdir(parents=True)
+        (root / "README.md").write_text("test", encoding="utf-8")
+        for command in ("git diff main...HEAD", "git status", "cat README.md"):
+            with self.subTest(command=command):
+                self.assertIsNone(claude_read_hook.validate({**self.payload(command), "cwd": str(root)}))
+        self.assertIsNotNone(claude_read_hook.validate({**self.payload("cat CREDEN~1.JSO"), "cwd": str(root)}))
+
     def test_plain_reads_leave_the_permission_decision_to_claude(self):
         for command in (
             "git status", "git diff", "git diff --stat", "git diff HEAD~1", "git diff main...HEAD",
