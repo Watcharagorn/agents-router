@@ -13,10 +13,12 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
+from claim_racer import race
 from helpers import TempHome
 
 from cli_subagents import accounts, cli, hooks, jobs, messages, sync, tools
 from cli_subagents.config import load_config
+from cli_subagents.fsutil import write_json
 from cli_subagents.runtimes.base import JobSpec
 from cli_subagents.runtimes.claude import DROP_SETTINGS, SYNC_PLAN, ClaudeRuntime, _project_dir_name
 from cli_subagents.runtimes.codex import CodexRuntime, merge_config
@@ -24,6 +26,7 @@ from cli_subagents.runtimes.codex import CodexRuntime, merge_config
 SRC = Path(__file__).resolve().parents[1] / "src"
 SHIM = SRC / "cli_subagents" / "hook_shim.py"
 FAKE_CODEX = Path(__file__).with_name("fake_codex.py")
+RACER = Path(__file__).with_name("claim_racer.py")
 
 
 def tool_response(job_id):
@@ -71,6 +74,40 @@ class DeliveryTests(LifecycleBase):
         for thread in threads:
             thread.join()
         self.assertEqual(wins.count(True), 1)
+
+    def test_claims_racing_across_threads_and_processes_have_one_winner(self):
+        # Every racer claims each job at the same moment: 3 processes and this one, 4 threads each.
+        # Odd jobs have no marker (their runner died), so they go through the exclusive create.
+        job_ids = [f"race-{index:03d}" for index in range(40)]
+        for index, job_id in enumerate(job_ids):
+            write_json(jobs.job_dir(job_id) / "status.json", {"job_id": job_id, "state": "done", "updated_at": time.time()})
+            if index % 2 == 0:
+                jobs.mark_pending(job_id)
+        slot = 0.02
+        racers = [
+            subprocess.Popen(
+                [sys.executable, str(RACER), "4", str(slot), *job_ids],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+            )
+            for _ in range(3)
+        ]
+        try:
+            for racer in racers:
+                self.assertEqual(racer.stdout.readline().strip(), "ready")
+            start = time.time() + 0.1
+            for racer in racers:
+                racer.stdin.write(f"{start}\n")
+                racer.stdin.flush()
+            wins = race(job_ids, 4, start, slot)
+            for racer in racers:
+                output, _ = racer.communicate(timeout=60)
+                wins += json.loads(output)
+        finally:
+            for racer in racers:
+                if racer.poll() is None:
+                    racer.kill()
+        self.assertEqual({job_id: wins.count(job_id) for job_id in job_ids}, dict.fromkeys(job_ids, 1))
+        self.assertFalse(any(jobs.is_pending(job_id) for job_id in job_ids))
 
     def test_result_and_wait_still_return_the_result_and_claim_it(self):
         job = self.finished()

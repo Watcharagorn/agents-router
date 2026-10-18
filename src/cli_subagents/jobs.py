@@ -10,6 +10,7 @@ One folder per job under `~/.cli-subagents/jobs/<job_id>/`:
     cancel         marker file; its presence asks the runner to stop
     notify.pending the result waits for delivery; renamed to notify.claimed
                    by whoever delivers it first (hook, subagent_wait, subagent_result)
+    notify.lock    held while either marker changes
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ ACTIVE_STATES = ("queued", "starting", "running")
 JOB_ID_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz-")
 NOTIFY_PENDING = "notify.pending"
 NOTIFY_CLAIMED = "notify.claimed"
+NOTIFY_LOCK = "notify.lock"
 
 
 def job_dir(job_id: str) -> Path:
@@ -260,8 +262,9 @@ def mark_pending(job_id: str) -> None:
     """Record that the job's result waits for delivery. Written before the final status."""
 
     folder = job_dir(job_id)
-    if not (folder / NOTIFY_CLAIMED).exists():
-        write_text(folder / NOTIFY_PENDING, str(time.time()))
+    with file_lock(folder / NOTIFY_LOCK):
+        if not (folder / NOTIFY_CLAIMED).exists():
+            write_text(folder / NOTIFY_PENDING, str(time.time()))
 
 
 def is_pending(job_id: str) -> bool:
@@ -271,12 +274,24 @@ def is_pending(job_id: str) -> bool:
 def claim_delivery(job_id: str) -> bool:
     """Take the one delivery of a finished result. True only for the first caller.
 
-    The rename is atomic, so of several racing callers (the wake-up hook,
-    subagent_wait, subagent_result) exactly one wins. A finished job that never
-    got a marker (its runner died) is claimed by creating notify.claimed exclusively.
+    Racing callers (the wake-up hook, subagent_wait, subagent_result) take turns
+    under notify.lock. The rename alone is not enough: on Windows, callers that
+    open notify.pending at the same moment can all rename it, the later ones
+    "renaming" notify.claimed to itself. A finished job that never got a marker
+    (its runner died) is claimed by creating notify.claimed exclusively.
     """
 
     folder = job_dir(job_id)
+    if not folder.is_dir() or (folder / NOTIFY_CLAIMED).exists():
+        return False  # no such job (the lock would create its folder), or delivered already
+    try:
+        with file_lock(folder / NOTIFY_LOCK):
+            return _claim_locked(job_id, folder)
+    except TimeoutError:
+        return False
+
+
+def _claim_locked(job_id: str, folder: Path) -> bool:
     try:
         os.rename(folder / NOTIFY_PENDING, folder / NOTIFY_CLAIMED)
         return True
