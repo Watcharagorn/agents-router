@@ -2,6 +2,22 @@
 
 CLI Subagents keeps everything under `~/.cli-subagents/` (or `CLI_SUBAGENTS_HOME`). `csa accounts add` writes the config for you; edit it by hand for the other options.
 
+## Model capacity retries
+
+When a worker exits because the model is temporarily overloaded, csa retries on the same account. It resumes the conversation if the CLI supplied a session ID; otherwise it repeats the task. The default waits are 30, 60 and 120 seconds. The CLI's own retries finish before csa starts this schedule.
+
+Set these keys under `[claude]`, `[codex]` or `[antigravity]`:
+
+```toml
+[codex]
+capacity_retries = 3          # additional attempts; 0 disables capacity retries
+capacity_retry_seconds = 30   # initial wait, doubled for each retry
+```
+
+`capacity_retries` must be a nonnegative integer; `capacity_retry_seconds` must be a positive integer. Both default to the values above for every runtime. During a wait, status shows the retry number and delay, and `csa follow` prints a `[csa] model at capacity, retrying in 30 s (1 of 3)` notice with its job ID and token. The account slot stays reserved, and cancellation and the task timeout still apply. Capacity retries and waits share the task's timeout budget. Exhausting the retries ends the job as `error` with `model at capacity after 3 retries`. Capacity failures do not set quota cooldowns or switch accounts.
+
+See [the signal research](research/capacity-errors.md) for the overload messages each runtime recognizes.
+
 ## config.toml
 
 ```toml
@@ -30,6 +46,7 @@ primary = "~/.codex"        # default: CODEX_HOME or ~/.codex
 failover = "on-limit"
 # windows_sandbox = "unelevated"   # on Windows: "unelevated", "elevated" or "off" (see docs/codex.md)
 # network_access = true            # edit jobs get network inside the sandbox; false keeps Codex's default (off)
+# reasoning_summary = "detailed"   # "concise", "auto", "none" or "off"; your Codex setting takes precedence
 
 [[codex.accounts]]
 name = "plus-2"
@@ -62,6 +79,16 @@ home = "~/.cli-subagents/homes/antigravity/google-2"
 When no extra accounts are configured, workers run on the primary account. That is still useful from another host (for example Codex delegating to Claude Code), and with `include_primary = true` the primary account joins the pool.
 
 `max_jobs_per_account` defaults to 1 (see Limits for per-account caps) because several Claude Code processes writing the same state file at once have corrupted it in the past. Raise it if you know your version handles it.
+
+## Reasoning summaries
+
+`[codex] reasoning_summary` defaults to `"detailed"`. Allowed values are `"detailed"`, `"concise"`, `"auto"`, `"none"` and `"off"`. New runs and resumes get `-c model_reasoning_summary="<value>"` unless your Codex config already sets it (including project config and the active profile). `"none"` requests no summaries; `"off"` adds nothing. Other runtimes do not accept this key. See [Codex reasoning summaries](codex.md#reasoning-summaries) for model support and display details.
+
+## Follow windows
+
+`csa run --follow`, `csa follow` and `csa message --follow` accept `--window SECONDS`, a positive integer. Bare `--window` uses 60 seconds. This bounds each watch call and repeats the window in its authenticated continuation command, including after a worker question. `--max-wait` still provides an upper bound when it is shorter. The worker keeps running when a watch call returns.
+
+The Claude Code relay agents use `--window 60` so the app can show a finished Bash call's output about once a minute, plus the relay's next-turn delay. Supply `window=120` in the relay's initial prompt to change it. Without `--window`, terminal use keeps streaming with the existing 540-second watch limit (`--max-wait` changes it). This is a command option, not a `config.toml` key.
 
 ## Limits
 

@@ -22,6 +22,7 @@ WHEN_FULL_MODES = ("refuse", "queue")
 REVIEWERS = ("agy", "claude", "off")
 WEB_SEARCH_MODES = ("disabled", "cached", "indexed", "live")
 WINDOWS_SANDBOX_MODES = ("unelevated", "elevated", "off")
+REASONING_SUMMARY_MODES = ("detailed", "concise", "auto", "none", "off")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -100,7 +101,10 @@ class RuntimeConfig:
     edit_permission_mode: str = "auto"
     default_model: str | None = None
     cooldown_minutes: int = 60
+    capacity_retries: int = 3
+    capacity_retry_seconds: int = 30  # initial delay; doubles for each retry
     windows_sandbox: str = "unelevated"  # [codex] only
+    reasoning_summary: str = "detailed"  # [codex] only; off leaves the CLI default alone
     share_parent_mcp: bool = True  # [codex] and [antigravity]: give workers started from Claude Code its MCP servers
     # [antigravity] only: the review gate for read and edit jobs (see docs/gemini.md#safety)
     reviewer: str = "agy"  # "agy", "claude" or "off" (fixed rules only; the rest is denied)
@@ -268,6 +272,9 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     windows_sandbox = str(data.get("windows_sandbox", "unelevated"))
     if windows_sandbox not in WINDOWS_SANDBOX_MODES:
         raise ValueError(f"[{name}] windows_sandbox must be one of {WINDOWS_SANDBOX_MODES}")
+    reasoning_summary = data.get("reasoning_summary", "detailed")
+    if reasoning_summary not in REASONING_SUMMARY_MODES or ("reasoning_summary" in data and name != "codex"):
+        raise ValueError(f"[{name}] reasoning_summary must be under [codex] and one of {REASONING_SUMMARY_MODES}")
     when_full = str(data.get("when_full", "refuse"))
     if when_full not in WHEN_FULL_MODES:
         raise ValueError(f"[{name}] when_full must be one of {WHEN_FULL_MODES}")
@@ -283,6 +290,12 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     ceiling = float(data.get("usage_ceiling", 0.95))
     if not 0 < ceiling <= 1:
         raise ValueError(f"[{name}] usage_ceiling must be above 0 and at most 1")
+    capacity_retries = data.get("capacity_retries", 3)
+    capacity_retry_seconds = data.get("capacity_retry_seconds", 30)
+    for key, value, minimum in (("capacity_retries", capacity_retries, 0),
+                                ("capacity_retry_seconds", capacity_retry_seconds, 1)):
+        if type(value) is not int or value < minimum:
+            raise ValueError(f"[{name}] {key} must be an integer at least {minimum}")
     return RuntimeConfig(
         runtime=name,
         primary=_path(data.get("primary"), default_primary(name)),
@@ -295,7 +308,10 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         edit_permission_mode=str(data.get("edit_permission_mode", "accept-edits" if name == "antigravity" else "auto")),
         default_model=data.get("default_model") or None,
         cooldown_minutes=max(1, int(data.get("cooldown_minutes", 60))),
+        capacity_retries=capacity_retries,
+        capacity_retry_seconds=capacity_retry_seconds,
         windows_sandbox=windows_sandbox,
+        reasoning_summary=reasoning_summary,
         share_parent_mcp=bool(data.get("share_parent_mcp", True)),
         reviewer=reviewer,
         reviewer_model=str(data.get("reviewer_model") or "").strip() or None,
@@ -361,6 +377,8 @@ def dump_config(config: Config) -> str:
             f"connectors = {_toml_value(runtime.connectors)}",
             f"edit_permission_mode = {_toml_value(runtime.edit_permission_mode)}",
             f"cooldown_minutes = {runtime.cooldown_minutes}",
+            f"capacity_retries = {runtime.capacity_retries}",
+            f"capacity_retry_seconds = {runtime.capacity_retry_seconds}",
         ]
         if runtime.binary:
             lines.append(f"binary = {_toml_value(runtime.binary)}")
@@ -368,6 +386,8 @@ def dump_config(config: Config) -> str:
             lines.append(f"default_model = {_toml_value(runtime.default_model)}")
         if name == "codex" and runtime.windows_sandbox != "unelevated":
             lines.append(f"windows_sandbox = {_toml_value(runtime.windows_sandbox)}")
+        if name == "codex" and runtime.reasoning_summary != "detailed":
+            lines.append(f"reasoning_summary = {_toml_value(runtime.reasoning_summary)}")
         if name in ("codex", "antigravity") and not runtime.share_parent_mcp:
             lines.append("share_parent_mcp = false")
         if name == "antigravity":

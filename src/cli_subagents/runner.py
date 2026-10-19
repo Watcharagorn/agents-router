@@ -46,6 +46,11 @@ CONTINUE_NOTE = (
     "current state of the files before redoing anything that may already be done."
 )
 
+CAPACITY_CONTINUE_NOTE = (
+    "Note from CLI Subagents: the model was temporarily at capacity. Continue the task from where "
+    "you stopped. Check the current state of the files before redoing anything that may already be done."
+)
+
 
 def handoff_prompt(original: str, previous: AttemptResult, account: str) -> str:
     partial = (previous.text or "").strip()
@@ -155,7 +160,7 @@ class Runner:
                 return self.finish(NO_ACCOUNT, self._no_account_message(excluded))
             try:
                 fallback = handoff_prompt(self.spec.prompt, last, owner or "another account") if last else self.spec.prompt
-                last = self._attempt(lease, prompt, session, owner, fallback)
+                last = self._attempt_with_capacity_retries(lease, prompt, session, owner, fallback)
             finally:
                 lease.release()
 
@@ -204,6 +209,58 @@ class Runner:
                 session, owner = None, None
                 prompt = handoff_prompt(self.spec.prompt, last, lease.account.name)
             self.warnings.append(f"{lease.account.name} hit its usage limit; continuing on another account")
+
+    def _attempt_with_capacity_retries(
+        self, lease: accounts.Lease, prompt: str, session: str | None,
+        owner: str | None, fallback: str,
+    ) -> AttemptResult:
+        # Keep the account and execution slots throughout the wait. Reacquiring an account
+        # could select a different login or count a retry as another pool job.
+        active_deadline = min(self.deadline, time.time() + self.spec.timeout_seconds)
+        retries = 0
+        while True:
+            result = self._attempt(lease, prompt, session, owner, fallback)
+            if result.outcome != ERROR or not result.at_capacity:
+                return result
+            if retries >= self.runtime_config.capacity_retries:
+                return dataclasses.replace(result, message=f"model at capacity after {retries} retries: {result.message}")
+            # Attempts and their waits share the task's timeout, including the time
+            # already spent inside the CLI's own retry loop.
+            self.deadline = min(self.deadline, active_deadline)
+            retries += 1
+            seconds = self.runtime_config.capacity_retry_seconds * 2 ** (retries - 1)
+            retry = {"number": retries, "total": self.runtime_config.capacity_retries,
+                     "seconds": seconds, "retry_at": time.time() + seconds}
+            message = f"model at capacity, retrying in {seconds} s ({retries} of {retry['total']})"
+            with open_private(self.folder / "events.jsonl") as events:
+                retry["event_offset"] = events.tell()
+                self.attempts[-1]["capacity_retry"] = retry
+                # Publish metadata before the event. follow authenticates its control line
+                # against this offset, rather than trusting worker-supplied event text.
+                self.status(state="running", message=message, session_id=result.session_id)
+                events.write((json.dumps({"type": "csa.capacity_retry", **retry, "message": message}) + "\n").encode())
+            stopped = self._wait_for_capacity(retry["retry_at"])
+            if stopped:
+                return dataclasses.replace(result, outcome=stopped, at_capacity=False,
+                                           message="cancelled" if stopped == CANCELLED else "timed out during capacity retry wait")
+            session = result.session_id or session
+            if session:
+                owner, prompt = lease.account.name, CAPACITY_CONTINUE_NOTE
+
+    def _wait_for_capacity(self, retry_at: float) -> str | None:
+        last_status = time.monotonic()
+        while True:
+            if self.cancelled():
+                return CANCELLED
+            now = time.time()
+            if now >= self.deadline:
+                return TIMEOUT
+            if now >= retry_at:
+                return None
+            if time.monotonic() - last_status >= STATUS_INTERVAL:
+                self.status()
+                last_status = time.monotonic()
+            time.sleep(min(0.2, retry_at - now, self.deadline - now))
 
     def _no_account_message(self, excluded: set[str]) -> str:
         usage = accounts.load_usage(self.spec.runtime)

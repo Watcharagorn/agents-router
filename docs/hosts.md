@@ -39,13 +39,24 @@ You get the MCP server, three agent types that show jobs in the agent list (`cli
 
 ## Codex
 
+Run `csa setup --host codex` to install the plugin and three native relay agents.
+The plugin commands it runs are:
+
 ```bash
 codex plugin marketplace add lunati228/CLI-Subagents
 codex plugin add cli-subagents@cli-subagents
 codex plugin list
 ```
 
-Codex reads the same plugin manifest as Claude Code (checked with Codex 0.162.1: `codex mcp list` then shows the `cli-subagents` server). Start a new Codex session to load it. Without the plugin, add the server yourself:
+Codex reads the same plugin manifest as Claude Code (checked with Codex 0.162.1: `codex mcp list` then shows the `cli-subagents` server). Its plugin loader does not register custom agents, so setup also installs the bundled TOML definitions in `~/.codex/agents/` (or `CODEX_HOME/agents/`). `csa update` refreshes them, preserving changed files in backups. A repeat setup keeps matching files untouched. If you installed only through `codex plugin add`, run `csa setup --host codex` to get the relays. Start a new Codex session to load them.
+
+Use the native `spawn_agent` tool with `agent_type` set to `cli-subagents-claude`, `cli-subagents-codex` or `cli-subagents-antigravity`. The prompt takes the same option lines as the Claude Code relays, such as `model=gpt-6.1-sol`, `effort=high` and `access=read`, followed by the task. Those options select the worker. The relay itself runs on `gpt-6-luna` at low reasoning and copies the authenticated worker result back to the parent. Prefer these relays over `subagent_start` when available. See the [Codex host instructions](../skills/cli-subagents/hosts/codex.md) for a tool-call example and follow-ups.
+
+Codex's documentation says the app exposes individual subagent threads for inspection; the CLI's `/subagents` picker switches between them. The relay runs `csa run --follow`, which prints the worker's steps into that thread. The exact app labels and live refresh behavior still need an app check. Codex inherits the parent's sandbox and MCP servers and supports only some capability reductions per agent; the shell-only relay behavior is an instruction, not an enforced tool allowlist. The [research note](research/codex-native-agents.md) records the sources and remaining app checks.
+
+The agent files are personal Codex configuration: disabling or uninstalling the plugin does not remove them. Remove the three `cli-subagents-*.toml` files from the main home's `agents/` folder if you no longer want them.
+
+When native relays are unavailable, use the MCP tools. Without the plugin, add the server yourself:
 
 ```toml
 # ~/.codex/config.toml
@@ -64,7 +75,35 @@ agy plugin install https://github.com/lunati228/CLI-Subagents
 agy plugin list
 ```
 
-The repository root has the Antigravity plugin files (`plugin.json`, `mcp_config.json`) next to the shared skill; `agy plugin validate` accepts them and converts `/delegate` into a skill. Keep waits short, as with Codex. The plugin hooks are Claude Code only.
+Run `csa setup --host antigravity` to get the main plugin and three native relay
+agents. Setup and `csa update` install a companion plugin,
+`cli-subagents-relays`, in `~/.gemini/config/plugins/`. Its `agents/` files use
+Antigravity's format; the repository's root `agents/` files belong to Claude
+Code and Antigravity skips them. Repeat setup leaves matching files untouched,
+refuses links and backs up custom contents. If you installed only with
+`agy plugin install`, run setup once to add the relays. Start a new session.
+
+Ask the main agent to use native `invoke_subagent` with
+`cli-subagents-claude`, `cli-subagents-codex` or `cli-subagents-antigravity`.
+Pass the same option lines as the Claude relays, then the complete task. The
+relay calls `csa run --follow --window 60` and copies the authenticated result
+unchanged. In the app, open its conversation in the subagent panel; in the CLI,
+use `/agents` and Enter to inspect tool output. Send follow-ups to that same
+native agent, including after it finishes. Prefer these relays over
+`subagent_start` when available. See the
+[Antigravity host instructions](../skills/cli-subagents/hosts/antigravity.md).
+
+The relay uses the supported `flash` model tier. Antigravity rejects exact
+model IDs in native agent definitions, so the resolved Gemini model and effort
+must be checked in the app. Copy fidelity, live refresh and relay cost also
+need an app check; the [research note](research/antigravity-native-agents.md)
+records the sources and local CLI validation. The companion is a separate
+plugin: removing the main plugin does not remove it. Remove its
+`~/.gemini/config/plugins/cli-subagents-relays/` directory to remove the relays.
+
+The repository root provides the MCP server and shared skill. When native
+relays are unavailable, use its `subagent_*` tools and keep waits short, as
+with Codex. The wake-up hooks are Claude Code only.
 
 ## Any other MCP client
 

@@ -12,6 +12,21 @@ Check Google's terms first. The [Antigravity FAQ](https://antigravity.google/doc
 
 There is nothing else to configure. Jobs run on the account you signed in with in `agy`. Extra Google accounts are optional; see [More than one Google account](#more-than-one-google-account).
 
+## Native agents when Antigravity is the host
+
+Run `csa setup --host antigravity` and start a new session. Setup installs the
+main plugin and a companion plugin with `cli-subagents-claude`,
+`cli-subagents-codex` and `cli-subagents-antigravity` native relay agents. The
+main agent invokes them with `invoke_subagent`; each runs `csa run --follow`
+in a conversation you can open in the app or the CLI's `/agents` panel. Send
+later messages to the same relay to continue the worker conversation.
+
+The relay uses Antigravity's `flash` tier; prompt `model` and `effort` options
+select the external worker. Native definitions cannot pin an exact model ID,
+so check the resolved relay model and effort in the app. See
+[host setup](hosts.md#antigravity) and the
+[research and app checks](research/antigravity-native-agents.md).
+
 ## Using it
 
 ```bash

@@ -55,6 +55,7 @@ WORKER_NOTE = (
 )
 
 LIMIT_RE = re.compile(r"usage limit|rate limit|too many requests|\b429\b|quota|try again at", re.IGNORECASE)
+CAPACITY_RE = re.compile(r"selected model is at capacity|\bserver(?:[ _]is)?[ _]overloaded\b", re.IGNORECASE)
 AUTH_RE = re.compile(r"not logged in|\b401\b|unauthorized|log ?in again|token (has )?expired|refresh token", re.IGNORECASE)
 TOOL_ITEMS = {"command_execution", "file_change", "mcp_tool_call", "web_search"}
 
@@ -230,6 +231,26 @@ def parent_mcp(config: RuntimeConfig, spec: JobSpec, files: list[Path], env: dic
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def reasoning_summary_args(config: RuntimeConfig, files: list[Path]) -> list[str]:
+    """Request summaries unless the user's Codex config already chooses their detail."""
+
+    if config.reasoning_summary == "off":
+        return []
+    profile = None
+    profiles: dict[str, Any] = {}
+    for path in files:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        if "model_reasoning_summary" in data:
+            return []
+        profile = data.get("profile", profile)
+        for name, settings in (data.get("profiles") or {}).items():
+            if isinstance(settings, dict):
+                profiles.setdefault(name, {}).update(settings)
+    if isinstance(profile, str) and "model_reasoning_summary" in profiles.get(profile, {}):
+        return []
+    return ["-c", f"model_reasoning_summary={json.dumps(config.reasoning_summary)}"]
 
 
 def configured_windows_sandbox(home: Path) -> str | None:
@@ -419,9 +440,13 @@ class CodexParser:
             self._completed_error_count = len(self.error_events)
         elif kind == "turn.failed":
             message = (event.get("error") or {}).get("message") or "turn failed"
+            info = (event.get("error") or {}).get("codex_error_info") or (event.get("error") or {}).get("code")
+            if info:
+                message = f"{message} ({info})"
             self.failures.append(str(message))
         elif kind == "error" and event.get("message"):
-            self.error_events.append(str(event["message"]))
+            info = event.get("codex_error_info") or event.get("code")
+            self.error_events.append(str(event["message"]) + (f" ({info})" if info else ""))
         return None
 
     def progress(self) -> dict[str, Any]:
@@ -467,6 +492,10 @@ class CodexParser:
         haystack = "\n".join(part for part in sources if part)
         details = "\n".join(part for part in (haystack, *self.error_events, *self.error_items, stderr_tail) if part)
         message = next((line.strip() for line in details.splitlines() if line.strip()), "")[:300]
+        terminal = self.failures[-1:] or self.error_events[self._completed_error_count:][-1:]
+        if CAPACITY_RE.search("\n".join([*terminal, stderr_tail])):
+            return AttemptResult(ERROR, message=message or "model at capacity", text=self.last_text,
+                                 error_text=details[-4000:], at_capacity=True, **common)
         if LIMIT_RE.search(haystack):
             return AttemptResult(
                 USAGE_LIMIT, message=message or "usage limit reached", text=self.last_text, error_text=details[-4000:], **common
@@ -633,6 +662,7 @@ class CodexRuntime:
             argv += ["-c", f"model_reasoning_effort={effort}"]
         if config.web_search is not None:
             argv += ["-c", f"web_search={json.dumps(config.web_search)}"]
+        argv += reasoning_summary_args(config, files)
         argv += windows_sandbox_args(config, account.home, spec.access)
         if spec.access == "edit" and config.network_access:
             # Codex's workspace-write sandbox blocks network by default, on Windows (mxc) even

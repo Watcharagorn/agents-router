@@ -1,8 +1,65 @@
 # CLI Subagents in Codex
 
-## Tools
+## Native relay agents
 
-After `csa setup`, or `codex plugin marketplace add lunati228/CLI-Subagents` and `codex plugin add cli-subagents@cli-subagents` from a terminal (or a `[mcp_servers.cli-subagents]` entry with `command = "csa"`, `args = ["mcp"]`), the tools are `subagent_start`, `subagent_wait`, `subagent_message`, `subagent_status`, `subagent_result`, `subagent_cancel`, `subagent_list` and `subagent_accounts` on the `cli-subagents` server.
+Prefer the native relay agents over the MCP start/wait tools when the current
+client exposes custom agent selection. They put each job in a native subagent
+thread the user can inspect. `csa setup --host codex` installs these standalone
+agents in the main Codex home's `agents/` directory; `csa update` refreshes them.
+Start a new Codex session after installation. Installing the plugin alone does
+not register the agents; run setup too.
+
+| Worker CLI | Native `agent_type` |
+|---|---|
+| Claude Code | `cli-subagents-claude` |
+| Codex | `cli-subagents-codex` |
+| Antigravity / Gemini | `cli-subagents-antigravity` |
+
+Use the native `spawn_agent` tool with that `agent_type` and a self-contained
+task. For the default v1 tool schema, a Codex worker example is:
+
+```json
+{
+  "agent_type": "cli-subagents-codex",
+  "message": "model=gpt-6.1-sol\neffort=high\naccess=read\n\nReview the authentication module and report correctness risks with file references.",
+  "fork_context": false
+}
+```
+
+Use the fields in the actual tool schema if the client exposes another version
+(v2 also requires `task_name` and uses `fork_turns="none"` for a fresh context).
+Do not put the worker's model in the spawn call's `model` field. All three
+relays select `gpt-6-luna` at low reasoning themselves. Option lines in the
+message select the external worker: `model=`, `access=`, `account=`, `effort=`,
+`cwd=`, `timeout=` and `override=` (the colon form is also accepted). Use
+`override` only with the user's authorization described in the main skill.
+
+Keep the returned native agent ID. Send follow-ups, answers and cancellation to
+that same relay with native `send_input`, including after it finishes. With v2,
+use `followup_task` to resume an idle relay; `send_message` alone does not start
+an idle agent's next turn. The relay retains the csa job and event offset and
+runs `csa message JOB --follow --from OFFSET -`. A finished job continues its
+worker conversation, and the relay validates any new job ID. Send `cancel` or
+`stop` to cancel its worker before closing the native agent. Keep the native
+thread open while follow-ups are needed.
+
+The relay returns a token-checked `[csa] DONE` or `[csa] FAILED` line and the
+worker's exact result. A QUESTION turn asks the parent for an answer; reply to
+the same native agent. A missing or mismatched frame is an error. The relay
+never performs the task itself. Its shell calls show worker events, while the
+native agent notification delivers completion to the parent. Use `/subagents`
+in the CLI to inspect threads; the app also exposes subagent threads, though
+its exact live-output presentation has not been checked locally.
+
+Custom agents inherit the parent's permissions and MCP configuration. Codex
+can disable selected features but has no enforced shell-only tool list for a
+role. Keep shell execution enabled in the parent. If custom agent selection is
+absent, native agents are disabled, or the relay model is unavailable, use the
+MCP tools below. Do not claim a native thread was started for an MCP-only job.
+
+## MCP fallback
+
+After `csa setup`, or `codex plugin marketplace add lunati228/CLI-Subagents` and `codex plugin add cli-subagents@cli-subagents` from a terminal (or a `[mcp_servers.cli-subagents]` entry with `command = "csa"`, `args = ["mcp"]`), the tools are `subagent_start`, `subagent_wait`, `subagent_message`, `subagent_status`, `subagent_result`, `subagent_cancel`, `subagent_list` and `subagent_accounts` on the `cli-subagents` server. Use them when a native relay is unavailable.
 
 ## Waiting
 
@@ -18,6 +75,7 @@ Subagents on the user's other ChatGPT accounts get the setup of the main Codex h
 | Instructions | `~/.codex/AGENTS.md` (all projects) or `<project>/AGENTS.md` |
 | An MCP server | `codex mcp add <name> -- <command>` or `[mcp_servers.<name>]` in `~/.codex/config.toml` |
 | A plugin | `codex plugin add <plugin>@<marketplace>` |
+| A custom agent | `~/.codex/agents/<name>.toml`, or `<project>/.codex/agents/` |
 | Model defaults, features, profiles | `~/.codex/config.toml` |
 
 Don't edit files inside `~/.cli-subagents/homes/codex/`; they're rebuilt from the main home before each run. Each account keeps its own login (`auth.json`), session history, and its own `[projects.*]`, `[hooks.state.*]` and `[notice.*]` tables in `config.toml`; the rest of that file comes from the main home.

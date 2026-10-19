@@ -28,7 +28,7 @@ flowchart LR
 
 ## What you get
 
-- Subagents that feel built in. Start one, keep working, and get the result back when it's done. In Claude Code they appear in the agent list like native subagents, colored by CLI and labeled with the model and task, and you can open one to watch each step and its reasoning as the worker goes. The plugin also wakes an idle session when a subagent finishes or asks a question, and lists any uncollected results after you resume.
+- Subagents that feel built in. Start one, keep working, and get the result back when it's done. In Claude Code they appear in the agent list like native subagents, colored by CLI and labeled with the model and task, and you can open one to watch each step and its reasoning as the worker goes. `csa setup --host codex` also installs native Codex relay agents, with a separate thread for each job; see [host support](docs/hosts.md#codex) for the app verification still due. Claude Code's hooks also wake an idle session when a subagent finishes or asks a question, and list any uncollected results after you resume.
 - Two-way messages. A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works, and each message is delivered once.
 - One setup for every account. Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder through links and launch flags, not copied. Only the login differs per account.
 - Automatic account switching. Claude Code and Codex report each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude, Codex or Gemini account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off per CLI.
@@ -53,7 +53,7 @@ flowchart LR
    | Host | Command |
    |---|---|
    | Claude Code | `/plugin install cli-subagents --marketplace lunati228/CLI-Subagents` in a session, or `claude plugin install cli-subagents --marketplace lunati228/CLI-Subagents` in a terminal |
-   | Codex | `codex plugin marketplace add lunati228/CLI-Subagents` then `codex plugin add cli-subagents@cli-subagents` |
+   | Codex | `csa setup --host codex` installs the plugin and native relay agents |
    | Antigravity | `agy plugin install https://github.com/lunati228/CLI-Subagents` |
    | Any MCP client | Server command `csa` with argument `mcp` |
 
@@ -174,6 +174,7 @@ src/cli_subagents/      Core: jobs, account pool, shared setup, messages, MCP se
   agy_review/           The review gate for Antigravity workers
 .claude-plugin/         Claude Code and Codex plugin manifest and marketplace
 agents/                 Relay agents that show jobs in Claude Code's agent list
+src/cli_subagents/templates/codex-agents/   Native Codex relay definitions installed by setup/update
 plugin.json, mcp_config.json   Antigravity plugin
 skills/cli-subagents/   The skill that teaches the host agent how to use subagents
 commands/               /cli-subagents:delegate

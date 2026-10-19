@@ -126,6 +126,7 @@ LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 NOT_LIMIT_RE = re.compile(r"not your usage limit", re.IGNORECASE)
+CAPACITY_RE = re.compile(r"\boverloaded_error\b|\b(?:API error:?\s*|HTTP\s+)529\b|\boverloaded\b", re.IGNORECASE)
 # Weaker hint, trusted only together with a `rejected` rate-limit event.
 LIMIT_HINT_RE = re.compile(r"limit|\b429\b", re.IGNORECASE)
 AUTH_RE = re.compile(
@@ -243,6 +244,11 @@ class ClaudeParser:
         is_error = bool(self.result and result.get("is_error"))
         error_text = str(result.get("result") or "") if is_error or not self.result else ""
         haystack = "\n".join(part for part in (error_text, stderr_tail, self.last_retry_error or "") if part)
+        # api_retry reports the CLI's own backoff. Only terminal diagnostics count here.
+        terminal = "\n".join(part for part in (error_text, "\n".join(result.get("errors") or []), stderr_tail) if part)
+        if result.get("api_error_status") == 529 or CAPACITY_RE.search(terminal):
+            return AttemptResult(ERROR, message=_first_line(terminal) or "model at capacity (HTTP 529)",
+                                 text=text, error_text=terminal[-4000:], at_capacity=True, **common)
         not_limit = bool(NOT_LIMIT_RE.search(haystack))
         rejected = bool(self.rate_limit and self.rate_limit.get("status") == "rejected")
         status_429 = result.get("api_error_status") == 429

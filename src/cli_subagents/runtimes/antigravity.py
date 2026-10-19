@@ -107,6 +107,11 @@ SANDBOX_NOTE = (
 )
 
 LIMIT_RE = re.compile(r"quota|resource exhausted|rate limit|usage limit|\b429\b", re.IGNORECASE)
+CAPACITY_RE = re.compile(
+    r"\boverloaded\b|\bno capacity available for model\b|\bmodel is at capacity\b|"
+    r"\b503\s+(?:UNAVAILABLE|Service Unavailable)\b|\bUNAVAILABLE\s*\(code 503\)|"
+    r"\bmodel is currently experiencing high demand\b", re.IGNORECASE,
+)
 # Only wording that says the CLI itself lacks a login; "sign in" alone shows up in ordinary output.
 AUTH_RE = re.compile(
     r"authentication (is )?required|authentication expired|not (currently )?signed in|unauthenticated"
@@ -353,6 +358,9 @@ class AntigravityParser:
         error_text = error if isinstance(error, str) else str((error or {}).get("message") or "")
         haystack = "\n".join(part for part in (error_text, stderr_tail) if part)
         message = next((line.strip() for line in haystack.splitlines() if line.strip()), "")[:300]
+        if (isinstance(error, dict) and error.get("code") == 503) or CAPACITY_RE.search(haystack):
+            return AttemptResult(ERROR, message=message or "model at capacity (HTTP 503)", text=text,
+                                 error_text=haystack[-4000:], at_capacity=True, **common)
         if LIMIT_RE.search(haystack):
             return AttemptResult(
                 USAGE_LIMIT, message=message or "quota reached", text=text, error_text=haystack[-4000:],

@@ -4,6 +4,8 @@ CLI Subagents can run `codex exec` workers the same way it runs `claude -p` work
 
 Every worker is the official `codex` CLI with your own ChatGPT login. See [provider terms](research/provider-terms.md) for what OpenAI publishes about this kind of use.
 
+If Codex exits with `Selected model is at capacity`, csa retries on the same account after 30, 60 and 120 seconds, resuming its thread when available; [configure capacity retries](configuration.md#model-capacity-retries) per runtime.
+
 ## Requirements
 
 - Codex CLI installed and signed in (`codex login status`)
@@ -84,6 +86,21 @@ web_search = "live"
 ```
 
 Allowed values are `"disabled"`, `"cached"`, `"indexed"` and `"live"`. csa passes `-c web_search="<value>"` on both new runs and resumes. Leave the key unset to keep Codex's own default (`"cached"`).
+
+## Reasoning summaries
+
+New runs and resumes request `-c model_reasoning_summary="detailed"` by default. When Codex emits a completed reasoning summary, `csa follow` prints one `thinking:` line: its bold title and first sentence, or just the first sentence, capped at 200 characters. It does not print the full summary.
+
+Your own `model_reasoning_summary` setting in the account's Codex `config.toml`, project config or active profile takes precedence. To change csa's fallback:
+
+```toml
+[codex]
+reasoning_summary = "detailed"  # "concise", "auto", "none" or "off" also accepted
+```
+
+`"none"` requests no summaries; `"off"` adds no override and leaves Codex's defaults alone. These are the summary levels in the [official OpenAI configuration reference](https://developers.openai.com/codex/config-reference/), plus csa's `"off"` switch. Summaries depend on the model and account: on 2026-10-19, `gpt-6.1-sol` emitted one with `"detailed"` but none with its default or `"auto"`; `gpt-6-luna` on a free account emitted none even with `"detailed"`. A quiet reasoning stream does not mean the worker has stopped.
+
+In Claude Code, the relay returns its output about once a minute using `--window 60`. A terminal follow still streams immediately; see [follow windows](configuration.md#follow-windows).
 
 ## Using it
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cli-subagents"
-version = "0.2.11"
+version = "0.2.12"
 description = "Let your coding agent delegate tasks to other installed agent CLIs, each in its own harness under your own login, with one shared setup across accounts."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,5 +30,5 @@ cli-subagents-mcp = "cli_subagents.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"cli_subagents" = ["templates/*.md"]
+"cli_subagents" = ["templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
 "cli_subagents.agy_review" = ["policy.md"]

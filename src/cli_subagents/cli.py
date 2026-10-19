@@ -293,7 +293,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.follow:
         from cli_subagents.follow import follow
 
-        return follow(status["job_id"], None, args.max_wait)
+        return follow(status["job_id"], None, args.max_wait, window=args.window)
     print(f"Started {status['job_id']}", file=sys.stderr)
     status = jobs.wait_for(status["job_id"], args.timeout + 960)
     result = jobs.read_result(status["job_id"], 1_000_000)
@@ -310,7 +310,7 @@ def cmd_follow(args: argparse.Namespace) -> int:
 
     if args.from_offset is not None and args.from_offset < 0:
         raise ValueError("--from must be 0 or more")
-    return follow(args.job_id, args.from_offset, args.max_wait)
+    return follow(args.job_id, args.from_offset, args.max_wait, window=args.window)
 
 
 def cmd_message(args: argparse.Namespace) -> int:
@@ -328,7 +328,7 @@ def cmd_message(args: argparse.Namespace) -> int:
         job_id = new_job["job_id"] if new_job else args.job_id
         # A continuation has its own event log; an old job's offset cannot apply.
         start = None if new_job else args.from_offset
-        return follow(job_id, start, args.max_wait)
+        return follow(job_id, start, args.max_wait, window=args.window)
     _print(result)
     return 0
 
@@ -388,6 +388,16 @@ def cmd_launch(args: argparse.Namespace, extra: list[str]) -> int:
 
 
 # Entry point -----------------------------------------------------------------
+
+
+def _positive_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--window must be a positive integer") from None
+    if seconds < 1:
+        raise argparse.ArgumentTypeError("--window must be a positive integer")
+    return seconds
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -489,6 +499,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "a new continuation always starts from the beginning.")
     message.add_argument("--max-wait", type=float, default=540,
                          help="With --follow: stop watching after this many seconds (default 540).")
+    from cli_subagents.follow import DEFAULT_WINDOW
+
+    for watcher in (run_parser, follow_parser, message):
+        watcher.add_argument("--window", type=_positive_seconds, nargs="?", const=DEFAULT_WINDOW, metavar="SECONDS",
+                             help="Return after this many seconds and repeat the window in continuations "
+                             "(bare --window: 60; omitted: keep --max-wait behavior).")
     jobs_parser = sub.add_parser("jobs", help="List recent jobs.")
     jobs_parser.add_argument("--limit", type=int, default=20)
 

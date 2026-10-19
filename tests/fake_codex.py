@@ -2,7 +2,8 @@
 
   FAKE_CODEX_LIMITED   comma-separated CODEX_HOME folder names that are "out of quota"
   FAKE_CODEX_SCENARIO  success (default) | recovered_errors | success_exit_1 | success_pause |
-                      success_quota | success_auth | success_failed
+                      success_quota | success_auth | success_failed | capacity | capacity_no_session
+  FAKE_CODEX_CAPACITY_FAILURES  number of capacity failures before success (default 100)
   FAKE_CLAUDE_RECORD   file to append {"argv", "env", "stdin"} records to (shared with fake_claude)
 """
 
@@ -28,8 +29,22 @@ def main():
     account = Path(os.environ.get("CODEX_HOME", "default")).name
     limited = [item for item in os.environ.get("FAKE_CODEX_LIMITED", "").split(",") if item]
     scenario = os.environ.get("FAKE_CODEX_SCENARIO", "success")
+    capacity = False
+    if scenario in ("capacity", "capacity_no_session"):
+        counter = Path(os.environ["CODEX_HOME"]) / "fake-capacity-attempts"
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        capacity = count < int(os.environ.get("FAKE_CODEX_CAPACITY_FAILURES", "100"))
+        if capacity and scenario == "capacity_no_session":
+            sys.stderr.write("Selected model is at capacity. Please try a different model.\n")
+            return 1
     emit({"type": "thread.started", "thread_id": f"thread-{account}"})
     emit({"type": "turn.started"})
+    if capacity:
+        emit({"type": "item.completed", "item": {"type": "agent_message", "text": "partial progress"}})
+        emit({"type": "error", "message": "Selected model is at capacity. Please try a different model."})
+        emit({"type": "turn.failed", "error": {"message": "Selected model is at capacity. Please try a different model."}})
+        return 1
     if account in limited:
         emit({"type": "error", "message": "You've hit your usage limit. Try again at 3:05 PM."})
         emit({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again at 3:05 PM."}})

@@ -1,8 +1,10 @@
 """`csa setup`: install the plugin into the host CLIs and register existing account folders.
 
-Everything runs through each host's own terminal commands (`claude plugin ...`,
+Plugins use each host's own terminal commands (`claude plugin ...`,
 `codex plugin ...`, `agy plugin ...`), so an agent can do the whole install
-without slash commands. When the `claude` binary can't be found, the Claude Code
+without slash commands. Codex native agents are installed separately in its
+personal agents folder. Antigravity relays use a companion plugin in its global
+customizations folder. When the `claude` binary can't be found, the Claude Code
 plugin is declared in the primary `settings.json` instead; Claude Code installs
 it on its next start. Logins are never run and credential files are never read.
 """
@@ -10,6 +12,7 @@ it on its next start. Logins are never run and credential files are never read.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib.resources import files
 import json
 import os
 from pathlib import Path
@@ -20,7 +23,7 @@ import time
 from typing import Any
 
 from cli_subagents.config import NAME_RE, Account, Config, save_config
-from cli_subagents.fsutil import no_window_kwargs, same_path, write_json
+from cli_subagents.fsutil import copy_exclusive, is_link, no_window_kwargs, same_path, write_json, write_private
 from cli_subagents.runtimes import get_runtime
 from cli_subagents.runtimes.base import JobSpec, clean_environment
 
@@ -29,6 +32,7 @@ REPO_URL = f"https://github.com/{REPO}"
 MARKETPLACE = "cli-subagents"
 PLUGIN = "cli-subagents"
 PLUGIN_ID = f"{PLUGIN}@{MARKETPLACE}"
+ANTIGRAVITY_RELAYS = "cli-subagents-relays"
 HOSTS = ("claude", "codex", "antigravity")
 LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
 SHORT = {"claude": "claude", "codex": "codex", "antigravity": "agy"}
@@ -110,6 +114,8 @@ def _items(data: Any) -> list[dict[str, Any]]:
 def _find_plugin(data: Any, host: str) -> dict[str, Any] | None:
     for item in _items(data):
         if host == "antigravity":
+            if str(item.get("name", "")).lower() == ANTIGRAVITY_RELAYS:
+                continue  # The companion registers agents, not the main plugin's MCP server.
             names = [str(item.get(key) or "") for key in ("name", "id", "pluginId", "source", "url", "path", "installPath")]
             if any(PLUGIN in name.lower() for name in names) and ("name" in item or "id" in item):
                 return item
@@ -179,6 +185,85 @@ def _plugin_steps(host: str, state: dict[str, Any]) -> list[list[str]]:
     return [["plugin", "install", REPO_URL]]
 
 
+def _install_codex_agents(primary: Path, report: Report) -> None:
+    """Codex discovers personal TOML agents, but cannot register them from a plugin."""
+
+    templates = files("cli_subagents").joinpath("templates", "codex-agents")
+    for runtime in HOSTS:
+        name = f"cli-subagents-{runtime}.toml"
+        target = primary / "agents" / name
+        try:
+            content = templates.joinpath(name).read_bytes()
+            if target.is_symlink():
+                report.failed.append(f"Codex: won't replace the relay agent symlink at {target}.")
+                continue
+            previous = target.read_bytes() if target.exists() else None
+            if previous == content:
+                report.unchanged.append(f"Codex: relay agent {target.stem} is already up to date.")
+                continue
+            if report.dry_run:
+                report.done.append(f"Codex: would install relay agent {target.stem} at {target}")
+            else:
+                backup = None
+                # csa's own earlier version needs no backup; anything else might hold the user's edits.
+                ours = previous is not None and previous.startswith(content.split(b"\n", 1)[0])
+                if previous is not None and not ours:
+                    # The backup must not end in .toml: Codex discovers those recursively.
+                    backup = target.with_name(f"{name}.csa-backup-{time.time_ns()}")
+                    copy_exclusive(target, backup)
+                write_private(target, content)
+                note = f"; backup at {backup}" if backup else ""
+                report.done.append(f"Codex: installed relay agent {target.stem} at {target}{note}")
+            report.add_todo(RELOAD["codex"])
+        except OSError as exc:
+            report.failed.append(f"Codex: couldn't install relay agent {target.stem}: {exc}")
+
+
+def _install_antigravity_agents(config: Config, report: Report) -> None:
+    """Use Antigravity's manual global plugin discovery, separate from Claude's agents."""
+
+    from cli_subagents.runtimes.antigravity import gemini_root
+
+    root = gemini_root(config.runtime("antigravity"))
+    plugin = root / "config" / "plugins" / ANTIGRAVITY_RELAYS
+    templates = files("cli_subagents").joinpath("templates", "antigravity-plugin")
+    # Publish the manifest last so a new plugin never registers an incomplete set.
+    names = [f"agents/cli-subagents-{runtime}.md" for runtime in HOSTS] + ["plugin.json"]
+    try:
+        for folder in (root / "config", plugin.parent, plugin, plugin / "agents"):
+            if is_link(folder):
+                report.failed.append(f"Antigravity: won't install relay agents through the folder link at {folder}.")
+                return
+        for name in names:
+            target = plugin / name
+            content = templates.joinpath(*name.split("/")).read_bytes()
+            if is_link(target):
+                report.failed.append(f"Antigravity: won't replace the relay agent link at {target}.")
+                return
+            previous = target.read_bytes() if target.exists() else None
+            label = f"relay agent {target.stem}" if name.endswith(".md") else "relay plugin manifest"
+            if previous == content:
+                report.unchanged.append(f"Antigravity: {label} is already up to date.")
+                continue
+            if report.dry_run:
+                report.done.append(f"Antigravity: would install {label} at {target}")
+            else:
+                backup = None
+                # Markdown starts with ---, so include its identifying YAML comment.
+                lines = 2 if name.endswith(".md") else 1
+                ours = previous is not None and previous.splitlines()[:lines] == content.splitlines()[:lines]
+                if previous is not None and not ours:
+                    # Backups must not be Markdown files: the plugin scans those for agents.
+                    backup = target.with_name(f"{target.name}.csa-backup-{time.time_ns()}")
+                    copy_exclusive(target, backup)
+                write_private(target, content)
+                note = f"; backup at {backup}" if backup else ""
+                report.done.append(f"Antigravity: installed {label} at {target}{note}")
+            report.add_todo(RELOAD["antigravity"])
+    except OSError as exc:
+        report.failed.append(f"Antigravity: couldn't install relay agents at {plugin}: {exc}")
+
+
 def install_plugin(config: Config, host: str, report: Report, claude_route: str = "auto") -> None:
     label = LABELS[host]
     runtime_config = config.runtime(host)
@@ -194,6 +279,10 @@ def install_plugin(config: Config, host: str, report: Report, claude_route: str 
     steps = _plugin_steps(host, state)
     if not steps:
         report.unchanged.append(f"{label}: plugin {PLUGIN_ID} is already installed and enabled.")
+        if host == "codex":
+            _install_codex_agents(runtime_config.primary, report)
+        elif host == "antigravity":
+            _install_antigravity_agents(config, report)
         return
     for args in steps:
         shown = " ".join([SHORT[host], *args])
@@ -213,12 +302,20 @@ def install_plugin(config: Config, host: str, report: Report, claude_route: str 
             return
         report.done.append(f"{label}: ran `{shown}`")
     if report.dry_run:
+        if host == "codex":
+            _install_codex_agents(runtime_config.primary, report)
+        elif host == "antigravity":
+            _install_antigravity_agents(config, report)
         report.add_todo(RELOAD[host])
         return
     after = _plugin_state(host, command, env)
     if after["installed"] is False:
         report.failed.append(f"{label}: the commands succeeded but `{SHORT[host]} plugin list` doesn't show {PLUGIN}.")
         return
+    if host == "codex":
+        _install_codex_agents(runtime_config.primary, report)
+    elif host == "antigravity":
+        _install_antigravity_agents(config, report)
     report.add_todo(RELOAD[host])
 
 
@@ -601,6 +698,10 @@ def update_plugin(config: Config, host: str, report: Report) -> bool:
             report.failed.append(f"{label}: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
             return True
         report.done.append(f"{label}: ran `{shown}`")
+    if host == "codex":
+        _install_codex_agents(runtime_config.primary, report)
+    elif host == "antigravity":
+        _install_antigravity_agents(config, report)
     report.add_todo(RELOAD[host])
     return True
 

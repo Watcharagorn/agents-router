@@ -37,7 +37,7 @@ Agent tool:
 - Start it in the background and keep working. Don't poll or wait in a shell; the notice arrives when it finishes.
 - Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. While the job runs, SendMessage "cancel" stops it and anything else goes to the worker as a follow-up. After the job has finished, SendMessage to the same relay continues the worker's conversation as a new job; the relay follows it and returns its result.
 
-The MCP tools below work everywhere. They are the only option in Codex and Antigravity, and in Claude Code only when the relay agent types are missing.
+The MCP tools below work everywhere. In Codex, `csa setup --host codex` installs the same three relays as native agents (`cli-subagents-codex` and so on); start them with Codex's own subagent tool as [the Codex note](hosts/codex.md) shows, and use the MCP tools there only when those agents are missing. In Antigravity, `csa setup --host antigravity` installs them as a companion plugin of subagents; start them as [the Antigravity note](hosts/antigravity.md) shows. In Claude Code, too, use the MCP tools only when the relay agent types are missing.
 
 ## The loop with the MCP tools
 
@@ -74,7 +74,7 @@ Put the user's own words in `override`, for example the relay line `override=use
 | `no_account` | All accounts are busy or cooling down; wait or tell the user |
 | `auth` | For an extra account, ask the user to run `csa accounts login <name>`; add `--runtime codex` or `--runtime antigravity` for non-Claude accounts. For a primary login, use the vendor CLI (`claude auth login`, `codex login` or `agy`). |
 | `timeout`, `max_turns` | Narrow the task or raise the limit |
-| `error`, `lost` | Read `message` and `warnings`; retry once at most |
+| `error`, `lost` | Read `message` and `warnings`; retry once at most. `model at capacity after N retries` means csa already waited and retried, and the model stayed overloaded. Fall back as your delegation rules say; do not manage another retry timer. |
 
 ## Per host
 

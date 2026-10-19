@@ -6,7 +6,7 @@ line is flushed at once. Worker-controlled output always has a ``| `` prefix;
 terminal controls are rendered as visible escapes. Results and questions have
 fixed opening and closing delimiters. The last line is the authoritative
 DONE, FAILED, STILL RUNNING or QUESTION marker, after all worker text and
-continuation commands. Only this line and the header start with ``[csa]``.
+continuation commands. The header, capacity retry notices and end marker start with ``[csa]``.
 
 The header and end marker carry the job ID and a fresh random token for this
 follow invocation. Printed commands carry the same token in a shell comment
@@ -36,6 +36,7 @@ from cli_subagents.runtimes.base import SUCCESS
 
 POLL_SECONDS = 0.5
 DEFAULT_MAX_WAIT = 540.0  # keeps one Bash call under Claude Code's 10-minute ceiling
+DEFAULT_WINDOW = 60
 SUMMARY_CHARS = 200
 RUNTIME_LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
 RESULT_RULE = "===== RESULT ====="
@@ -75,6 +76,17 @@ def first_line(value: Any, limit: int = SUMMARY_CHARS) -> str:
         if line.strip():
             return short(line, limit)
     return ""
+
+
+def reasoning_line(text: str) -> str:
+    """A summary's title and first sentence, capped to one readable line."""
+
+    text = text.strip()
+    title = re.match(r"^\*\*([^\n]+?)\*\*\s*", text)
+    prefix = title.group(1) if title else ""
+    body = text[title.end():] if title else text
+    sentence = re.split(r"(?<=[.!?])\s+", body.strip(), maxsplit=1)[0]
+    return short(prefix + (": " if prefix and sentence else "") + sentence)
 
 
 def plural(count: int, word: str) -> str:
@@ -271,7 +283,7 @@ class CodexDescriber(Describer):
                 return [f"  exit {code}"]
             return []
         if item_type == "reasoning" and str(item.get("text") or "").strip():
-            return block("thinking: ", item["text"])
+            return ["thinking: " + reasoning_line(str(item["text"]))]
         if item_type == "agent_message" and str(item.get("text") or "").strip():
             return block("says: ", item["text"])
         if item_type == "file_change":
@@ -462,7 +474,10 @@ def decode(raw: bytes) -> dict[str, Any] | None:
 
 
 class Follower:
-    def __init__(self, job_id: str, start: int | None, max_wait: float, out: TextIO | None = None) -> None:
+    def __init__(self, job_id: str, start: int | None, max_wait: float, out: TextIO | None = None,
+                 window: int | None = None) -> None:
+        if window is not None and (type(window) is not int or window < 1):
+            raise ValueError("--window must be a positive integer")
         self.job_id = job_id
         self.spec = jobs.read_spec(job_id)
         self.folder = jobs.job_dir(job_id)
@@ -470,6 +485,9 @@ class Follower:
         self.replay = start is None  # no --from: print the history, worker messages included
         self.position = max(0, int(start or 0))
         self.max_wait = max(0.0, float(max_wait))
+        self.window = window
+        if window is not None:
+            self.max_wait = min(self.max_wait, window)
         self.out = out
         self.token = secrets.token_hex(16)  # never stored in worker-readable job files
         self.describer = describer_for(self.spec.runtime)
@@ -598,6 +616,17 @@ class Follower:
     def read_events(self, final: bool) -> None:
         lines, self.position = read_lines(self.events, self.position, final)
         for offset, raw in lines:
+            event = decode(raw)
+            if event and event.get("type") == "csa.capacity_retry":
+                # Worker JSON alone cannot produce a control line. The runner records
+                # its own event's exact byte offset in the attempt metadata first.
+                self.status = jobs.read_status(self.job_id)
+                retry = next((item["capacity_retry"] for item in self.status.get("attempts") or []
+                              if item.get("capacity_retry", {}).get("event_offset") == offset), None)
+                if retry:
+                    self.control(f"model at capacity, retrying in {retry['seconds']} s "
+                                 f"({retry['number']} of {retry['total']})")
+                    continue
             output = self._feed(offset, raw)
             if output:
                 self.emit_worker(*output)
@@ -698,9 +727,13 @@ class Follower:
         return 1
 
     def still_running(self) -> int:
-        self.emit("Keep watching with:", self.command(f"csa follow {self.job_id} --from {self.resume_offset()}"))
+        self.emit("Keep watching with:", self.command(self.follow_command()))
         self.control(f"STILL RUNNING after {duration(self.elapsed())}")
         return 0
+
+    def follow_command(self) -> str:
+        command = f"csa follow {self.job_id} --from {self.resume_offset()}"
+        return command + (f" --window {self.window}" if self.window is not None else "")
 
     def question(self, record: dict[str, Any]) -> int:
         question_id = str(record["id"])
@@ -719,7 +752,7 @@ class Follower:
             self.command(f"csa message {self.job_id} --reply-to {question_id} -"),
             "(the answer text goes on stdin)",
             "Then keep watching with:",
-            self.command(f"csa follow {self.job_id} --from {self.resume_offset()}"),
+            self.command(self.follow_command()),
         )
         self.control(f"QUESTION from the worker (id {question_id})")
         return 0
@@ -747,10 +780,11 @@ class Follower:
                 return self.question(question)
             if time.monotonic() >= deadline:
                 return self.still_running()
-            time.sleep(POLL_SECONDS)
+            time.sleep(min(POLL_SECONDS, max(0.0, deadline - time.monotonic())))
 
 
-def follow(job_id: str, start: int | None = None, max_wait: float = DEFAULT_MAX_WAIT, out: TextIO | None = None) -> int:
+def follow(job_id: str, start: int | None = None, max_wait: float = DEFAULT_MAX_WAIT, out: TextIO | None = None,
+           window: int | None = None) -> int:
     """Print a job's events from byte `start` until it ends, asks a question, or `max_wait` passes."""
 
-    return Follower(job_id, start, max_wait, out).run()
+    return Follower(job_id, start, max_wait, out, window).run()

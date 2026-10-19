@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from cli_subagents import cli, setup
-from cli_subagents.config import load_config
+from cli_subagents.config import default_primary, load_config
 from cli_subagents.runtimes.claude import ClaudeRuntime
 
 FAKE_HOST = Path(__file__).with_name("fake_host.py")
@@ -39,9 +39,14 @@ class SetupBase(unittest.TestCase):
             "CLI_SUBAGENTS_AGY_COMMAND": fake("agy"),
         })
         self._env.start()
+        # Antigravity has no CODEX_HOME-style override; keep setup's file writes temporary too.
+        self._primary = patch("cli_subagents.config.default_primary", side_effect=lambda runtime:
+                              self.agy_dir if runtime == "antigravity" else default_primary(runtime))
+        self._primary.start()
         os.environ.pop("FAKE_HOST_FAIL", None)
 
     def tearDown(self):
+        self._primary.stop()
         self._env.stop()
         self._temp.cleanup()
 

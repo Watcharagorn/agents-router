@@ -118,7 +118,7 @@ class CodexDescribeTests(unittest.TestCase):
             "$ pytest -q",
             "  exit 1",
             "$ ls",
-            "thinking: **Checking** the failure",
+            "thinking: Checking: the failure",
             "says: Fixed it.",
             "  All green.",
             "edited: a.py, b.py (new)",
