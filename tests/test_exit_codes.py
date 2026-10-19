@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -205,6 +206,30 @@ class ExitCodeJobTests(TempHome):
             with self.subTest(runtime=runtime):
                 status = self.run_scenario(runtime, "success_auth")
                 self.assertEqual(status["outcome"], "auth", status)
+
+    def test_early_auth_stop_keeps_output_already_written(self):
+        for scenario in ("early_auth",):
+            with self.subTest(scenario=scenario):
+                started = time.monotonic()
+                status = self.run_scenario("antigravity", scenario)
+                self.assertEqual(status["outcome"], "auth", status)
+                self.assertEqual(status["session_id"], "conv-early")
+                self.assertEqual(status["progress"]["last_text"], "partial done")
+                # The worker keeps running (60 s) after the stop; the drain must not wait for it.
+                self.assertLess(time.monotonic() - started, 30)
+
+    def test_drain_is_bounded_when_the_pipe_stays_open(self):
+        runner = Runner(jobs.create_job(runtime="antigravity", prompt="t", cwd=str(self.project), account="a1",
+                                        access="read", timeout_seconds=30, start=False)["job_id"])
+        parser = AntigravityParser()
+        import io, queue
+        lines = queue.Queue()
+        lines.put(json.dumps({"event": "step_update", "step_update": {"step_index": 5, "step_type": "agent_response", "text_delta": "kept"}}).encode() + b"\n")
+        with patch("cli_subagents.runner.EARLY_DRAIN_SECONDS", 0.5):
+            started = time.monotonic()
+            runner._drain(lines, [], parser, Account("a1", self.root), io.BytesIO())
+            self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(parser.last_text, "kept")
 
     def test_claude_max_turns_exit_one_keeps_its_outcome(self):
         status = self.run_scenario("claude", "max_turns")

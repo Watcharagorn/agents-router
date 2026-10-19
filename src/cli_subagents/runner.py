@@ -35,6 +35,7 @@ from cli_subagents.runtimes.base import (
 QUEUE_TIMEOUT_SECONDS = 15 * 60
 MAX_FOLLOW_UP_TURNS = 5
 STATUS_INTERVAL = 2.0
+EARLY_DRAIN_SECONDS = 3.0  # most we wait for already-written stdout to be parsed after an early stop
 STDERR_WINDOW = 8000  # characters of recent stderr a runtime's check_stderr sees
 EARLY_STOP = "early_stop"
 FINAL_STATUS_RETRY_SECONDS = 5.0
@@ -446,6 +447,9 @@ class Runner:
                     if early is not None:
                         self._early = early
                         kill_tree(process.pid)
+                        # Output the worker already wrote must still reach the parser.
+                        pending = [raw] if raw else []
+                        self._drain(lines, pending, parser, account, events)
                         return EARLY_STOP
             if raw is None:
                 return None
@@ -466,6 +470,25 @@ class Runner:
             if time.monotonic() - started > time_limit:
                 kill_tree(process.pid)
                 return TIMEOUT
+
+    def _drain(self, lines: "queue.Queue[bytes | None]", pending: list[bytes], parser: Any, account: Account, events) -> None:
+        """Parse `pending` and what is queued, until the pipe closes or EARLY_DRAIN_SECONDS pass."""
+
+        deadline = time.monotonic() + EARLY_DRAIN_SECONDS
+        while True:
+            for raw in pending:
+                events.write(raw if raw.endswith(b"\n") else raw + b"\n")
+                events.flush()
+                self._handle_line(raw, parser, account)
+            pending = []
+            try:
+                raw = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                return
+            if raw is None:
+                return
+            if raw:
+                pending = [raw]
 
     def _handle_line(self, raw: bytes, parser: Any, account: Account) -> None:
         try:

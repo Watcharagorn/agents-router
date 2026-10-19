@@ -1,7 +1,8 @@
 """Stand-in for `agy --output-format stream-json --print=...` used by the tests.
 
   FAKE_AGY_SCENARIO  success (default) | quota | login_prompt | denied | success_exit_1 |
-                    success_pause | success_quota | success_auth
+                    success_pause | success_quota | success_auth |
+                    early_auth (stdout events, then the login prompt; keeps running)
   FAKE_AGY_LIMITED   comma-separated account folder names (HOME basenames) that report a quota error
   FAKE_AGY_TOOLS     JSON list of tool calls ({"name", "args"}) the "model" makes. Like agy, the fake
                      runs every PreToolUse hook in HOME/.gemini/config/hooks.json for each call and
@@ -79,6 +80,12 @@ def main():
             handle.write(json.dumps({"argv": argv, "env": dict(os.environ), "stdin": "", "cwd": os.getcwd(), "reviewer": reviewer}) + "\n")
     home = Path(os.environ.get("USERPROFILE" if os.name == "nt" else "HOME") or os.environ.get("HOME") or ".")
     if os.environ.get("FAKE_AGY_SCENARIO") == "login_prompt":
+        return wait_for_login()
+    scenario = os.environ.get("FAKE_AGY_SCENARIO")
+    if scenario in ("early_auth",):
+        # Output already written, then the missing-login prompt on stderr.
+        emit({"event": "init", "conversation_id": "conv-early", "init": {"model": "gemini-test", "tools": []}})
+        emit({"event": "step_update", "step_update": {"conversation_id": "conv-early", "step_index": 90, "state": "DONE", "step_type": "agent_response", "text_delta": "partial done"}})
         return wait_for_login()
     if os.environ.get("SSH_CONNECTION") and not (home / TOKEN).is_file():
         return wait_for_login()
