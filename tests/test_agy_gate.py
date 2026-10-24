@@ -235,7 +235,7 @@ class ParentMcpTests(AgyHome):
         (self.gemini / "config").mkdir(exist_ok=True)
         mine = {"mcpServers": {"docs": {"command": "mine"}, "agents-router": {"command": "agt", "args": ["mcp"]}}}
         (self.gemini / "config" / "mcp_config.json").write_text(json.dumps(mine), encoding="utf-8")
-        self.write_agy_config()
+        self.write_agy_config(extra="max_jobs_per_account = 1")  # the parent channel needs a cap of 1
         collected = mcp_translate.Collected(servers={
             "docs": {"command": "theirs"}, "search": {"command": "node", "args": ["s.js"], "cwd": str(self.project)},
             "remote": {"type": "sse", "url": "https://example.com/sse"},
@@ -251,7 +251,7 @@ class ParentMcpTests(AgyHome):
         self.assertEqual(servers["search"]["cwd"], str(self.project))
         self.assertEqual(servers["remote"], {"serverUrl": "https://example.com/sse"})
         self.assertTrue(report["parent_channel"])
-        self.write_agy_config(extra="share_parent_mcp = false")
+        self.write_agy_config(extra="share_parent_mcp = false\nmax_jobs_per_account = 1")
         config = load_config().runtime("antigravity")
         with patch.object(mcp_translate, "collect_servers", return_value=collected):
             AntigravityRuntime().prepare(config, config.primary_account(), spec)

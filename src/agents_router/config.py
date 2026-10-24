@@ -96,7 +96,7 @@ class RuntimeConfig:
     binary: str | None = None
     include_primary: bool = False
     failover: str = "on-limit"
-    max_jobs_per_account: int = 1
+    max_jobs_per_account: int | None = None  # unset: no cap on jobs per account
     connectors: str = "account"
     edit_permission_mode: str = "auto"
     default_model: str | None = None
@@ -296,6 +296,9 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
                                 ("capacity_retry_seconds", capacity_retry_seconds, 1)):
         if type(value) is not int or value < minimum:
             raise ValueError(f"[{name}] {key} must be an integer at least {minimum}")
+    per_account = data.get("max_jobs_per_account")
+    if per_account is not None and (type(per_account) is not int or per_account < 1):
+        raise ValueError(f"[{name}] max_jobs_per_account must be an integer at least 1; remove the line for no cap")
     return RuntimeConfig(
         runtime=name,
         primary=_path(data.get("primary"), default_primary(name)),
@@ -303,7 +306,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         # These runtimes rotate through the primary account too, unless told otherwise.
         include_primary=bool(data.get("include_primary", opt_in)),
         failover=failover,
-        max_jobs_per_account=max(1, int(data.get("max_jobs_per_account", 1))),
+        max_jobs_per_account=per_account,
         connectors=connectors,
         edit_permission_mode=str(data.get("edit_permission_mode", "accept-edits" if name == "antigravity" else "auto")),
         default_model=data.get("default_model") or None,
@@ -373,7 +376,6 @@ def dump_config(config: Config) -> str:
             f"primary = {_toml_value(str(runtime.primary))}",
             f"include_primary = {_toml_value(runtime.include_primary)}",
             f"failover = {_toml_value(runtime.failover)}",
-            f"max_jobs_per_account = {runtime.max_jobs_per_account}",
             f"connectors = {_toml_value(runtime.connectors)}",
             f"edit_permission_mode = {_toml_value(runtime.edit_permission_mode)}",
             f"cooldown_minutes = {runtime.cooldown_minutes}",
@@ -401,6 +403,7 @@ def dump_config(config: Config) -> str:
         for key, value in (
             ("plan", runtime.plan), ("primary_max_jobs", runtime.primary_max_jobs),
             ("primary_max_effort", runtime.primary_max_effort), ("max_jobs", runtime.max_jobs),
+            ("max_jobs_per_account", runtime.max_jobs_per_account),
         ):
             if value is not None:
                 lines.append(f"{key} = {_toml_value(value)}")

@@ -74,7 +74,7 @@ def preset_for(runtime: str, plan: str | None) -> Preset | None:
 class Limits:
     """What one account may do, and where each number comes from."""
 
-    max_jobs: int
+    max_jobs: int | None  # None: no cap on jobs for this account
     max_jobs_source: str
     max_effort: str | None = None
     max_effort_source: str | None = None
@@ -138,8 +138,10 @@ def account_limits(runtime: RuntimeConfig, account: Account) -> Limits:
         jobs, jobs_source = account.max_jobs, "max_jobs"
     elif preset:
         jobs, jobs_source = preset.max_jobs, label
-    else:
+    elif runtime.max_jobs_per_account is not None:
         jobs, jobs_source = runtime.max_jobs_per_account, "max_jobs_per_account"
+    else:
+        jobs, jobs_source = None, "default"
     limits = Limits(jobs, jobs_source)
     if account.max_effort:
         limits.max_effort, limits.max_effort_source = account.max_effort, "max_effort"
@@ -152,7 +154,7 @@ def account_limits(runtime: RuntimeConfig, account: Account) -> Limits:
     return limits
 
 
-def account_cap(runtime: RuntimeConfig, account: Account) -> int:
+def account_cap(runtime: RuntimeConfig, account: Account) -> int | None:
     return account_limits(runtime, account).max_jobs
 
 

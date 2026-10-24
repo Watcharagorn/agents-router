@@ -198,6 +198,7 @@ class SharedSetupTests(AgyHome):
         self.assertTrue((account / "config" / "rules" / "r.md").is_file())
 
     def test_mcp_config_gets_the_parent_channel_per_job(self):
+        self.write_agy_config(extra="max_jobs_per_account = 1")
         report = self.prepare("job-7")
         self.assertTrue(report["parent_channel"])
         path = self.homes / "a1" / ".gemini" / "config" / "mcp_config.json"
@@ -214,6 +215,12 @@ class SharedSetupTests(AgyHome):
     def test_no_channel_when_an_account_runs_several_jobs(self):
         self.write_agy_config(extra="max_jobs_per_account = 2")
         self.assertFalse(self.prepare("job-8")["parent_channel"])
+
+    def test_no_channel_without_a_cap_on_jobs_per_account(self):
+        report = self.prepare("job-9")  # the default: max_jobs_per_account unset
+        self.assertFalse(report["parent_channel"])
+        path = self.homes / "a1" / ".gemini" / "config" / "mcp_config.json"
+        self.assertEqual(sorted(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]), ["tool"])
 
     def test_existing_mcp_config_is_kept_once(self):
         path = self.homes / "a1" / ".gemini" / "config" / "mcp_config.json"
@@ -232,11 +239,20 @@ class AntigravityJobTests(AgyHome):
         argv = record["argv"]
         self.assertEqual(argv[argv.index("--mode") + 1], "accept-edits")
         self.assertTrue(argv[-1].startswith("--print=") and argv[-1].endswith("task"))
-        # The primary runs in a folder Agents Router manages (keyring login), so it gets the parent channel.
-        self.assertIn(WORKER_TOOLS_NOTE.strip(), argv[-1])
+        # No cap on jobs per account by default, so no parent channel and no note about its tools.
+        self.assertNotIn(WORKER_TOOLS_NOTE.strip(), argv[-1])
         self.assertEqual(Path(record["env"]["HOME"]), self.home / "homes" / "antigravity" / "primary")
         self.assertNotIn("SSH_CONNECTION", record["env"])
         self.assertFalse((self.gemini / "config" / "hooks.json").exists())  # the user's own ~/.gemini is left alone
+
+    def test_primary_gets_the_parent_channel_with_a_cap_of_one(self):
+        self.write_agy_config(accounts=(), extra="max_jobs_per_account = 1")
+        status = self.run_job()
+        self.assertEqual((status["outcome"], status["account"]), ("success", "primary"), status)
+        record = self.records()[-1]
+        # The primary runs in a folder Agents Router manages (keyring login), so it gets the parent channel.
+        self.assertIn(WORKER_TOOLS_NOTE.strip(), record["argv"][-1])
+        self.assertEqual(Path(record["env"]["HOME"]), self.home / "homes" / "antigravity" / "primary")
 
     def test_read_access_uses_plan_mode_and_resume(self):
         first = self.run_job(prompt="a", access="read")
@@ -252,7 +268,7 @@ class AntigravityJobTests(AgyHome):
         self.assertEqual(self.run_job()["account"], "primary")
 
     def test_pinned_extra_account_runs_in_its_own_home_with_a_channel(self):
-        self.write_agy_config(accounts=("a1",))
+        self.write_agy_config(accounts=("a1",), extra="max_jobs_per_account = 1")
         self.log_in("a1")
         status = self.run_job(account="a1")
         self.assertEqual((status["outcome"], status["account"]), ("success", "a1"), status)
@@ -378,6 +394,20 @@ class AccountCommandTests(AgyHome):
         with self.assertRaises(ValueError):
             setup.register_account(config, "antigravity", "me", Path.home())
         self.assertEqual(setup.register_account(config, "antigravity", "g4", folder)[0], "added")
+
+
+class ParentChannelHintTests(AgyHome):
+    def doctor(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["doctor", "--runtime", "antigravity"])
+        return out.getvalue()
+
+    def test_doctor_says_how_to_get_the_parent_channel(self):
+        self.write_agy_config()
+        self.assertIn("Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under [antigravity]", self.doctor())
+        self.write_agy_config(extra="max_jobs_per_account = 1")
+        self.assertNotIn("no parent channel", self.doctor())
 
 
 if __name__ == "__main__":

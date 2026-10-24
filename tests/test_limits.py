@@ -62,7 +62,7 @@ class LimitTests(TempHome):
         self.codex_config()
         for _ in range(6):
             self.active()
-        self.assertEqual(self.admit().account, "primary")  # max_jobs_per_account only shapes the runner's queue
+        self.assertEqual(self.admit().account, "primary")  # no cap on jobs per account by default
 
     def test_wait_hint_when_no_other_runtime_has_room(self):
         self.codex_config(primary='plan = "free"')
@@ -226,7 +226,7 @@ class LimitTests(TempHome):
         entry = tools.account_report("claude")["accounts"][0]
         self.assertIn("max-5x", entry["limits"]["suggested_plan"])
         self.assertNotIn("plan", entry["limits"])
-        self.assertEqual(entry["limits"]["max_jobs_from"], "max_jobs_per_account")
+        self.assertEqual((entry["limits"]["max_jobs"], entry["limits"]["max_jobs_from"]), (None, "default"))
         self.codex_config(claude='plan = "auto"')
         entry = tools.account_report("claude")["accounts"][0]
         self.assertEqual(entry["limits"]["max_jobs"], 4)
@@ -299,6 +299,89 @@ class UsageViewTests(TempHome):
         result = tools.call("subagent_start", {"runtime": "claude", "prompt": "x", "cwd": str(self.project)})
         self.assertIn("Room: Claude", result["room"])
         jobs.wait_for(result["job_id"], 60)
+
+
+class NoCapTests(LimitTests):
+    """max_jobs_per_account is unset by default: no cap on jobs per account."""
+
+    def two_accounts(self, claude=""):
+        self.codex_config(claude=claude + "\n" + "\n".join(
+            f'[[claude.accounts]]\nname = "{name}"\nhome = {json.dumps(str(self.root / "homes" / name))}' for name in ("a1", "a2")
+        ))
+
+    def test_default_cap_is_none_and_two_leases_share_an_account(self):
+        self.two_accounts()
+        runtime = load_config().runtime("claude")
+        account = runtime.find("a1")
+        self.assertIsNone(runtime.max_jobs_per_account)
+        self.assertIsNone(plans.account_cap(runtime, account))
+        self.assertEqual(plans.account_limits(runtime, account).describe()["max_jobs_from"], "default")
+        first, second = accounts.try_lease(runtime, account), accounts.try_lease(runtime, account)
+        try:
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(first.path, second.path)  # each job still holds its own slot
+            self.assertEqual(accounts.busy_slots(runtime, account), 2)
+        finally:
+            for lease in (first, second):
+                if lease:
+                    lease.release()
+
+    def test_an_explicit_cap_still_makes_the_next_job_wait(self):
+        self.two_accounts(claude="max_jobs_per_account = 2")
+        runtime = load_config().runtime("claude")
+        account = runtime.find("a1")
+        held = [accounts.try_lease(runtime, account) for _ in range(2)]
+        try:
+            self.assertTrue(all(held))
+            self.assertIsNone(accounts.try_lease(runtime, account))
+        finally:
+            for lease in held:
+                if lease:
+                    lease.release()
+        for _ in range(3):
+            self.active("claude", "a1")
+        self.assertEqual(self.admit("claude", account="a1").account, "a1")  # it waits in the runner, never refused
+
+    def test_zero_negative_and_text_are_refused_with_the_hint(self):
+        for value in ("0", "-1", '"2"', "true"):
+            with self.subTest(value=value):
+                self.codex_config(claude=f"max_jobs_per_account = {value}")
+                with self.assertRaises(ValueError) as raised:
+                    load_config()
+                self.assertIn("[claude] max_jobs_per_account must be an integer at least 1", str(raised.exception))
+                self.assertIn("remove the line for no cap", str(raised.exception))
+
+    def test_written_config_has_no_line_by_default_and_keeps_a_set_value(self):
+        self.two_accounts()
+        self.assertNotIn("max_jobs_per_account", dump_config(load_config()))
+        self.two_accounts(claude="max_jobs_per_account = 3")
+        config = load_config()
+        self.assertIn("max_jobs_per_account = 3", dump_config(config))
+        save_config(config)
+        self.assertEqual(load_config().runtime("claude").max_jobs_per_account, 3)
+
+    def test_room_has_no_total_cap_and_messages_never_say_none(self):
+        self.two_accounts(claude="")
+        config = load_config()
+        for _ in range(5):
+            self.active("claude", "a1")
+        current = limits.room(config, "claude", limits.count_active(), pinned=None, model=None, now=time.time())
+        self.assertIsNone(current.cap)
+        self.assertFalse(current.full)
+        self.assertEqual([account.name for account, _ in current.accounts], ["a1", "a2"])
+        self.assertEqual(self.admit("claude").account, "a1")
+        # An explicit account cap next to an uncapped account: the refusal names only real numbers.
+        self.codex_config(claude="\n".join([
+            '[[claude.accounts]]', 'name = "a1"', f'home = {json.dumps(str(self.root / "homes" / "a1"))}', "max_jobs = 1",
+            '[[claude.accounts]]', 'name = "a2"', f'home = {json.dumps(str(self.root / "homes" / "a2"))}',
+        ]))
+        with self.assertRaises(limits.LimitError) as raised:
+            self.admit("claude", account="a1")
+        message = str(raised.exception)
+        self.assertIn("5 of 1 subagents running", message)
+        self.assertNotIn("None", message)
+        self.assertEqual(self.admit("claude").account, "a2")
 
 
 if __name__ == "__main__":

@@ -86,7 +86,7 @@ class OrphanedWorkerTests(TempHome):
         lease.release()
 
     def test_killed_runner_keeps_slot_until_lost_job_stops_the_worker(self):
-        self.write_config(accounts=("a1",))
+        self.write_config(accounts=("a1",), extra="max_jobs_per_account = 1")
         os.environ["FAKE_CLAUDE_SCENARIO"] = "slow"
         job_id = jobs.create_job(runtime="claude", prompt="x", cwd=str(self.project))["job_id"]
         status = wait_until(lambda: (lambda s: s if s.get("child_pid") else None)(jobs.read_status(job_id)))

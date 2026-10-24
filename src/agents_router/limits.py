@@ -119,7 +119,7 @@ class Room:
 
     accounts: list = field(default_factory=list)  # (account, limits) pairs that can take a job, best first
     running: int = 0
-    cap: int = 0
+    cap: int | None = 0  # None when a counted account has no cap
     source: str = ""
     cooldown_end: float | None = None
     ceiling_hit: float | None = None  # highest utilization among accounts held back by the ceiling
@@ -135,6 +135,8 @@ class Room:
 
 
 def _source(limits: Limits) -> str:
+    if limits.max_jobs is None:
+        return "no cap on jobs per account"
     if limits.max_jobs_source == "max_jobs_per_account":
         return f"cap from max_jobs_per_account = {limits.max_jobs}"
     if limits.max_jobs_source == "max_jobs":
@@ -187,19 +189,22 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
             continue
         running = counts.on_account(runtime_name, account.name)
         result.running += running
-        result.cap += limits.max_jobs
+        if limits.max_jobs is None:
+            result.cap = None  # one account without a cap leaves the total uncapped
+        elif result.cap is not None:
+            result.cap += limits.max_jobs
         if not result.source:
             result.source = _source(limits)
-        # Only a cap the user or a plan set refuses jobs. The plain max_jobs_per_account default
-        # keeps its old behaviour: the job starts and waits in the runner for a slot.
-        explicit = limits.max_jobs_source != "max_jobs_per_account"
+        # Only a cap the user or a plan set on the account refuses jobs. With no cap the job
+        # starts at once; with only max_jobs_per_account it starts and waits in the runner for a slot.
+        explicit = limits.max_jobs is not None and limits.max_jobs_source != "max_jobs_per_account"
         free = limits.max_jobs - running if explicit and not override else 1 << 20
         if free > 0:
             free_total += free
             result.accounts.append((account, limits))
     if not override and not pinned and result.accounts and free_total <= counts.unassigned.get(runtime_name, 0):
         result.accounts = []  # jobs that already wait for an account will take the free slots
-    result.full = not result.accounts and result.cap > 0
+    result.full = not result.accounts and result.cap is not None and result.cap > 0
     return result
 
 

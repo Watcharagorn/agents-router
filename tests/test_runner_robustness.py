@@ -73,6 +73,9 @@ class DescendantCleanupTests(RobustnessBase):
             AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
             FAKE_ROBUST_MODE=mode, FAKE_ROBUST_CHILD_PID=str(child_file),
         )
+        config = load_config()
+        config.runtime("codex").max_jobs_per_account = 1  # a held lease must block the next one
+        save_config(config)
         runner = self.runner(account="a1")
         lease = runner._wait_for_account(set(), pinned="a1")
         try:

@@ -714,9 +714,10 @@ class AntigravityRuntime:
 
         agy has no flag for per-run MCP servers, and whether it passes its environment on to
         MCP servers is unverified, so the job id is written into the file. The file is
-        rewritten for every job while that job holds the account's slot; with one slot per
-        account (the default) no other job starts from it in between. With more slots the
-        channel is left out. Returns True when the worker gets the channel.
+        rewritten for every job while that job holds the account's slot; with a cap of one
+        job per account (`max_jobs_per_account = 1`) no other job starts from it in between.
+        With a higher cap or none (the default) the channel is left out. Returns True when
+        the worker gets the channel.
         """
 
         source = root / "config" / "mcp_config.json"

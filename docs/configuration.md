@@ -29,7 +29,7 @@ max_depth = 1                # 1 = workers can't start their own subagents
 primary = "~/.claude"        # the shared setup (default: CLAUDE_CONFIG_DIR or ~/.claude)
 include_primary = false      # also run workers on the primary account
 failover = "on-limit"        # continue on the next account at a usage limit; "off" to stop
-max_jobs_per_account = 1     # parallel workers per account folder
+# max_jobs_per_account = 1   # most workers at once per account folder; extra jobs wait (default: no cap)
 connectors = "account"       # "account" keeps each account's claude.ai connectors; "off" hides them
 edit_permission_mode = "auto"  # permission mode for access="edit"
 cooldown_minutes = 60        # cooldown when the limit error has no Retry-After or reset time (any cooldown is capped at 7 days)
@@ -78,7 +78,7 @@ home = "~/.agents-router/homes/antigravity/google-2"
 
 When no extra accounts are configured, workers run on the primary account. That is still useful from another host (for example Codex delegating to Claude Code), and with `include_primary = true` the primary account joins the pool.
 
-`max_jobs_per_account` defaults to 1 (see Limits for per-account caps) because several Claude Code processes writing the same state file at once have corrupted it in the past. Raise it if you know your version handles it.
+`max_jobs_per_account` is unset by default, so there's no cap on jobs per account (see Limits for per-account caps). Several Claude Code processes writing one account's `.claude.json` at once have corrupted it in the past; the reported issues are closed, but the fixes aren't verified. Set `max_jobs_per_account = 1` under `[claude]` to run one worker per account folder again. Under `[antigravity]`, 1 also gives workers the parent channel ([Antigravity](gemini.md)).
 
 ## Reasoning summaries
 
@@ -92,9 +92,9 @@ The Claude Code relay agents use `--window 60` so the app can show a finished Ba
 
 ## Limits
 
-Agents Router counts active jobs in `~/.agents-router/jobs` before it starts one. That covers nested subagents and other chat sessions on the same machine. With the default `when_full = "refuse"`, a full explicit account, plan, runtime or global cap refuses the start at once. The message names the cap and what to do instead. Accounts using only `max_jobs_per_account` queue extra jobs in the runner instead.
+Agents Router counts active jobs in `~/.agents-router/jobs` before it starts one. That covers nested subagents and other chat sessions on the same machine. With the default `when_full = "refuse"`, a full explicit account, plan, runtime or global cap refuses the start at once. The message names the cap and what to do instead. A cap from `max_jobs_per_account` alone queues extra jobs in the runner instead.
 
-Plan presets and extra caps are opt-in. By default, each account runs one worker (`max_jobs_per_account = 1`). The usage ceiling also applies by default: accounts at or above 95% of a known usage window get no new starts. Presets apply only when you set `plan`.
+Plan presets and extra caps are opt-in. By default there's no cap on jobs per account (`max_jobs_per_account` is unset). The usage ceiling also applies by default: accounts at or above 95% of a known usage window get no new starts. Presets apply only when you set `plan`.
 
 | Key | Where | Meaning |
 |---|---|---|
@@ -109,9 +109,9 @@ Plan presets and extra caps are opt-in. By default, each account runs one worker
 | `max_jobs` | top level | Most jobs running over all runtimes. |
 | `usage_ceiling` | `[<runtime>]` | Default `0.95`. With `when_full = "refuse"`, an account at or above this share of its 5-hour or weekly window gets no new jobs. It applies only when usage is known; agt never guesses. |
 | `when_full` | `[<runtime>]` | `"refuse"` (default): full explicit caps refuse the start. `"queue"`: admit jobs despite full slots, cooldowns or the usage ceiling, with the exceptions below. |
-| `max_jobs_per_account` | `[<runtime>]` | Default `1` for accounts without an explicit cap or plan preset. Extra jobs wait for a slot in the runner; this setting alone never refuses a start. |
+| `max_jobs_per_account` | `[<runtime>]` | Unset by default: no cap for accounts without an explicit cap or plan preset. Set it to a positive integer to cap them; extra jobs then wait for a slot in the runner, and this setting alone never refuses a start. `0` is an error; remove the line for no cap. |
 
-Order for one account: its own `max_jobs`, then its plan preset, then `max_jobs_per_account`. A `fallback = true` account still comes after every other account.
+Order for one account: its own `max_jobs`, then its plan preset, then `max_jobs_per_account`, then no cap. A `fallback = true` account still comes after every other account.
 
 `when_full = "queue"` skips admission checks for global and fixed runtime `max_jobs`. It still checks model allowlists, `max_jobs_by_room` and pool weekly budgets. The runner waits up to 15 minutes for busy account, pool, global or runtime slots (including `max_jobs_by_room`). It re-checks account eligibility, model allowlists, cooldowns, account caps and pool limits. It does not enforce `usage_ceiling` again. If no eligible account remains, such as when all accounts are cooling down, the job can end with `no_account` at once.
 
@@ -218,7 +218,7 @@ The alternative names depend on which other installed runtimes have room. `agt a
 
 ### What goes where
 
-- Defaults: one running worker per account with extra jobs queued, `usage_ceiling = 0.95` when usage is known, and `when_full = "refuse"` for explicit caps. Plans and extra caps are opt-in.
+- Defaults: no cap on jobs per account, `usage_ceiling = 0.95` when usage is known, and `when_full = "refuse"` for explicit caps. Plans and extra caps are opt-in.
 - Your `config.toml` holds your plans and caps: `plan`, `max_jobs`, `models`, `fallback`.
 - Your agent instructions (`CLAUDE.md` and the like) hold preferences, such as which model to use for what kind of task.
 - agt decides by itself: it counts running jobs, checks cooldowns and usage, picks an account, and lowers the effort when the account's plan needs it.

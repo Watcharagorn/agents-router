@@ -108,7 +108,7 @@ Permission levels are mapped per runtime instead of passing through raw flags: `
 [claude]
 primary = "~/.claude"                 # the setup everyone shares
 failover = "on-limit"                 # on-limit (default) | off
-max_jobs_per_account = 1
+# max_jobs_per_account = 1            # default: no cap
 
 [[claude.accounts]]
 name = "max-2"
@@ -172,7 +172,7 @@ This tool's own MCP server is not removed from the copied config. Each Codex wor
 - On a usage limit the job continues on another account: the Claude session transcript is copied into that account's folder and resumed (verified with Claude Code 2.1.295). Codex restarts with a handoff note containing the task and the partial output. A job pinned to one `account` doesn't fail over.
 - `failover = "on-limit"` is the default for every runtime. Extra Antigravity accounts are at your own risk. `failover = "off"` turns switching off; for Antigravity it also keeps unpinned jobs on the primary account. See [provider-terms.md](research/provider-terms.md).
 
-Concurrency: one running worker per account folder by default, because `.claude.json` has a history of corruption under concurrent writers.
+Concurrency: no cap on jobs per account folder by default. `.claude.json` has a history of corruption under concurrent writers, so `max_jobs_per_account = 1` brings back one running worker per account folder.
 
 ## Host packaging
 
@@ -241,5 +241,5 @@ adapters/antigravity/         the original standalone AGY server (superseded by 
 
 - Terms: the vendors' restrictions target third-party token handling, which this project avoids; their terms don't address switching between your own CLI logins explicitly. Antigravity consumer plans rule out rotation, so extra Antigravity accounts are marked use at your own risk. Failover is on by default for every runtime and can be turned off per runtime.
 - Vendor drift: flags, event formats and config layouts change often. `doctor` reports CLI versions but does not check compatibility.
-- Concurrency bugs in vendor CLIs (`.claude.json`, credential refresh). Mitigated by one job per account folder.
+- Concurrency bugs in vendor CLIs (`.claude.json`, credential refresh). Mitigated, when you opt in, by one job per account folder (`max_jobs_per_account = 1`).
 - Windows: symlinks need developer mode; junctions don't, but only work for folders. Folder links use junctions there, and files are hard-linked or, on another drive, copied.

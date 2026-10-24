@@ -239,11 +239,12 @@ def _take_slot(lock_path: Path) -> BinaryIO | None:
     return handle
 
 
-def _take_capped_slot(folder: Path, cap: int, *, override: bool = False) -> tuple[BinaryIO, Path] | None:
+def _take_capped_slot(folder: Path, cap: int | None, *, override: bool = False) -> tuple[BinaryIO, Path] | None:
     """Lease a slot, counting overflow slots too. Only override may exceed the cap.
 
     Serialize selection so a normal job cannot use a gap while overflow jobs
     still occupy the full allowance. Owner records keep orphaned workers counted.
+    A cap of None never refuses, but the slot is still taken so the job stays counted.
     """
 
     available = None
@@ -260,7 +261,7 @@ def _take_capped_slot(folder: Path, cap: int, *, override: bool = False) -> tupl
                     available = (handle, path)
                 else:
                     unlock(handle)
-            if not override and busy >= cap:
+            if not override and cap is not None and busy >= cap:
                 return None
             if available is not None:
                 result, available = available, None

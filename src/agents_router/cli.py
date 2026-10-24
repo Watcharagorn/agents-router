@@ -11,8 +11,8 @@ import sys
 import time
 from typing import Any
 
-from agents_router import __version__, accounts, jobs, rules, setup, sync, tools
-from agents_router.config import NAME_RE, Account, homes_dir, load_config, save_config
+from agents_router import __version__, accounts, jobs, plans, rules, setup, sync, tools
+from agents_router.config import NAME_RE, Account, config_path, homes_dir, load_config, save_config
 from agents_router.fsutil import make_private_dir
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from agents_router.runtimes.base import ACCESS_LEVELS, JobSpec
@@ -186,6 +186,16 @@ def cmd_update(args: argparse.Namespace) -> int:
 # Doctor ----------------------------------------------------------------------
 
 
+def _no_parent_channel(runtime_config) -> bool:
+    """True when some Antigravity account gets no parent channel only because max_jobs_per_account isn't 1."""
+
+    for account in runtime_config.pool_accounts():
+        limits = plans.account_limits(runtime_config, account)
+        if limits.max_jobs != 1 and limits.max_jobs_source in ("default", "max_jobs_per_account"):
+            return True
+    return False
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
     runtime_config = config.runtime(args.runtime)
@@ -213,7 +223,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  max_jobs_by_room: {shown['room_cap']} jobs at a time, {detail}; effective runtime cap {shown['effective_max_jobs']}")
     for entry in report["accounts"]:
         shown = entry.get("limits") or {}
-        text = f"  {entry['name']}: up to {shown.get('max_jobs')} jobs ({shown.get('max_jobs_from')})"
+        jobs_text = "no cap on jobs" if shown.get("max_jobs") is None else f"up to {shown.get('max_jobs')} jobs"
+        text = f"  {entry['name']}: {jobs_text} ({shown.get('max_jobs_from')})"
         if shown.get("max_effort"):
             text += f", effort up to {shown['max_effort']} ({shown.get('max_effort_from')})"
         if shown.get("models"):
@@ -223,6 +234,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(text)
         for pool in entry.get("pools", []):
             print(f"    {pool['state']}")
+    if args.runtime == "antigravity" and _no_parent_channel(runtime_config):
+        print(f"Note: Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under [antigravity] "
+              f"in {config_path()} to get it.")
     if not report["binary"]:
         print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in the config.")
         return 1

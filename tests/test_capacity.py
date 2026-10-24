@@ -92,6 +92,7 @@ class CapacityRunnerTests(TempHome):
             runtime.primary.mkdir(exist_ok=True)
             runtime.include_primary = False
             runtime.accounts = [Account(n, self.root / name / n) for n in ("a1", "a2")]
+            runtime.max_jobs_per_account = 1  # a busy slot must block a second lease
         save_config(config)
 
     def runner(self):
