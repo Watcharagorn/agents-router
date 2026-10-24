@@ -57,6 +57,11 @@ class AgyHome(TempHome):
         os.environ["CLI_SUBAGENTS_AGY_COMMAND"] = json.dumps([sys.executable, str(FAKE_AGY)])
         for key in (*SSH_KEYS, "FAKE_AGY_SCENARIO", "FAKE_AGY_LIMITED"):
             os.environ.pop(key, None)
+        # An empty home folder: without a config the primary defaults to ~/.gemini, and a login
+        # file in the real one would turn the managed primary folder into a file-login run.
+        user = self.root / "user"
+        user.mkdir()
+        os.environ["HOME"] = os.environ["USERPROFILE"] = str(user)  # TempHome's env patch restores both
         self.gemini = self.root / "gemini"
         (self.gemini / "antigravity-cli").mkdir(parents=True)
         self.homes = self.root / "agy-homes"

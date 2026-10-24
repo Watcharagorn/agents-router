@@ -7,7 +7,8 @@ databases. From the primary home, every run gets:
 * `config.toml` (MCP servers, model defaults, features), taken from the primary
   table by table, except the account's own `[projects.*]` (trust),
   `[hooks.state.*]` and `[notice.*]` tables, which Codex writes per home;
-* `skills/` and `plugins/` entries, linked; `AGENTS.md`, hard-linked.
+* `agents/` (custom agents), linked as a whole; `skills/` and `plugins/`
+  entries, linked; `AGENTS.md`, hard-linked.
 
 Every run, on the primary account too, turns this tool's own MCP server off
 with `-c` overrides so workers can't start subagents of their own.
@@ -42,7 +43,8 @@ from cli_subagents.runtimes.base import (
     clean_environment,
 )
 
-SYNC_PLAN = sync.SyncPlan(folders=("skills", "plugins"), files=("AGENTS.md",))  # entries linked, file hard-linked
+# agents/ linked whole, skills/ and plugins/ entry by entry, AGENTS.md hard-linked
+SYNC_PLAN = sync.SyncPlan(whole=("agents",), folders=("skills", "plugins"), files=("AGENTS.md",))
 FILE_AUTH = "cli_auth_credentials_store=file"
 SELF_COMMANDS = {"csa", "csa.exe", "cli-subagents-mcp", "cli-subagents-mcp.exe"}
 PLUGIN_SERVER = "cli-subagents"  # this tool's server name in its plugin manifests

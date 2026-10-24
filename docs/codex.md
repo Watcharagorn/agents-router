@@ -33,6 +33,7 @@ csa doctor --runtime codex
 | From the primary `CODEX_HOME` | How it reaches each account |
 |---|---|
 | `config.toml` (MCP servers, model defaults, features, profiles) | Written into the account folder before every run, table by table |
+| `agents/` (custom agents) | One link to your folder (a junction on Windows) |
 | `skills/`, `plugins/` entries | Linked one by one (junctions on Windows) |
 | `AGENTS.md` | A hard link to your file |
 

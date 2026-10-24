@@ -9,6 +9,7 @@ from helpers import TempHome
 
 from cli_subagents import jobs
 from cli_subagents.config import load_config
+from cli_subagents.fsutil import is_link
 from cli_subagents.runtimes.codex import CodexParser, CodexRuntime, self_server_overrides
 
 FAKE_CODEX = Path(__file__).with_name("fake_codex.py")
@@ -176,6 +177,34 @@ class CodexJobTests(TempHome):
         CodexRuntime().prepare(config, config.find("c1"), jobs.JobSpec(job_id="t", runtime="codex", prompt="", cwd=str(self.project)))
         self.assertFalse(victim.exists())
         self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), CONFIG)
+
+    def prepare_account(self, name="c1"):
+        config = load_config().runtime("codex")
+        spec = jobs.JobSpec(job_id="t", runtime="codex", prompt="", cwd=str(self.project))
+        return CodexRuntime().prepare(config, config.find(name), spec)
+
+    def test_custom_agents_reach_extra_accounts(self):
+        (self.primary / "agents").mkdir()
+        (self.primary / "agents" / "reviewer.toml").write_text('name = "reviewer"\n', encoding="utf-8")
+        report = self.prepare_account()
+        home = self.root / "codex" / "c1"
+        self.assertIn("agents", report["linked"], report)
+        self.assertTrue(is_link(home / "agents"))
+        self.assertEqual((home / "agents" / "reviewer.toml").read_text(encoding="utf-8"), 'name = "reviewer"\n')
+        # One link to the primary folder, so an agent added later is there without another sync.
+        (self.primary / "agents" / "planner.toml").write_text('name = "planner"\n', encoding="utf-8")
+        self.assertTrue((home / "agents" / "planner.toml").is_file())
+
+    def test_account_agents_are_kept_and_shared_ones_added(self):
+        (self.primary / "agents").mkdir()
+        (self.primary / "agents" / "reviewer.toml").write_text('name = "reviewer"\n', encoding="utf-8")
+        own = self.root / "codex" / "c1" / "agents"
+        own.mkdir(parents=True)
+        (own / "mine.toml").write_text('name = "mine"\n', encoding="utf-8")
+        self.prepare_account()
+        self.assertFalse(is_link(own))
+        self.assertEqual((own / "mine.toml").read_text(encoding="utf-8"), 'name = "mine"\n')
+        self.assertEqual((own / "reviewer.toml").read_text(encoding="utf-8"), 'name = "reviewer"\n')
 
     def test_resume_uses_config_overrides(self):
         first = jobs.wait_for(jobs.create_job(runtime="codex", prompt="a", cwd=str(self.project), account="c2")["job_id"], 60)
