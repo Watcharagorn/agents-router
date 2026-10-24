@@ -9,10 +9,10 @@ from unittest.mock import patch
 
 from test_antigravity import AgyHome
 
-from cli_subagents import follow, jobs, mcp_translate
-from cli_subagents.config import load_config
-from cli_subagents.runtimes.antigravity import AntigravityParser, AntigravityRuntime
-from cli_subagents.runtimes.base import JobSpec
+from agents_router import follow, jobs, mcp_translate
+from agents_router.config import load_config
+from agents_router.runtimes.antigravity import AntigravityParser, AntigravityRuntime
+from agents_router.runtimes.base import JobSpec
 
 
 class GateJobTests(AgyHome):
@@ -80,7 +80,7 @@ class GateJobTests(AgyHome):
         mcp = json.loads((reviewer_home / ".gemini" / "config" / "mcp_config.json").read_text(encoding="utf-8"))
         self.assertEqual(mcp, {"mcpServers": {}})
         self.assertEqual(sorted(json.loads((reviewer_home / ".gemini" / "config" / "hooks.json").read_text(encoding="utf-8"))),
-                         ["cli-subagents-review"])
+                         ["agents-router-review"])
         log = self.review_log(status)
         self.assertEqual([item["source"] for item in log], ["rule", "rule", "reviewer", "rule", "rule", "rule"])
         settings = json.loads((self.managed / ".gemini" / "antigravity-cli" / "settings.json").read_text(encoding="utf-8"))
@@ -139,7 +139,7 @@ class GateJobTests(AgyHome):
         instructions.write_text("rules", encoding="utf-8")
         self.tools(
             {"name": "view_file", "args": {"AbsolutePath": str(instructions)}},
-            {"name": "call_mcp_tool", "args": {"ServerName": "csa-parent", "ToolName": "message_parent", "Arguments": {"text": "hi"}}},
+            {"name": "call_mcp_tool", "args": {"ServerName": "agt-parent", "ToolName": "message_parent", "Arguments": {"text": "hi"}}},
             {"name": "view_file", "args": {"AbsolutePath": str(self.home / "config.toml")}},
         )
         with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(instructions.parent)}):
@@ -152,7 +152,7 @@ class GateJobTests(AgyHome):
         (self.gemini / "config" / "hooks.json").write_text(json.dumps({"mine": {"PostToolUse": []}}), encoding="utf-8")
         self.run_job(access="edit")
         hooks = json.loads((self.managed / ".gemini" / "config" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(hooks), ["cli-subagents-review", "mine"])
+        self.assertEqual(sorted(hooks), ["agents-router-review", "mine"])
 
     def test_extra_account_runs_behind_the_gate_in_its_folder(self):
         self.write_agy_config(accounts=("a1",))
@@ -173,7 +173,7 @@ class GateJobTests(AgyHome):
         self.assertEqual(Path(review["HOME"]), reviewer_home)
         self.assertTrue(review.get("SSH_CONNECTION"))
         self.assertTrue((reviewer_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").is_file())
-        self.assertFalse((reviewer_home / ".gemini" / "config" / "mcp_config.json").read_text(encoding="utf-8").count("csa-parent"))
+        self.assertFalse((reviewer_home / ".gemini" / "config" / "mcp_config.json").read_text(encoding="utf-8").count("agt-parent"))
 
     def test_primary_with_a_file_login_keeps_the_real_home(self):
         token = self.root / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
@@ -233,7 +233,7 @@ class DeniedRunTests(AgyHome):
 class ParentMcpTests(AgyHome):
     def test_claude_servers_are_shared_and_yours_win(self):
         (self.gemini / "config").mkdir(exist_ok=True)
-        mine = {"mcpServers": {"docs": {"command": "mine"}, "cli-subagents": {"command": "csa", "args": ["mcp"]}}}
+        mine = {"mcpServers": {"docs": {"command": "mine"}, "agents-router": {"command": "agt", "args": ["mcp"]}}}
         (self.gemini / "config" / "mcp_config.json").write_text(json.dumps(mine), encoding="utf-8")
         self.write_agy_config()
         collected = mcp_translate.Collected(servers={
@@ -246,7 +246,7 @@ class ParentMcpTests(AgyHome):
             report = AntigravityRuntime().prepare(config, config.primary_account(), spec)
         path = self.home / "homes" / "antigravity" / "primary" / ".gemini" / "config" / "mcp_config.json"
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
-        self.assertEqual(sorted(servers), ["csa-parent", "docs", "remote", "search"])
+        self.assertEqual(sorted(servers), ["agt-parent", "docs", "remote", "search"])
         self.assertEqual(servers["docs"]["command"], "mine")
         self.assertEqual(servers["search"]["cwd"], str(self.project))
         self.assertEqual(servers["remote"], {"serverUrl": "https://example.com/sse"})
@@ -256,7 +256,7 @@ class ParentMcpTests(AgyHome):
         with patch.object(mcp_translate, "collect_servers", return_value=collected):
             AntigravityRuntime().prepare(config, config.primary_account(), spec)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
-        self.assertEqual(sorted(servers), ["csa-parent", "docs"])
+        self.assertEqual(sorted(servers), ["agt-parent", "docs"])
 
 
 if __name__ == "__main__":

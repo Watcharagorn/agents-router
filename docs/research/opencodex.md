@@ -107,7 +107,7 @@ Evidence for "no MCP layer": `src/types/config.ts` (`OcxConfig`, ~487-890) has n
 * Config size and surface: about 100 provider fields and hundreds of top-level keys come from hiding wire differences. Our CLI approach should not need most of them.
 * Spawning without a process-tree kill on Windows. OpenCodex's own runner (`coding-agent/turn.ts` ~420-440, ~700-720) kills the tree with `taskkill /T /F`, then SIGTERM and SIGKILL with a grace period elsewhere; copy the idea, not the code.
 
-## Takeaways for CLI Subagents
+## Takeaways for Agents Router
 
 * OpenCodex keeps tools, MCP servers and instruction files in the harness. It stores no shared tool registry, so there is nothing to port; our shared pool is genuinely new ground.
 * Its `claude-cli` adapter is the one piece that matches our approach: official binary, no injected token, `ANTHROPIC_*` stripped, tools and settings off by flag. Use that launch recipe for our isolated mode.

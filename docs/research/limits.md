@@ -60,7 +60,7 @@ A preset sets the job cap and, where the plan offers fewer efforts, the highest 
 
 Codex plus (4) and free (1) are the project owner's numbers. The rest scale with the plan's published usage multiple and are guesses. Raise or lower any of them with `max_jobs`.
 
-Claude Code also reports each account's 5-hour and weekly usage in its `rate_limit_event`. Codex writes a `rate_limits` snapshot into its rollout files. csa reads those two sources and nothing else. Antigravity exposes no usage; see plans.md 3f.
+Claude Code also reports each account's 5-hour and weekly usage in its `rate_limit_event`. Codex writes a `rate_limits` snapshot into its rollout files. agt reads those two sources and nothing else. Antigravity exposes no usage; see plans.md 3f.
 
 ## Model pools and quota steps (2026-10-16)
 

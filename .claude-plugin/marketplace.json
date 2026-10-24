@@ -1,13 +1,13 @@
 {
-  "name": "cli-subagents",
-  "description": "CLI Subagents: run subagents in other agent CLIs under your own accounts, with one shared setup.",
+  "name": "agents-router",
+  "description": "Agents Router: run subagents in other agent CLIs under your own accounts, with one shared setup.",
   "owner": {
-    "name": "lunati",
-    "url": "https://github.com/lunati228"
+    "name": "Watcharagorn",
+    "url": "https://github.com/Watcharagorn"
   },
   "plugins": [
     {
-      "name": "cli-subagents",
+      "name": "agents-router",
       "source": "./",
       "description": "Subagents in other agent CLIs under your own accounts, with one shared setup across all of them."
     }

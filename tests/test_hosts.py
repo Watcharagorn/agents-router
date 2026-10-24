@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cli_subagents.hosts import detect_host, host_context, parent_note
+from agents_router.hosts import detect_host, host_context, parent_note
 
 
 class HostTests(unittest.TestCase):

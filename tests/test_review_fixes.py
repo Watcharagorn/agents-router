@@ -8,10 +8,10 @@ import unittest
 
 from helpers import TempHome
 
-from cli_subagents import jobs, sync, tools
-from cli_subagents.config import load_config
-from cli_subagents.fsutil import make_dir_link
-from cli_subagents.runtimes.claude import SYNC_PLAN, ClaudeParser, ClaudeRuntime, is_auth_env
+from agents_router import jobs, sync, tools
+from agents_router.config import load_config
+from agents_router.fsutil import make_dir_link
+from agents_router.runtimes.claude import SYNC_PLAN, ClaudeParser, ClaudeRuntime, is_auth_env
 
 
 class SyncSafetyTests(TempHome):

@@ -1,10 +1,10 @@
 # What a Claude Code session knows, and how a worker gets it
 
-Checked 2026-10-14 against the Claude Code docs (memory, settings, permissions, claude-directory, sub-agents, skills, mcp, plugins, cli-reference, authentication). "Worker" means `claude -p` started with a different `CLAUDE_CONFIG_DIR` (another account's folder) and the same working directory. The rule for CLI Subagents: never move or rewrite the user's own files; only point at them.
+Checked 2026-10-14 against the Claude Code docs (memory, settings, permissions, claude-directory, sub-agents, skills, mcp, plugins, cli-reference, authentication). "Worker" means `claude -p` started with a different `CLAUDE_CONFIG_DIR` (another account's folder) and the same working directory. The rule for Agents Router: never move or rewrite the user's own files; only point at them.
 
 U is the user config folder (`~/.claude`, or `CLAUDE_CONFIG_DIR`). P is the project. M is the managed-policy folder (`C:\Program Files\ClaudeCode\`, `/Library/Application Support/ClaudeCode/`, `/etc/claude-code/`).
 
-| Context | Where it lives | Worker gets it by itself? | How CLI Subagents provides it |
+| Context | Where it lives | Worker gets it by itself? | How Agents Router provides it |
 |---|---|---|---|
 | Managed CLAUDE.md, settings, MCP | M (plus registry or plist) | Yes | Nothing needed |
 | Project CLAUDE.md, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules`, `.claude/skills`, `.claude/agents`, `.mcp.json`, `.claude/settings.json` | P and parent folders | Yes, same cwd | Nothing needed |

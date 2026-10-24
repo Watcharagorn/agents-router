@@ -5,8 +5,8 @@ import unittest
 
 from helpers import TempHome
 
-from cli_subagents import accounts
-from cli_subagents.runtimes.codex import CodexParser, find_rollout, last_rate_limits, usage_windows
+from agents_router import accounts
+from agents_router.runtimes.codex import CodexParser, find_rollout, last_rate_limits, usage_windows
 
 THREAD = "01a141dd-7dbd-73d2-bc93-bd302ca72586"
 

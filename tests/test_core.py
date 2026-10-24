@@ -14,11 +14,11 @@ from helpers import TempHome
 
 import re
 
-from cli_subagents import accounts, jobs, mcp_server, runner, sync
-from cli_subagents.config import load_config
-from cli_subagents.fsutil import is_link, read_json, write_json
-from cli_subagents.runtimes.base import clean_environment
-from cli_subagents.runtimes.claude import ClaudeParser, ClaudeRuntime
+from agents_router import accounts, jobs, mcp_server, runner, sync
+from agents_router.config import load_config
+from agents_router.fsutil import is_link, read_json, write_json
+from agents_router.runtimes.base import clean_environment
+from agents_router.runtimes.claude import ClaudeParser, ClaudeRuntime
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -35,20 +35,20 @@ class EnvironmentTests(unittest.TestCase):
             "CLAUDE_CODE_GIT_BASH_PATH": "C:/git/bash.exe",
             "CODEX_COMPANION_SESSION_ID": "s",
             "MCP_CONNECTION_NONBLOCKING": "1",
-            "CLI_SUBAGENTS_DEPTH": "0",
-            "CLI_SUBAGENTS_HOME": "keep",
+            "AGT_DEPTH": "0",
+            "AGT_HOME": "keep",
         }
         cleaned = clean_environment(source)
         self.assertEqual(
             cleaned,
-            {"PATH": "x", "HOME": "h", "CLAUDE_CODE_GIT_BASH_PATH": "C:/git/bash.exe", "CLI_SUBAGENTS_HOME": "keep"},
+            {"PATH": "x", "HOME": "h", "CLAUDE_CODE_GIT_BASH_PATH": "C:/git/bash.exe", "AGT_HOME": "keep"},
         )
 
 
 REPLACE_LOOP = """
 import sys, time
 from pathlib import Path
-from cli_subagents.fsutil import write_json
+from agents_router.fsutil import write_json
 path, stop_at, count = Path(sys.argv[1]), float(sys.argv[2]), 0
 while time.time() < stop_at:
     try:
@@ -227,7 +227,7 @@ class SharedSetupTests(TempHome):
         home = self.root / "homes" / "a1"
         (home / "agents").mkdir(parents=True)
         (home / "agents" / "helper.md").write_text("agent", encoding="utf-8")
-        from cli_subagents.fsutil import sha256_file
+        from agents_router.fsutil import sha256_file
         (home / sync.MANIFEST).write_text(json.dumps({"items": {"agents/helper.md": {
             "kind": "copy", "sha256": sha256_file(home / "agents" / "helper.md")}}}), encoding="utf-8")
         self.prepare()
@@ -312,7 +312,7 @@ class JobTests(TempHome):
         self.assertNotIn("ANTHROPIC_BASE_URL", record["env"])
         self.assertNotIn("CLAUDECODE", record["env"])
         self.assertEqual(Path(record["env"]["CLAUDE_CONFIG_DIR"]), self.root / "homes" / "a1")
-        self.assertEqual(record["env"]["CLI_SUBAGENTS_DEPTH"], "1")
+        self.assertEqual(record["env"]["AGT_DEPTH"], "1")
         argv = record["argv"]
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(argv[argv.index("--model") + 1], "haiku")
@@ -378,7 +378,7 @@ class JobTests(TempHome):
 
     def test_nested_delegation_is_refused(self):
         self.write_config()
-        with patch.dict(os.environ, {"CLI_SUBAGENTS_DEPTH": "1"}):
+        with patch.dict(os.environ, {"AGT_DEPTH": "1"}):
             with self.assertRaises(ValueError):
                 jobs.create_job(runtime="claude", prompt="x", cwd=str(self.project))
 

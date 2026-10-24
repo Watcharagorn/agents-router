@@ -1,5 +1,5 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
-  "name": "cli-subagents",
+  "name": "agents-router",
   "description": "Start subagents in Claude Code, Codex or Antigravity under your own accounts, with one shared setup."
 }

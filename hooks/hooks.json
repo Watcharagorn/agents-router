@@ -1,13 +1,13 @@
 {
-  "description": "CLI Subagents: wake the main session when a subagent finishes or asks something (watched again after each subagent_message), and name uncollected results after resume or compaction.",
+  "description": "Agents Router: wake the main session when a subagent finishes or asks something (watched again after each subagent_message), and name uncollected results after resume or compaction.",
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__plugin_cli-subagents_cli-subagents__subagent_start|mcp__cli-subagents__subagent_start",
+        "matcher": "mcp__plugin_agents-router_agents-router__subagent_start|mcp__agents-router__subagent_start",
         "hooks": [
           {
             "type": "command",
-            "command": "csa hook await",
+            "command": "agt hook await",
             "async": true,
             "asyncRewake": true,
             "timeout": 7200
@@ -15,11 +15,11 @@
         ]
       },
       {
-        "matcher": "mcp__plugin_cli-subagents_cli-subagents__subagent_message|mcp__cli-subagents__subagent_message",
+        "matcher": "mcp__plugin_agents-router_agents-router__subagent_message|mcp__agents-router__subagent_message",
         "hooks": [
           {
             "type": "command",
-            "command": "csa hook await",
+            "command": "agt hook await",
             "async": true,
             "asyncRewake": true,
             "timeout": 7200
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "csa hook pending",
+            "command": "agt hook pending",
             "timeout": 30
           }
         ]

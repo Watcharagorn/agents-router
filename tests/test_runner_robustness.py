@@ -12,12 +12,12 @@ import unittest
 from unittest.mock import patch
 
 from helpers import TempHome
-from cli_subagents import accounts, jobs, limits, messages, quota, tools
-from cli_subagents.config import Account, QuotaPool, load_config, save_config
-from cli_subagents.fsutil import kill_tree, process_start_time, same_process
-from cli_subagents.runner import Runner
-from cli_subagents.runtimes.base import AUTH, SUCCESS, AttemptResult, JobSpec
-from cli_subagents.runtimes.codex import CodexRuntime
+from agents_router import accounts, jobs, limits, messages, quota, tools
+from agents_router.config import Account, QuotaPool, load_config, save_config
+from agents_router.fsutil import kill_tree, process_start_time, same_process
+from agents_router.runner import Runner
+from agents_router.runtimes.base import AUTH, SUCCESS, AttemptResult, JobSpec
+from agents_router.runtimes.codex import CodexRuntime
 
 HERE = Path(__file__).resolve().parent
 
@@ -27,8 +27,8 @@ class RobustnessBase(TempHome):
         super().setUp()
         os.environ.update(
             CLAUDE_CONFIG_DIR=str(self.primary), CODEX_HOME=str(self.root / "codex"),
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_codex.py")]),
-            CLI_SUBAGENTS_AGY_COMMAND=json.dumps([sys.executable, str(HERE / "fake_agy.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_codex.py")]),
+            AGT_AGY_COMMAND=json.dumps([sys.executable, str(HERE / "fake_agy.py")]),
         )
         for key in ("FAKE_CODEX_LIMITED", "FAKE_CLAUDE_DELAY", "FAKE_AGY_SCENARIO"):
             os.environ.pop(key, None)
@@ -70,7 +70,7 @@ class DescendantCleanupTests(RobustnessBase):
     def check_descendant(self, mode):
         child_file = self.root / "child.pid"
         os.environ.update(
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
             FAKE_ROBUST_MODE=mode, FAKE_ROBUST_CHILD_PID=str(child_file),
         )
         runner = self.runner(account="a1")
@@ -103,7 +103,7 @@ class DescendantCleanupTests(RobustnessBase):
     def test_runner_death_closes_the_job_object_and_kills_descendants(self):
         child_file = self.root / "child.pid"
         os.environ.update(
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
             FAKE_ROBUST_MODE="tree_wait", FAKE_ROBUST_CHILD_PID=str(child_file),
             FAKE_ROBUST_RELEASE=str(self.root / "release"),
         )
@@ -120,10 +120,10 @@ class DescendantCleanupTests(RobustnessBase):
 
     @unittest.skipUnless(os.name == "nt", "Windows suspended process assignment")
     def test_failed_job_assignment_cannot_run_the_worker(self):
-        from cli_subagents.fsutil import _WindowsJob
+        from agents_router.fsutil import _WindowsJob
 
         os.environ.update(
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
             FAKE_ROBUST_MODE="tree", FAKE_ROBUST_CHILD_PID=str(self.root / "child.pid"),
         )
         runner = self.runner(account="a1")
@@ -300,7 +300,7 @@ class StartedBudgetTests(RobustnessBase):
 
     def test_process_creation_failure_does_not_spend_weekly_budget(self):
         runner = self.runner(account="a1", model="gpt-test")
-        with patch("cli_subagents.fsutil.subprocess.Popen", side_effect=OSError("cannot create process")):
+        with patch("agents_router.fsutil.subprocess.Popen", side_effect=OSError("cannot create process")):
             self.assertEqual(runner.run(), 1)
         self.assertNotIn("started_at", runner.attempts[0])
         self.assertEqual(self.budget(), 0)
@@ -324,7 +324,7 @@ class LiveEventTests(RobustnessBase):
     def test_complete_events_are_readable_while_the_worker_is_running(self):
         gate = self.root / "release"
         os.environ.update(
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_robust_worker.py")]),
             FAKE_ROBUST_MODE="stream", FAKE_ROBUST_RELEASE=str(gate),
         )
         status = jobs.create_job(runtime="codex", prompt="task", cwd=str(self.project), account="a1", access="read")
@@ -355,8 +355,8 @@ class ParentApprovalTests(RobustnessBase):
                     approval = [value for value in overrides if "approval_mode=" in value]
                     self.assertEqual(len(approval), 4)
                     parsed = tomllib.loads("\n".join(approval))["mcp_servers"]
-                    self.assertEqual(list(parsed), ["csa_parent"])
-                    parent = parsed["csa_parent"]
+                    self.assertEqual(list(parsed), ["agt_parent"])
+                    parent = parsed["agt_parent"]
                     self.assertEqual(parent["default_tools_approval_mode"], "approve")
                     self.assertEqual(parent["tools"], {name: {"approval_mode": "approve"} for name in
                                                      ("message_parent", "ask_parent", "check_parent_messages")})

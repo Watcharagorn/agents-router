@@ -6,7 +6,7 @@ Checked 2026-10-19. Local checks used only `--version` and `--help` (`codex exec
 
 `claude -p --output-format stream-json` must provide a successful result and exit 0. The [CLI reference](https://code.claude.com/docs/en/cli-reference) says reaching `--max-turns` exits with an error. The [Agent SDK reference](https://code.claude.com/docs/en/agent-sdk/python#resulterror) documents process failures from error results, including `error_max_turns` and API failures. A failed final API request can still use `subtype: "success"`; `is_error: true` distinguishes it. Therefore the subtype alone cannot establish success.
 
-Anthropic's [Python SDK subprocess transport](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/transport/subprocess_cli.py) reads the stream, waits for process completion, and raises `ProcessError` on nonzero exit. The CLI implementation is not published in that repository. These sources establish nonzero failure semantics; they do not promise a numeric code for every Claude error subtype. Tests model max-turn exhaustion as exit 1 and retain CSA's `max_turns` outcome. Auth and usage errors retain their specific outcomes, including when their result subtype is `success`.
+Anthropic's [Python SDK subprocess transport](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/transport/subprocess_cli.py) reads the stream, waits for process completion, and raises `ProcessError` on nonzero exit. The CLI implementation is not published in that repository. These sources establish nonzero failure semantics; they do not promise a numeric code for every Claude error subtype. Tests model max-turn exhaustion as exit 1 and retain Agents Router's `max_turns` outcome. Auth and usage errors retain their specific outcomes, including when their result subtype is `success`.
 
 ## Codex
 
@@ -14,13 +14,13 @@ The [non-interactive documentation](https://learn.chatgpt.com/docs/non-interacti
 
 The [JSONL processor](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs) emits `turn.completed` for completed turns and `turn.failed` for failed turns. An interrupted turn initiates shutdown without a completion event. Retries, reroutes, and other recoverable errors may appear alongside an eventual successful completion. Keep them as warnings. Later fatal stream/stderr errors can still explain a nonzero process exit.
 
-OpenAI's [TypeScript SDK](https://github.com/openai/codex/blob/rust-v0.162.0/sdk/typescript/src/exec.ts) waits after consuming stdout and rejects nonzero exits or termination signals. CSA follows that policy and retains the final assistant text. No upstream implementation code was copied.
+OpenAI's [TypeScript SDK](https://github.com/openai/codex/blob/rust-v0.162.0/sdk/typescript/src/exec.ts) waits after consuming stdout and rejects nonzero exits or termination signals. Agents Router follows that policy and retains the final assistant text. No upstream implementation code was copied.
 
 ## Antigravity
 
 Google's [headless-mode documentation](https://antigravity.google/docs/cli/headless#handle-exit-codes-and-errors) says successful runs exit 0; failures exit nonzero, write a reason to stderr, and expose `status`/`error` in JSON modes. Its unknown-model example exits 1 with `status: "ERROR"`. Other reported statuses include `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING`, and `RUNNING`; none establishes success. The CLI implementation is not published in the issue repository.
 
-CSA requires `status: "SUCCESS"` plus exit 0. It retains its existing exception for an empty response with denied actions: that is an error even at exit 0. Auth/quota diagnostics keep their specific outcomes and any response text survives a later process failure.
+Agents Router requires `status: "SUCCESS"` plus exit 0. It retains its existing exception for an empty response with denied actions: that is an error even at exit 0. Auth/quota diagnostics keep their specific outcomes and any response text survives a later process failure.
 
 ## Runner stops and acceptance rule
 

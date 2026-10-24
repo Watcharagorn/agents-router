@@ -7,30 +7,30 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
-from cli_subagents import setup
-from cli_subagents.config import load_config
+from agents_router import setup
+from agents_router.config import load_config
 from test_setup import SetupBase
 
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIMES = ("claude", "codex", "antigravity")
-TEMPLATES = files("cli_subagents").joinpath("templates", "codex-agents")
+TEMPLATES = files("agents_router").joinpath("templates", "codex-agents")
 
 
 class CodexAgentDefinitionTests(unittest.TestCase):
     def test_three_standalone_roles_use_luna_low_and_supported_capability_limits(self):
         self.assertEqual(
             sorted(path.name for path in TEMPLATES.iterdir()),
-            sorted(f"cli-subagents-{runtime}.toml" for runtime in RUNTIMES),
+            sorted(f"agt-{runtime}.toml" for runtime in RUNTIMES),
         )
         for runtime in RUNTIMES:
             with self.subTest(runtime=runtime):
-                role = tomllib.loads(TEMPLATES.joinpath(f"cli-subagents-{runtime}.toml").read_text(encoding="utf-8"))
-                self.assertEqual(role["name"], f"cli-subagents-{runtime}")
+                role = tomllib.loads(TEMPLATES.joinpath(f"agt-{runtime}.toml").read_text(encoding="utf-8"))
+                self.assertEqual(role["name"], f"agt-{runtime}")
                 self.assertEqual(role["model"], "gpt-6-luna")
                 self.assertEqual(role["model_reasoning_effort"], "low")
                 self.assertIn("subagent_start", role["description"])
-                self.assertIn(f"csa run --follow --window 60 --runtime {runtime}", role["developer_instructions"])
+                self.assertIn(f"agt run --follow --window 60 --runtime {runtime}", role["developer_instructions"])
                 self.assertEqual(role["features"], {
                     "apps": False, "plugins": False, "memories": False, "request_permissions_tool": False,
                 })
@@ -42,8 +42,8 @@ class CodexAgentDefinitionTests(unittest.TestCase):
     def test_authenticated_framing_matches_the_claude_relays(self):
         for runtime in RUNTIMES:
             with self.subTest(runtime=runtime):
-                claude = (ROOT / "agents" / f"cli-subagents-{runtime}.md").read_text(encoding="utf-8")
-                native = tomllib.loads(TEMPLATES.joinpath(f"cli-subagents-{runtime}.toml").read_text(encoding="utf-8"))["developer_instructions"]
+                claude = (ROOT / "agents" / f"agt-{runtime}.md").read_text(encoding="utf-8")
+                native = tomllib.loads(TEMPLATES.joinpath(f"agt-{runtime}.toml").read_text(encoding="utf-8"))["developer_instructions"]
                 start, end = "## 2. Read the authenticated status", "## 3. Messages"
                 expected = claude[claude.index(start):claude.index(end)]
                 expected = expected.replace("a later SendMessage", "a later native follow-up")
@@ -56,24 +56,24 @@ class CodexAgentDefinitionTests(unittest.TestCase):
         required = (
             "`model=...`", "`access=...`", "`account=...`", "`effort=...`", "`cwd=...`", "`timeout=...`", "`override=...`",
             "Never set override on your own judgment", "how much of the 5-hour window is left",
-            "csa message <JOB> --follow --from <OFFSET> --window <WINDOW> -", "--window 60", "csa cancel <JOB>",
+            "agt message <JOB> --follow --from <OFFSET> --window <WINDOW> -", "--window 60", "agt cancel <JOB>",
             "A finished job continues the same worker conversation", "resetting OFFSET if JOB changed",
             "`session_id`", "`write_stdin`", "Retain every output chunk in order",
-            '"process still running" notice is not a csa status', "If output was truncated, stop",
+            '"process still running" notice is not an agt status', "If output was truncated, stop",
             "PowerShell", "PYTHONIOENCODING", "multiline single-quoted string", "double each embedded single quote",
         )
         for runtime in RUNTIMES:
             with self.subTest(runtime=runtime):
-                instructions = tomllib.loads(TEMPLATES.joinpath(f"cli-subagents-{runtime}.toml").read_text(encoding="utf-8"))["developer_instructions"]
+                instructions = tomllib.loads(TEMPLATES.joinpath(f"agt-{runtime}.toml").read_text(encoding="utf-8"))["developer_instructions"]
                 for text in required:
                     # Wrapping does not change an instruction's meaning.
                     self.assertIn(text, " ".join(instructions.split()))
 
     def test_wheel_package_data_includes_native_role_templates(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        patterns = project["tool"]["setuptools"]["package-data"]["cli_subagents"]
+        patterns = project["tool"]["setuptools"]["package-data"]["agents_router"]
         for runtime in RUNTIMES:
-            role = Path(f"templates/codex-agents/cli-subagents-{runtime}.toml")
+            role = Path(f"templates/codex-agents/agt-{runtime}.toml")
             self.assertTrue(any(role.match(pattern) for pattern in patterns), role)
 
 
@@ -88,13 +88,13 @@ class CodexAgentInstallTests(SetupBase):
         self.assertEqual(code, 0, out)
         self.assertEqual(config_path.read_bytes(), b'model = "owner-model"\n')
         for runtime in RUNTIMES:
-            name = f"cli-subagents-{runtime}.toml"
+            name = f"agt-{runtime}.toml"
             self.assertEqual((self.roles() / name).read_bytes(), TEMPLATES.joinpath(name).read_bytes())
-        self.assertIn("installed relay agent cli-subagents-codex", out)
+        self.assertIn("installed relay agent agt-codex", out)
 
     def test_enabled_plugin_gets_missing_roles_without_reinstalling_plugin(self):
         self.run_cli("--host", "codex")
-        role = self.roles() / "cli-subagents-codex.toml"
+        role = self.roles() / "agt-codex.toml"
         role.unlink()
         self.log.unlink()
         code, out = self.run_cli("--host", "codex")
@@ -113,13 +113,13 @@ class CodexAgentInstallTests(SetupBase):
 
     def test_replacement_backs_up_custom_contents_outside_toml_discovery(self):
         self.roles().mkdir()
-        target = self.roles() / "cli-subagents-codex.toml"
+        target = self.roles() / "agt-codex.toml"
         target.write_bytes(b'owner contents\r\n')
         unrelated = self.roles() / "owner-agent.toml"
         unrelated.write_bytes(b'owner role\n')
         code, out = self.run_cli("--host", "codex")
         self.assertEqual(code, 0, out)
-        backups = list(self.roles().glob("cli-subagents-codex.toml.csa-backup-*"))
+        backups = list(self.roles().glob("agt-codex.toml.agents-router-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), b'owner contents\r\n')
         self.assertNotEqual(backups[0].suffix, ".toml")
@@ -129,7 +129,7 @@ class CodexAgentInstallTests(SetupBase):
     def test_dry_run_lists_roles_without_creating_the_agents_directory(self):
         code, out = self.run_cli("--host", "codex", "--dry-run")
         self.assertEqual(code, 0, out)
-        self.assertIn("would install relay agent cli-subagents-claude", out)
+        self.assertIn("would install relay agent agt-claude", out)
         self.assertFalse(self.roles().exists())
 
     def test_failed_plugin_install_does_not_install_roles(self):
@@ -154,7 +154,7 @@ class CodexAgentInstallTests(SetupBase):
         self.roles().mkdir()
         original = self.root / "owner-role"
         original.write_bytes(b"owner role")
-        target = self.roles() / "cli-subagents-codex.toml"
+        target = self.roles() / "agt-codex.toml"
         try:
             target.symlink_to(original)
         except OSError as exc:
@@ -167,21 +167,21 @@ class CodexAgentInstallTests(SetupBase):
 
     def test_update_refreshes_roles_after_plugin_upgrade(self):
         self.run_cli("--host", "codex")
-        target = self.roles() / "cli-subagents-codex.toml"
+        target = self.roles() / "agt-codex.toml"
         target.write_bytes(b"old relay")
         code, report = setup.run_update(load_config(), ["codex"], package=False)
         self.assertEqual(code, 0, report)
         self.assertEqual(target.read_bytes(), TEMPLATES.joinpath(target.name).read_bytes())
-        self.assertEqual(next(self.roles().glob(target.name + ".csa-backup-*")).read_bytes(), b"old relay")
+        self.assertEqual(next(self.roles().glob(target.name + ".agents-router-backup-*")).read_bytes(), b"old relay")
 
     def test_update_dry_run_preserves_old_roles(self):
         self.run_cli("--host", "codex")
-        target = self.roles() / "cli-subagents-codex.toml"
+        target = self.roles() / "agt-codex.toml"
         target.write_bytes(b"old relay")
         code, report = setup.run_update(load_config(), ["codex"], package=False, dry_run=True)
         self.assertEqual(code, 0, report)
         self.assertEqual(target.read_bytes(), b"old relay")
-        self.assertFalse(list(self.roles().glob("*.csa-backup-*")))
+        self.assertFalse(list(self.roles().glob("*.agents-router-backup-*")))
         self.assertTrue(any("would install relay agent" in entry for entry in report.done))
 
     def test_update_without_installed_plugin_does_not_install_roles(self):

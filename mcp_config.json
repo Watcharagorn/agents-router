@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "cli-subagents": {
-      "command": "csa",
+    "agents-router": {
+      "command": "agt",
       "args": ["mcp"]
     }
   }

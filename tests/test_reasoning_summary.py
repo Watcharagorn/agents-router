@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents.config import load_config, save_config
-from cli_subagents.runtimes.base import JobSpec
-from cli_subagents.runtimes.codex import CodexRuntime
+from agents_router.config import load_config, save_config
+from agents_router.runtimes.base import JobSpec
+from agents_router.runtimes.codex import CodexRuntime
 
 
 class ReasoningSummaryTests(TempHome):
@@ -19,7 +19,7 @@ class ReasoningSummaryTests(TempHome):
         (self.primary / "config.toml").write_text(codex_config, encoding="utf-8")
         config = load_config().runtime("codex")
         spec = JobSpec(job_id="t", runtime="codex", prompt="p", cwd=str(self.project), resume_session=resume)
-        with patch.dict(os.environ, {"CLI_SUBAGENTS_CODEX_COMMAND": json.dumps([sys.executable, "fake"])}):
+        with patch.dict(os.environ, {"AGT_CODEX_COMMAND": json.dumps([sys.executable, "fake"])}):
             return CodexRuntime().launch(config, config.primary_account(), spec, "p", {}).argv
 
     def test_default_on_new_runs_and_resumes(self):

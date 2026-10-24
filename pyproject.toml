@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cli-subagents"
-version = "0.2.13"
+name = "agents-router"
+version = "0.3.0"
 description = "Let your coding agent delegate tasks to other installed agent CLIs, each in its own harness under your own login, with one shared setup across accounts."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "lunati" }]
+authors = [{ name = "Watcharagorn" }]
 keywords = ["mcp", "subagents", "claude-code", "codex", "coding-agents", "multi-account"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -20,15 +20,15 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/lunati228/CLI-Subagents"
+Homepage = "https://github.com/Watcharagorn/agents-router"
 
 [project.scripts]
-csa = "cli_subagents.cli:main"
-cli-subagents-mcp = "cli_subagents.mcp_server:main"
+agt = "agents_router.cli:main"
+agents-router-mcp = "agents_router.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"cli_subagents" = ["templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
-"cli_subagents.agy_review" = ["policy.md"]
+"agents_router" = ["templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
+"agents_router.agy_review" = ["policy.md"]

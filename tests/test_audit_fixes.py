@@ -15,12 +15,12 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import accounts, cli, jobs, runner, sync, tools
-from cli_subagents.config import Account, jobs_dir, load_config
-from cli_subagents.fsutil import make_private_dir, open_private, pid_alive, process_start_time, write_json
-from cli_subagents.runtimes.antigravity import AntigravityParser
-from cli_subagents.runtimes.base import clean_environment
-from cli_subagents.runtimes.claude import SYNC_PLAN, ClaudeParser, ClaudeRuntime, _project_dir_name
+from agents_router import accounts, cli, jobs, runner, sync, tools
+from agents_router.config import Account, jobs_dir, load_config
+from agents_router.fsutil import make_private_dir, open_private, pid_alive, process_start_time, write_json
+from agents_router.runtimes.antigravity import AntigravityParser
+from agents_router.runtimes.base import clean_environment
+from agents_router.runtimes.claude import SYNC_PLAN, ClaudeParser, ClaudeRuntime, _project_dir_name
 
 FAKE_AGY = Path(__file__).with_name("fake_agy.py")
 
@@ -168,13 +168,13 @@ class ClaudeClassificationTests(unittest.TestCase):
 
 
 class TempHomeContext:
-    """A throwaway CLI_SUBAGENTS_HOME for plain unit tests."""
+    """A throwaway AGT_HOME for plain unit tests."""
 
     def __enter__(self):
         import tempfile
 
         self._temp = tempfile.TemporaryDirectory()
-        self._env = patch.dict(os.environ, {"CLI_SUBAGENTS_HOME": self._temp.name})
+        self._env = patch.dict(os.environ, {"AGT_HOME": self._temp.name})
         self._env.start()
         return Path(self._temp.name)
 
@@ -188,10 +188,10 @@ class AntigravityTests(TempHome):
 
     def setUp(self):
         super().setUp()
-        os.environ["CLI_SUBAGENTS_AGY_COMMAND"] = json.dumps([sys.executable, str(FAKE_AGY)])
+        os.environ["AGT_AGY_COMMAND"] = json.dumps([sys.executable, str(FAKE_AGY)])
 
     def tearDown(self):
-        os.environ.pop("CLI_SUBAGENTS_AGY_COMMAND", None)
+        os.environ.pop("AGT_AGY_COMMAND", None)
         os.environ.pop("FAKE_AGY_SCENARIO", None)
         super().tearDown()
 
@@ -201,7 +201,7 @@ class AntigravityTests(TempHome):
 
     def test_quota_on_the_single_account_sets_no_cooldown(self):
         # With failover turned off; it's on by default, like for the other runtimes.
-        (Path(os.environ["CLI_SUBAGENTS_HOME"]) / "config.toml").write_text('[antigravity]\nfailover = "off"\n', encoding="utf-8")
+        (Path(os.environ["AGT_HOME"]) / "config.toml").write_text('[antigravity]\nfailover = "off"\n', encoding="utf-8")
         os.environ["FAKE_AGY_SCENARIO"] = "quota"
         status = jobs.wait_for(jobs.create_job(runtime="antigravity", prompt="t", cwd=str(self.project))["job_id"], 60)
         self.assertEqual(status["outcome"], "usage_limit", status)
@@ -325,11 +325,11 @@ class LinkSafetyTests(TempHome):
         target.mkdir()
         victim = self.root / "victim.md"
         try:
-            os.symlink(victim, target / ".CLAUDE.md.cli-subagents.tmp")  # the old fixed name
+            os.symlink(victim, target / ".CLAUDE.md.agents-router.tmp")  # the old fixed name
         except OSError:
             self.skipTest("symlinks need extra rights on this system")
         report = sync.new_report()
-        with patch("cli_subagents.sync.os.link", side_effect=OSError("cross-device")):
+        with patch("agents_router.sync.os.link", side_effect=OSError("cross-device")):
             sync.sync(self.primary, target, SYNC_PLAN, report)
         self.assertFalse(victim.exists())
         self.assertEqual((target / "CLAUDE.md").read_text(encoding="utf-8"), "rules")
@@ -430,16 +430,16 @@ class HomeOptionTests(unittest.TestCase):
         import os, tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from cli_subagents import cli
-        from cli_subagents.config import load_config
+        from agents_router import cli
+        from agents_router.config import load_config
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "acct").mkdir()
             (root / "main").mkdir()
             # A throwaway primary, so the sync never links the real ~/.claude into the temp folder.
-            env = {"CLI_SUBAGENTS_HOME": str(root / "csa"), "CLAUDE_CONFIG_DIR": str(root / "main")}
+            env = {"AGT_HOME": str(root / "agt"), "CLAUDE_CONFIG_DIR": str(root / "main")}
             with patch.dict(os.environ, env):
                 self.assertEqual(cli.main(["accounts", "add", "x", "--home", str(root / "acct"), "--no-login"]), 0)
-                self.assertTrue((root / "csa" / "config.toml").exists())
+                self.assertTrue((root / "agt" / "config.toml").exists())
                 self.assertFalse((root / "acct" / "config.toml").exists())
                 self.assertEqual([a.name for a in load_config().runtime("claude").accounts], ["x"])

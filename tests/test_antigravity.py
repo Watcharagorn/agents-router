@@ -10,11 +10,11 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import accounts, cli, jobs, setup, tools
-from cli_subagents.config import Account, load_config
-from cli_subagents.fsutil import is_link
-from cli_subagents.runtimes.antigravity import AUTH_RE, AntigravityParser, AntigravityRuntime
-from cli_subagents.runtimes.base import WORKER_TOOLS_NOTE, JobSpec
+from agents_router import accounts, cli, jobs, setup, tools
+from agents_router.config import Account, load_config
+from agents_router.fsutil import is_link
+from agents_router.runtimes.antigravity import AUTH_RE, AntigravityParser, AntigravityRuntime
+from agents_router.runtimes.base import WORKER_TOOLS_NOTE, JobSpec
 
 FAKE_AGY = Path(__file__).with_name("fake_agy.py")
 TOKEN = Path(".gemini") / "antigravity-cli" / "antigravity-oauth-token"
@@ -46,7 +46,7 @@ class ParserTests(unittest.TestCase):
         result = runtime.check_stderr("x\nAuthentication required. Please visit the URL to log in:\nhttps://...", extra)
         self.assertEqual(result.outcome, "auth")
         self.assertIn("Authentication required", result.message)
-        self.assertIn("csa accounts login g2 --runtime antigravity", result.message)
+        self.assertIn("agt accounts login g2 --runtime antigravity", result.message)
 
 
 class AgyHome(TempHome):
@@ -54,7 +54,7 @@ class AgyHome(TempHome):
 
     def setUp(self):
         super().setUp()
-        os.environ["CLI_SUBAGENTS_AGY_COMMAND"] = json.dumps([sys.executable, str(FAKE_AGY)])
+        os.environ["AGT_AGY_COMMAND"] = json.dumps([sys.executable, str(FAKE_AGY)])
         for key in (*SSH_KEYS, "FAKE_AGY_SCENARIO", "FAKE_AGY_LIMITED"):
             os.environ.pop(key, None)
         # An empty home folder: without a config the primary defaults to ~/.gemini, and a login
@@ -67,7 +67,7 @@ class AgyHome(TempHome):
         self.homes = self.root / "agy-homes"
 
     def tearDown(self):
-        for key in ("CLI_SUBAGENTS_AGY_COMMAND", "FAKE_AGY_SCENARIO", "FAKE_AGY_LIMITED"):
+        for key in ("AGT_AGY_COMMAND", "FAKE_AGY_SCENARIO", "FAKE_AGY_LIMITED"):
             os.environ.pop(key, None)
         super().tearDown()
 
@@ -160,9 +160,9 @@ class SharedSetupTests(AgyHome):
         (g / "config" / "hooks.json").write_text("{}", encoding="utf-8")
         (g / "config" / "config.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
         (g / "antigravity-cli" / "settings.json").write_text(json.dumps({"modelProvider": "vertex"}), encoding="utf-8")
-        for plugin in ("p1", "cli-subagents"):
+        for plugin in ("p1", "agents-router"):
             (g / "antigravity-cli" / "plugins" / plugin).mkdir(parents=True)
-        servers = {"tool": {"command": "node", "args": ["tool.js"]}, "cli-subagents": {"command": "csa", "args": ["mcp"]}}
+        servers = {"tool": {"command": "node", "args": ["tool.js"]}, "agents-router": {"command": "agt", "args": ["mcp"]}}
         (g / "config" / "mcp_config.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
         self.write_agy_config()
 
@@ -177,13 +177,13 @@ class SharedSetupTests(AgyHome):
         self.assertTrue(os.path.samefile(account / "GEMINI.md", self.gemini / "GEMINI.md"))
         # hooks.json and settings.json are written for the folder: the user's content plus the review gate.
         hooks = json.loads((account / "config" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertIn("cli-subagents-review", hooks)
+        self.assertIn("agents-router-review", hooks)
         self.assertTrue(report["review_gate"])
         self.assertTrue((account / "config" / "config.json").is_file())
         self.assertTrue((account / "config" / "rules" / "r.md").is_file())
         self.assertTrue((account / "config" / "skills" / "s1" / "SKILL.md").is_file())
         self.assertTrue((account / "antigravity-cli" / "plugins" / "p1").is_dir())
-        self.assertFalse((account / "antigravity-cli" / "plugins" / "cli-subagents").exists())
+        self.assertFalse((account / "antigravity-cli" / "plugins" / "agents-router").exists())
         settings = json.loads((account / "antigravity-cli" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings, {"toolPermission": "request-review"})  # modelProvider is not shared
         self.assertTrue(any("modelProvider" in item for item in report["warnings"]), report)
@@ -202,14 +202,14 @@ class SharedSetupTests(AgyHome):
         self.assertTrue(report["parent_channel"])
         path = self.homes / "a1" / ".gemini" / "config" / "mcp_config.json"
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
-        self.assertEqual(sorted(servers), ["csa-parent", "tool"])
-        self.assertEqual(servers["csa-parent"]["args"][-2:], ["--worker", "job-7"])
+        self.assertEqual(sorted(servers), ["agt-parent", "tool"])
+        self.assertEqual(servers["agt-parent"]["args"][-2:], ["--worker", "job-7"])
         self.assertFalse(self.prepare("probe")["parent_channel"])
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(sorted(servers), ["tool"])
         # The primary file stays as the user wrote it.
         primary = json.loads((self.gemini / "config" / "mcp_config.json").read_text(encoding="utf-8"))
-        self.assertNotIn("csa-parent", primary["mcpServers"])
+        self.assertNotIn("agt-parent", primary["mcpServers"])
 
     def test_no_channel_when_an_account_runs_several_jobs(self):
         self.write_agy_config(extra="max_jobs_per_account = 2")
@@ -220,7 +220,7 @@ class SharedSetupTests(AgyHome):
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"mcpServers": {"mine": {"command": "x"}}}), encoding="utf-8")
         self.prepare()
-        backup = path.with_name("mcp_config.json.before-cli-subagents")
+        backup = path.with_name("mcp_config.json.before-agents-router")
         self.assertIn("mine", backup.read_text(encoding="utf-8"))
 
 class AntigravityJobTests(AgyHome):
@@ -232,7 +232,7 @@ class AntigravityJobTests(AgyHome):
         argv = record["argv"]
         self.assertEqual(argv[argv.index("--mode") + 1], "accept-edits")
         self.assertTrue(argv[-1].startswith("--print=") and argv[-1].endswith("task"))
-        # The primary runs in a folder CLI Subagents manages (keyring login), so it gets the parent channel.
+        # The primary runs in a folder Agents Router manages (keyring login), so it gets the parent channel.
         self.assertIn(WORKER_TOOLS_NOTE.strip(), argv[-1])
         self.assertEqual(Path(record["env"]["HOME"]), self.home / "homes" / "antigravity" / "primary")
         self.assertNotIn("SSH_CONNECTION", record["env"])
@@ -262,14 +262,14 @@ class AntigravityJobTests(AgyHome):
         self.assertTrue(all(record["env"].get(key) for key in SSH_KEYS))
         self.assertIn(WORKER_TOOLS_NOTE.strip(), record["argv"][-1])
         config = json.loads((self.homes / "a1" / ".gemini" / "config" / "mcp_config.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["mcpServers"]["csa-parent"]["args"][-1], status["job_id"])
+        self.assertEqual(config["mcpServers"]["agt-parent"]["args"][-1], status["job_id"])
 
     def test_extra_account_without_login_ends_at_once(self):
         self.write_agy_config(accounts=("a1",))
         started = time.monotonic()
         status = self.run_job(account="a1")
         self.assertEqual(status["outcome"], "auth", status)
-        self.assertIn("csa accounts login a1 --runtime antigravity", status["message"])
+        self.assertIn("agt accounts login a1 --runtime antigravity", status["message"])
         self.assertEqual(self.records(), [])  # agy never started
         self.assertLess(time.monotonic() - started, 30)
 
@@ -288,7 +288,7 @@ class AntigravityJobTests(AgyHome):
         (self.homes / "a1" / ".gemini" / "google_accounts.json").write_text("{}", encoding="utf-8")
         status = self.run_job(account="a1")
         self.assertEqual(status["outcome"], "auth", status)
-        self.assertIn("csa accounts login a1 --runtime antigravity", status["message"])
+        self.assertIn("agt accounts login a1 --runtime antigravity", status["message"])
 
     def test_on_limit_fails_over_with_the_partial_output(self):
         self.write_agy_config(accounts=("a1", "a2"), failover="on-limit", extra="include_primary = false")
@@ -319,22 +319,22 @@ class AntigravityJobTests(AgyHome):
 
 
 class AccountCommandTests(AgyHome):
-    def csa(self, *argv):
+    def agt(self, *argv):
         output = io.StringIO()
-        with patch("cli_subagents.cli.subprocess.call", return_value=0) as call, contextlib.redirect_stdout(output):
+        with patch("agents_router.cli.subprocess.call", return_value=0) as call, contextlib.redirect_stdout(output):
             code = cli.main(list(argv))
         return code, output.getvalue(), call
 
     def test_add_prints_the_risk_note_and_opens_the_login_in_the_account_env(self):
         self.write_agy_config(accounts=())
-        code, out, call = self.csa("accounts", "add", "g2", "--runtime", "antigravity")
+        code, out, call = self.agt("accounts", "add", "g2", "--runtime", "antigravity")
         self.assertEqual(code, 0, out)
         self.assertIn("own risk", out)
         self.assertIn("antigravity.google/docs/faq", out)
         folder = Path(self.home / "homes" / "antigravity" / "g2")
         self.assertEqual([account.name for account in self.runtime_config().accounts], ["g2"])
         argv, kwargs = call.call_args[0][0], call.call_args[1]
-        self.assertEqual(argv, json.loads(os.environ["CLI_SUBAGENTS_AGY_COMMAND"]))
+        self.assertEqual(argv, json.loads(os.environ["AGT_AGY_COMMAND"]))
         self.assertEqual(Path(kwargs["env"]["HOME"]), folder)
         self.assertEqual(Path(kwargs["env"]["USERPROFILE"]), folder)
         self.assertTrue(kwargs["env"].get("SSH_CONNECTION"))
@@ -343,17 +343,17 @@ class AccountCommandTests(AgyHome):
 
     def test_login_disable_reset_and_no_login(self):
         self.write_agy_config(accounts=())
-        code, out, call = self.csa("accounts", "add", "g3", "--runtime", "antigravity", "--no-login")
+        code, out, call = self.agt("accounts", "add", "g3", "--runtime", "antigravity", "--no-login")
         self.assertEqual(code, 0, out)
         call.assert_not_called()
-        self.assertIn("csa accounts login g3 --runtime antigravity", out)
-        code, out, call = self.csa("accounts", "login", "g3", "--runtime", "antigravity")
+        self.assertIn("agt accounts login g3 --runtime antigravity", out)
+        code, out, call = self.agt("accounts", "login", "g3", "--runtime", "antigravity")
         self.assertEqual(code, 0, out)
         self.assertTrue(call.call_args[1]["env"].get("SSH_TTY"))
-        self.assertEqual(self.csa("accounts", "disable", "g3", "--runtime", "antigravity")[0], 0)
+        self.assertEqual(self.agt("accounts", "disable", "g3", "--runtime", "antigravity")[0], 0)
         self.assertFalse(self.runtime_config().find("g3").enabled)
         accounts.set_cooldown("antigravity", "g3", time.time() + 600, "limit")
-        code, out, _call = self.csa("accounts", "reset", "g3", "--runtime", "antigravity")
+        code, out, _call = self.agt("accounts", "reset", "g3", "--runtime", "antigravity")
         self.assertIn("cooldown cleared", out)
 
     def test_account_report_lists_every_account(self):

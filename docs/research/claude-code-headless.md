@@ -2,7 +2,7 @@
 
 Checked 2026-10-14 against the Claude Code docs at https://code.claude.com/docs/en/ and the anthropics/claude-code issue tracker. Tags: (stated) means the cited page says it; (inferred) is a conclusion drawn from it; (not documented) means no official text was found; (community) means not official.
 
-This note answers what CLI Subagents needs from `claude -p`: per-account config, auth, MCP, headless flags, rate-limit signals, session portability and plugin packaging. Terms and existing multi-account tools are covered in [claude-multi-account.md](claude-multi-account.md).
+This note answers what Agents Router needs from `claude -p`: per-account config, auth, MCP, headless flags, rate-limit signals, session portability and plugin packaging. Terms and existing multi-account tools are covered in [claude-multi-account.md](claude-multi-account.md).
 
 ## 1. CLAUDE_CONFIG_DIR
 

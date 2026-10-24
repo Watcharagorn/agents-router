@@ -6,7 +6,7 @@ import unittest
 
 from helpers import TempHome
 
-from cli_subagents import jobs, mcp_translate
+from agents_router import jobs, mcp_translate
 
 FAKE_CODEX = Path(__file__).with_name("fake_codex.py")
 SECRET = "s3cr3t-value-123"
@@ -24,7 +24,7 @@ class TranslateTests(TempHome):
         state = {
             "mcpServers": {
                 "a": {"command": "npx", "args": ["x", "${HOME_VAR}/y"]},
-                "cli-subagents": {"command": "csa"},
+                "agents-router": {"command": "agt"},
                 "n": {"command": "z", "env": {"K": "${NOPE}"}},
             },
             "projects": {
@@ -116,7 +116,7 @@ class TranslateTests(TempHome):
 class CodexWiringTests(TempHome):
     def setUp(self):
         super().setUp()
-        os.environ["CLI_SUBAGENTS_CODEX_COMMAND"] = json.dumps([sys.executable, str(FAKE_CODEX)])
+        os.environ["AGT_CODEX_COMMAND"] = json.dumps([sys.executable, str(FAKE_CODEX)])
         claude = self.root / "claude"
         claude.mkdir()
         (claude / ".claude.json").write_text(
@@ -137,7 +137,7 @@ class CodexWiringTests(TempHome):
         (self.codex_dir / "config.toml").write_text('[mcp_servers.mine]\ncommand = "theirs"\n', encoding="utf-8")
 
     def tearDown(self):
-        os.environ.pop("CLI_SUBAGENTS_CODEX_COMMAND", None)
+        os.environ.pop("AGT_CODEX_COMMAND", None)
         os.environ.pop("API_KEY", None)
         super().tearDown()
 

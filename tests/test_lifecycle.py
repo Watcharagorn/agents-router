@@ -16,15 +16,15 @@ from unittest.mock import patch
 from claim_racer import race
 from helpers import TempHome
 
-from cli_subagents import accounts, cli, hooks, jobs, messages, sync, tools
-from cli_subagents.config import load_config
-from cli_subagents.fsutil import write_json
-from cli_subagents.runtimes.base import JobSpec
-from cli_subagents.runtimes.claude import DROP_SETTINGS, SYNC_PLAN, ClaudeRuntime, _project_dir_name
-from cli_subagents.runtimes.codex import CodexRuntime, merge_config
+from agents_router import accounts, cli, hooks, jobs, messages, sync, tools
+from agents_router.config import load_config
+from agents_router.fsutil import write_json
+from agents_router.runtimes.base import JobSpec
+from agents_router.runtimes.claude import DROP_SETTINGS, SYNC_PLAN, ClaudeRuntime, _project_dir_name
+from agents_router.runtimes.codex import CodexRuntime, merge_config
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-SHIM = SRC / "cli_subagents" / "hook_shim.py"
+SHIM = SRC / "agents_router" / "hook_shim.py"
 FAKE_CODEX = Path(__file__).with_name("fake_codex.py")
 RACER = Path(__file__).with_name("claim_racer.py")
 
@@ -134,7 +134,7 @@ class DeliveryTests(LifecycleBase):
 
 
 class AwaitHookTests(LifecycleBase):
-    """Item 1: `csa hook await` wakes the main session."""
+    """Item 1: `agt hook await` wakes the main session."""
 
     def setUp(self):
         super().setUp()
@@ -207,17 +207,17 @@ class AwaitHookTests(LifecycleBase):
 
     def test_command_exits_2_and_prints_to_stderr(self):
         job = self.finished()
-        payload = {"hook_event_name": "PostToolUse", "tool_name": "mcp__cli-subagents__subagent_start",
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "mcp__agents-router__subagent_start",
                    "tool_response": tool_response(job)}
         completed = subprocess.run(
-            [sys.executable, "-m", "cli_subagents", "hook", "await"], input=json.dumps(payload),
+            [sys.executable, "-m", "agents_router", "hook", "await"], input=json.dumps(payload),
             capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("done on a1", completed.stderr)
         self.assertEqual(completed.stdout, "")
         again = subprocess.run(
-            [sys.executable, "-m", "cli_subagents", "hook", "await"], input=json.dumps(payload),
+            [sys.executable, "-m", "agents_router", "hook", "await"], input=json.dumps(payload),
             capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         self.assertEqual((again.returncode, again.stderr), (0, ""))
@@ -227,16 +227,16 @@ class AwaitHookTests(LifecycleBase):
         post = data["hooks"]["PostToolUse"][0]
         self.assertEqual(
             set(post["matcher"].split("|")),
-            {"mcp__plugin_cli-subagents_cli-subagents__subagent_start", "mcp__cli-subagents__subagent_start"},
+            {"mcp__plugin_agents-router_agents-router__subagent_start", "mcp__agents-router__subagent_start"},
         )
         handler = post["hooks"][0]
         self.assertEqual(
             (handler["command"], handler["async"], handler["asyncRewake"], handler["timeout"]),
-            ("csa hook await", True, True, 7200),
+            ("agt hook await", True, True, 7200),
         )
         self.assertGreater(handler["timeout"], hooks.AWAIT_DEADLINE_SECONDS)
         start = data["hooks"]["SessionStart"][0]
-        self.assertEqual((start["matcher"], start["hooks"][0]["command"]), ("resume|compact", "csa hook pending"))
+        self.assertEqual((start["matcher"], start["hooks"][0]["command"]), ("resume|compact", "agt hook pending"))
 
 
 class PendingHookTests(LifecycleBase):
@@ -265,7 +265,7 @@ class PendingHookTests(LifecycleBase):
 
     def test_command_prints_json_or_nothing(self):
         run = lambda: subprocess.run(  # noqa: E731
-            [sys.executable, "-m", "cli_subagents", "hook", "pending"], input=json.dumps({"cwd": str(self.project)}),
+            [sys.executable, "-m", "agents_router", "hook", "pending"], input=json.dumps({"cwd": str(self.project)}),
             capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         empty = run()
@@ -309,7 +309,7 @@ class WorkerInboxTests(LifecycleBase):
         self.assertEqual(len(self.job_settings(job)["hooks"]["PostToolUse"]), 1)
 
     def run_shim(self, job):
-        env = {key: value for key, value in os.environ.items() if key not in ("PYTHONPATH", "CLI_SUBAGENTS_HOME")}
+        env = {key: value for key, value in os.environ.items() if key not in ("PYTHONPATH", "AGT_HOME")}
         return subprocess.run(
             [sys.executable, str(SHIM), "--home", str(self.home).replace("\\", "/"), "hook", "inbox", job],
             input=json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Read"}),
@@ -399,7 +399,7 @@ class CodexConfigMergeTests(TempHome):
 
     def setUp(self):
         super().setUp()
-        os.environ["CLI_SUBAGENTS_CODEX_COMMAND"] = json.dumps([sys.executable, str(FAKE_CODEX)])
+        os.environ["AGT_CODEX_COMMAND"] = json.dumps([sys.executable, str(FAKE_CODEX)])
         (self.primary / "config.toml").write_text(self.PRIMARY, encoding="utf-8")
         self.account_home = self.root / "codex" / "c1"
         self.account_home.mkdir(parents=True)
@@ -410,7 +410,7 @@ class CodexConfigMergeTests(TempHome):
         )
 
     def tearDown(self):
-        os.environ.pop("CLI_SUBAGENTS_CODEX_COMMAND", None)
+        os.environ.pop("AGT_CODEX_COMMAND", None)
         super().tearDown()
 
     def prepare(self):
@@ -435,7 +435,7 @@ class CodexConfigMergeTests(TempHome):
         self.assertEqual(data["projects"]["/shared"]["trust_level"], "untrusted")  # the account's own wins
         self.assertTrue(data["notice"]["hide_full_access_warning"])
         self.assertFalse(data["hooks"]["state"]["abc"]["enabled"])
-        self.assertTrue((self.account_home / "config.toml.before-cli-subagents").exists())
+        self.assertTrue((self.account_home / "config.toml.before-agents-router").exists())
         self.assertFalse(any("could not keep" in item for item in report["warnings"]), report)
         self.assertEqual(self.prepare()["copied"], [])  # stable: nothing to rewrite on the next run
 
@@ -445,7 +445,7 @@ class CodexConfigMergeTests(TempHome):
         report = self.prepare()
         self.assertEqual((self.account_home / "config.toml").read_text(encoding="utf-8"), (self.primary / "config.toml").read_text(encoding="utf-8"))
         self.assertTrue(any("could not keep" in item for item in report["warnings"]), report)
-        self.assertTrue((self.account_home / "config.toml.before-cli-subagents").exists())
+        self.assertTrue((self.account_home / "config.toml.before-agents-router").exists())
 
     def test_merge_without_account_tables_is_the_primary(self):
         self.assertEqual(merge_config(self.PRIMARY, 'model = "x"\n[mcp_servers.y]\ncommand = "z"\n'), self.PRIMARY)

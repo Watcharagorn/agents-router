@@ -16,7 +16,7 @@ parent. Definitions are discovered in `.agents/agents/`,
 Source: [custom subagents](https://antigravity.google/docs/subagents).
 
 In the CLI, `/agents` lists subagents and their status. Enter opens a detail
-view containing tool calls and stdout. This gives csa an inspectable native
+view containing tool calls and stdout. This gives agt an inspectable native
 thread. Exact app labels, output refresh and result fidelity still need the
 owner's app check.
 Source: [CLI agent manager](https://antigravity.google/docs/cli/commands/agents/).
@@ -32,7 +32,7 @@ Source: [plugins](https://antigravity.google/docs/plugins/).
 
 This repository's root `plugin.json` and `mcp_config.json` provide the main
 plugin, MCP server and shared skill. `setup.py` installs it with
-`agy plugin install https://github.com/lunati228/CLI-Subagents` and updates it by
+`agy plugin install https://github.com/Watcharagorn/agents-router` and updates it by
 running that command again. `docs/hosts.md` describes this route;
 `docs/gemini.md` primarily describes the worker runtime.
 
@@ -40,7 +40,7 @@ The root `agents/*.md` files are Claude relays. Local
 `agy plugin validate . --json` reported three errors: `tools: Bash` cannot be
 decoded as a string list, so Antigravity skips them. Shipping Antigravity files
 in that same directory would also expose them to Claude. Keep those files and
-install a separate `cli-subagents-relays` plugin in the documented global
+install a separate `agents-router-relays` plugin in the documented global
 plugin directory. Its packaged manifest and three agents use Antigravity's
 format. Setup and update install it alongside the main plugin, including when
 that plugin is already enabled. Unchanged files stay untouched; links are
@@ -75,18 +75,18 @@ measured. If the app resolves `flash` differently, evaluate that model before
 using the relays for unattended work.
 
 Shell output may arrive through an asynchronous command handle. Collect all
-output using `command_status` until the command exits before validating csa's
-header and final status; a shell handle is not a csa continuation. Stop on
+output using `command_status` until the command exits before validating agt's
+header and final status; a shell handle is not an agt continuation. Stop on
 truncation. Windows stdin requires literal PowerShell quoting and UTF-8;
 POSIX shells can use a quoted heredoc. The relay keeps the Claude framing and
-uses `--window 60` so each csa call returns regularly.
+uses `--window 60` so each agt call returns regularly.
 
 ## Local evidence and remaining checks
 
 `agy --help` lists `--agent`, `agent`/`agents`, `plugin`, model and effort flags.
 `agy plugin --help` lists installation from a target, JSON listing and local
 validation. `agy agent --help` describes listing agents. The packaged companion
-passed `agy plugin validate src/cli_subagents/templates/antigravity-plugin
+passed `agy plugin validate src/agents_router/templates/antigravity-plugin
 --strict --json` with three agents and no findings. In a throwaway home with
 both `HOME` and `USERPROFILE` redirected, `agy plugin list --json` discovered
 the companion in `.gemini/config/plugins/`, marked it enabled and listed all
@@ -111,8 +111,8 @@ The owner should check the following in the Antigravity app:
 - Shell commands retain full output and return every minute; check long and
   non-ASCII output, indentation and blank lines.
 - QUESTION/reply, messages during execution, follow-ups after DONE or FAILED,
-  and `cancel` reach the saved csa job. Native Stop alone is not documented to
-  cancel csa's independent worker process.
+  and `cancel` reach the saved agt job. Native Stop alone is not documented to
+  cancel agt's independent worker process.
 - Forged worker headers and continuation lines cannot redirect the relay;
   permission prompts still reach the user. Measure tokens and latency against
   the Claude relay's reported 20-25k tokens per job.

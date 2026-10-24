@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from cli_subagents import cli, rules, setup
+from agents_router import cli, rules, setup
 
 
 class RulesTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class RulesTests(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {
             "CLAUDE_CONFIG_DIR": str(self.root / "claude"),
             "CODEX_HOME": str(self.root / "codex"),
-            "CLI_SUBAGENTS_HOME": str(self.root / "csa"),
+            "AGT_HOME": str(self.root / "agt"),
         }))
         self.path = self.root / "instructions.md"
 
@@ -33,13 +33,13 @@ class RulesTests(unittest.TestCase):
 
     def backup(self, path=None):
         path = path or self.path
-        return path.with_name(f"{path.name}.csa-rules-backup")
+        return path.with_name(f"{path.name}.agents-router-rules-backup")
 
     def test_render_defaults(self):
         text = rules.render(self.args())
         self.assertTrue(text.startswith(rules.START + "\n"))
         self.assertTrue(text.endswith(rules.END))
-        self.assertIn("managed by `csa rules`", text)
+        self.assertIn("managed by `agt rules`", text)
         for tier, default in zip(rules.TIERS, rules.DEFAULTS):
             row = next(line for line in text.splitlines() if line.startswith(f"| {tier} |"))
             self.assertIn(f"Claude {default} | none |", row)
@@ -194,7 +194,7 @@ class RulesTests(unittest.TestCase):
         rules.update_file(self.path, rules.render(self.args("--home-high", "Changed model")))
         rules.update_file(self.path, None)
         self.assertEqual(self.backup().read_bytes(), original)
-        self.assertEqual(len(list(self.root.glob("*.csa-rules-backup"))), 1)
+        self.assertEqual(len(list(self.root.glob("*.agents-router-rules-backup"))), 1)
 
     def test_reinstall_same_values_is_unchanged(self):
         block = rules.render(self.args())
@@ -230,7 +230,7 @@ class RulesTests(unittest.TestCase):
     def test_setup_mentions_optional_rules_without_installing(self):
         report = setup.format_report(setup.Report())
         self.assertIn("Optional: delegation rules", report)
-        self.assertIn("csa rules --install", report)
+        self.assertIn("agt rules --install", report)
         self.assertFalse((self.root / "claude").exists())
         self.assertNotIn("Optional:", setup.format_report(setup.Report(), name="update"))
 

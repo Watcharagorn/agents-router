@@ -9,12 +9,12 @@ import unittest
 from unittest.mock import patch
 
 from helpers import TempHome
-from cli_subagents import jobs
-from cli_subagents.config import Account, load_config, save_config
-from cli_subagents.runner import Runner
-from cli_subagents.runtimes.antigravity import AntigravityParser
-from cli_subagents.runtimes.claude import ClaudeParser
-from cli_subagents.runtimes.codex import CodexParser
+from agents_router import jobs
+from agents_router.config import Account, load_config, save_config
+from agents_router.runner import Runner
+from agents_router.runtimes.antigravity import AntigravityParser
+from agents_router.runtimes.claude import ClaudeParser
+from agents_router.runtimes.codex import CodexParser
 
 
 PARSERS = {"claude": ClaudeParser, "codex": CodexParser, "antigravity": AntigravityParser}
@@ -114,8 +114,8 @@ class ExitCodeJobTests(TempHome):
         super().setUp()
         here = Path(__file__).resolve().parent
         os.environ.update(
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(here / "fake_codex.py")]),
-            CLI_SUBAGENTS_AGY_COMMAND=json.dumps([sys.executable, str(here / "fake_agy.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(here / "fake_codex.py")]),
+            AGT_AGY_COMMAND=json.dumps([sys.executable, str(here / "fake_agy.py")]),
             CLAUDE_CONFIG_DIR=str(self.primary), CODEX_HOME=str(self.root / "codex"),
             HOME=str(self.root), USERPROFILE=str(self.root),
         )
@@ -225,7 +225,7 @@ class ExitCodeJobTests(TempHome):
         import io, queue
         lines = queue.Queue()
         lines.put(json.dumps({"event": "step_update", "step_update": {"step_index": 5, "step_type": "agent_response", "text_delta": "kept"}}).encode() + b"\n")
-        with patch("cli_subagents.runner.EARLY_DRAIN_SECONDS", 0.5):
+        with patch("agents_router.runner.EARLY_DRAIN_SECONDS", 0.5):
             started = time.monotonic()
             runner._drain(lines, [], parser, Account("a1", self.root), io.BytesIO())
             self.assertLess(time.monotonic() - started, 5)

@@ -16,8 +16,8 @@ import time
 import unittest
 from unittest import mock
 
-from cli_subagents.agy_review import commands, context, hook, install, paths, reviewer, rules, store
-from cli_subagents.agy_review.reviewer import CONTEXT_ENV, ROLE_ENV, ReviewError
+from agents_router.agy_review import commands, context, hook, install, paths, reviewer, rules, store
+from agents_router.agy_review.reviewer import CONTEXT_ENV, ROLE_ENV, ReviewError
 
 # A fake reviewer CLI. Behaviour comes from environment variables so one script serves every test.
 FAKE_SCRIPT = r'''
@@ -64,7 +64,7 @@ def make_link(link: Path, target: Path) -> bool:
 
 
 class TempCase(unittest.TestCase):
-    """A workspace, a user home and a CLI Subagents-style state folder with the worker's home inside it."""
+    """A workspace, a user home and an Agents Router-style state folder with the worker's home inside it."""
 
     state_name = "state"
 
@@ -87,7 +87,7 @@ class TempCase(unittest.TestCase):
         data = {
             "version": 1, "access": "edit", "sandbox": True, "workspaces": [str(self.ws)], "read_paths": [],
             "protected_paths": [str(self.state)], "agent_home": str(self.agent_home), "user_home": str(self.user_home),
-            "trusted_mcp_servers": ["csa-parent"], "reviewer": {"kind": "off"},
+            "trusted_mcp_servers": ["agt-parent"], "reviewer": {"kind": "off"},
         }
         data.update(over)
         return data
@@ -378,9 +378,9 @@ class RulesTests(TempCase):
     def test_agent_home_inside_protected_state(self) -> None:
         self._agent_home_checks()
 
-    # Production keeps the state in ~/.cli-subagents: skills and artifacts below the worker's home must still work.
-    def test_agent_home_under_dot_cli_subagents(self) -> None:
-        self.state_name = ".cli-subagents"
+    # Production keeps the state in ~/.agents-router: skills and artifacts below the worker's home must still work.
+    def test_agent_home_under_dot_agents_router(self) -> None:
+        self.state_name = ".agents-router"
         self.state = self.root / self.state_name
         self.agent_home = self.state / "homes" / "antigravity" / "primary"
         self.artifacts = self.agent_home / ".gemini" / "antigravity-cli" / "brain" / "conv1"
@@ -411,14 +411,14 @@ class RulesTests(TempCase):
         self.assertEqual(self.decide("run_command", args).action, "review")
 
     def test_mcp_servers(self) -> None:
-        trusted = {"ServerName": "csa-parent", "ToolName": "ask", "Arguments": {"q": "hi"}}
+        trusted = {"ServerName": "agt-parent", "ToolName": "ask", "Arguments": {"q": "hi"}}
         self.assertEqual(self.decide("call_mcp_tool", trusted).action, "approve")
         other = {"ServerName": "github", "ToolName": "search", "Arguments": {}}
         self.assertEqual(self.decide("call_mcp_tool", other).action, "review")
 
     def test_mcp_argument_with_secret_path_denied(self) -> None:
         key = self.user_home / ".ssh" / "id_rsa"
-        args = {"ServerName": "csa-parent", "ToolName": "send", "Arguments": {"file": str(key)}}
+        args = {"ServerName": "agt-parent", "ToolName": "send", "Arguments": {"file": str(key)}}
         self.assertEqual(self.decide("call_mcp_tool", args).action, "deny")
 
     def test_misc_tools(self) -> None:
@@ -816,11 +816,11 @@ class InstallTests(unittest.TestCase):
         merged = install.merged_hooks(user, "python -I run_hook.py")
         self.assertEqual(json.dumps(user, sort_keys=True), before)
         self.assertEqual(merged["mine"], user["mine"])
-        entry = merged["cli-subagents-review"]["PreToolUse"]
+        entry = merged["agents-router-review"]["PreToolUse"]
         self.assertEqual(len(entry), 1)
         self.assertEqual(entry[0]["matcher"], "*")
         self.assertEqual(entry[0]["hooks"], [{"type": "command", "command": "python -I run_hook.py", "timeout": 90}])
-        self.assertEqual(install.merged_hooks(None, "c")["cli-subagents-review"]["PreToolUse"][0]["matcher"], "*")
+        self.assertEqual(install.merged_hooks(None, "c")["agents-router-review"]["PreToolUse"][0]["matcher"], "*")
 
     def test_gated_settings(self) -> None:
         user = {"toolPermission": "always-proceed", "theme": "dark"}

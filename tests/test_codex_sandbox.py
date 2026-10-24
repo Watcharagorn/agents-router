@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents.config import load_config
-from cli_subagents.runtimes import codex
-from cli_subagents.runtimes.base import JobSpec
-from cli_subagents.runtimes.codex import CodexRuntime
+from agents_router.config import load_config
+from agents_router.runtimes import codex
+from agents_router.runtimes.base import JobSpec
+from agents_router.runtimes.codex import CodexRuntime
 
 OVERRIDE = 'windows.sandbox="unelevated"'
 
@@ -17,13 +17,13 @@ OVERRIDE = 'windows.sandbox="unelevated"'
 class WindowsSandboxTests(TempHome):
     def setUp(self):
         super().setUp()
-        os.environ["CLI_SUBAGENTS_CODEX_COMMAND"] = json.dumps([sys.executable, "fake"])
+        os.environ["AGT_CODEX_COMMAND"] = json.dumps([sys.executable, "fake"])
         self.windows = patch.object(codex, "_is_windows", return_value=True)
         self.windows.start()
 
     def tearDown(self):
         self.windows.stop()
-        os.environ.pop("CLI_SUBAGENTS_CODEX_COMMAND", None)
+        os.environ.pop("AGT_CODEX_COMMAND", None)
         super().tearDown()
 
     def argv(self, access="read", resume=None, config_text="", extra=""):
@@ -83,7 +83,7 @@ class WindowsSandboxTests(TempHome):
                 load_config()
 
     def test_network_access_off_survives_a_save(self):
-        from cli_subagents.config import save_config
+        from agents_router.config import save_config
         (self.home / "config.toml").write_text("[codex]\nnetwork_access = false\n", encoding="utf-8")
         save_config(load_config())
         self.assertFalse(load_config().runtime("codex").network_access)

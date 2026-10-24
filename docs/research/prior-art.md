@@ -1,10 +1,10 @@
-# Prior art for CLI Subagents
+# Prior art for Agents Router
 
 Observed 2026-10-14. It supersedes the competitor notes from the project's first research pass.
 
 ## Scope and method
 
-CLI Subagents lets the main session of a coding-agent host start subagents that run in other installed agent CLIs. Each worker runs headless in its own native harness under the user's own login. The project does not translate model APIs and does not relay OAuth tokens. The first use case is Claude Code delegating to `claude -p` processes under different Claude accounts.
+Agents Router lets the main session of a coding-agent host start subagents that run in other installed agent CLIs. Each worker runs headless in its own native harness under the user's own login. The project does not translate model APIs and does not relay OAuth tokens. The first use case is Claude Code delegating to `claude -p` processes under different Claude accounts.
 
 Stars and last-push dates come from the GitHub API on the observation date. "Last push" is the API `pushed_at` value, used as a proxy for last commit. Nothing was cloned, installed or run. Every behavioural claim comes from reading files or documentation, and each project carries an evidence label.
 

@@ -12,13 +12,13 @@ import unittest
 from unittest.mock import patch
 
 from helpers import TempHome
-from cli_subagents import accounts, cli, jobs, limits, quota, tools, usage_view
-from cli_subagents.config import QuotaPool, load_config, save_config
-from cli_subagents.fsutil import write_json
-from cli_subagents.runner import Runner
-from cli_subagents.runtimes.antigravity import AntigravityParser
-from cli_subagents.runtimes.base import AttemptResult, JobSpec, USAGE_LIMIT
-from cli_subagents.runtimes.codex import CodexRuntime
+from agents_router import accounts, cli, jobs, limits, quota, tools, usage_view
+from agents_router.config import QuotaPool, load_config, save_config
+from agents_router.fsutil import write_json
+from agents_router.runner import Runner
+from agents_router.runtimes.antigravity import AntigravityParser
+from agents_router.runtimes.base import AttemptResult, JobSpec, USAGE_LIMIT
+from agents_router.runtimes.codex import CodexRuntime
 
 STEPS = [[75, 4], [50, 3], [25, 2], [5, 1], [0, 0]]
 ARGON = "gemini-4-argon-high"
@@ -33,8 +33,8 @@ class QuotaTests(TempHome):
         self.codex_home.mkdir()
         os.environ.update(
             CLAUDE_CONFIG_DIR=str(self.primary), CODEX_HOME=str(self.codex_home),
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(Path(__file__).with_name("fake_codex.py"))]),
-            CLI_SUBAGENTS_AGY_COMMAND=json.dumps([sys.executable, str(Path(__file__).with_name("fake_agy.py"))]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(Path(__file__).with_name("fake_codex.py"))]),
+            AGT_AGY_COMMAND=json.dumps([sys.executable, str(Path(__file__).with_name("fake_agy.py"))]),
         )
         for key in ("FAKE_AGY_SCENARIO", "FAKE_AGY_LIMITED", "FAKE_CODEX_LIMITED", "FAKE_CODEX_SCENARIO"):
             os.environ.pop(key, None)
@@ -51,7 +51,7 @@ class QuotaTests(TempHome):
             item.failover = "on-limit"
             item.max_jobs_per_account = 10
             item.include_primary = False
-            from cli_subagents.config import Account
+            from agents_router.config import Account
             item.accounts = [Account(name, self.root / "homes" / name) for name in accounts_list]
             item.pools = [QuotaPool("argon", ["gemini-4-argon-*"], per_account=1, total=2, weekly_jobs=3, cooldown_minutes=120),
                           QuotaPool("flash", ["gemini-3.8-flash-*"], total=6)]
@@ -144,7 +144,7 @@ class QuotaTests(TempHome):
 
     def test_best_regular_account_uses_its_tightest_open_window(self):
         config = self.configure(steps=True)
-        from cli_subagents.config import Account
+        from agents_router.config import Account
         item = config.runtime("codex")
         item.include_primary = True
         item.accounts = [Account("paid", self.root / "paid"), Account("spare", self.root / "spare", fallback=True)]
@@ -452,7 +452,7 @@ class QuotaTests(TempHome):
         self.assertIn("Argon: 1 running of 1, 2 of 3 this week", output.getvalue())
 
     def test_follow_header_shows_room_when_quota_controls_are_configured(self):
-        from cli_subagents.follow import Follower
+        from agents_router.follow import Follower
 
         self.configure(steps=True, pools=True)
         self.usage()
@@ -461,7 +461,7 @@ class QuotaTests(TempHome):
         follower = Follower(job["job_id"], None, 0, output)
         follower.header()
         lines = output.getvalue().splitlines()
-        self.assertTrue(lines[0].startswith("[csa] CLI Subagents"))
+        self.assertTrue(lines[0].startswith("[agt] Agents Router"))
         self.assertTrue(lines[1].startswith("| Room:"))
         self.assertIn("max_jobs_by_room", lines[1])
         self.assertIn("Argon:", lines[1])

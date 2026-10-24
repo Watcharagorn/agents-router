@@ -1,15 +1,15 @@
 {
-  "name": "cli-subagents",
-  "version": "0.2.13",
+  "name": "agents-router",
+  "version": "0.3.0",
   "description": "Start subagents in other installed agent CLIs (Claude Code first) under your own accounts, with one shared setup of MCP servers, plugins, skills and settings across all of them.",
-  "author": { "name": "lunati", "url": "https://github.com/lunati228" },
-  "homepage": "https://github.com/lunati228/CLI-Subagents",
-  "repository": "https://github.com/lunati228/CLI-Subagents",
+  "author": { "name": "Watcharagorn", "url": "https://github.com/Watcharagorn" },
+  "homepage": "https://github.com/Watcharagorn/agents-router",
+  "repository": "https://github.com/Watcharagorn/agents-router",
   "license": "Apache-2.0",
   "keywords": ["subagents", "multi-account", "mcp", "delegation", "claude-code", "codex"],
   "mcpServers": {
-    "cli-subagents": {
-      "command": "csa",
+    "agents-router": {
+      "command": "agt",
       "args": ["mcp"]
     }
   }

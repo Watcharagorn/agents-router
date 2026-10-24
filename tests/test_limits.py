@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import accounts, jobs, limits, plans, tools, usage_view
-from cli_subagents.config import dump_config, load_config, save_config
+from agents_router import accounts, jobs, limits, plans, tools, usage_view
+from agents_router.config import dump_config, load_config, save_config
 
 
 class LimitTests(TempHome):
@@ -210,7 +210,7 @@ class LimitTests(TempHome):
     def test_accounts_report_shows_limits_and_sources(self):
         self.codex_config(primary='plan = "plus"')
         self.active()
-        with patch.dict(os.environ, {"CLI_SUBAGENTS_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
+        with patch.dict(os.environ, {"AGT_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
             entry = tools.account_report("codex")["accounts"][0]
         self.assertEqual(entry["running_jobs"], 1)
         self.assertEqual(entry["limits"]["max_jobs"], 4)
@@ -262,7 +262,7 @@ class UsageViewTests(TempHome):
         codex_home = self.root / "codex"
         (self.home / "config.toml").write_text(f'[codex]\nprimary = {json.dumps(str(codex_home))}\n', encoding="utf-8")
         self.rollout(codex_home, 85.0)
-        with patch.dict(os.environ, {"CLI_SUBAGENTS_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
+        with patch.dict(os.environ, {"AGT_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
             entry = tools.account_report("codex")["accounts"][0]
         self.assertEqual(entry["usage"], {"five_hour": 85})
         self.assertRegex(entry["usage_resets"]["five_hour"], r"^\d{4}-\d\d-\d\d \d\d:\d\d \(in (1 h 0 min|59 min)\)$")

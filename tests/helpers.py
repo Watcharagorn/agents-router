@@ -17,7 +17,7 @@ def stop_job_runners(home: Path, wait: float = 2.0) -> None:
     belongs to the same process (checked by start time), never a bare PID.
     """
 
-    from cli_subagents.fsutil import kill_tree, read_json, same_process
+    from agents_router.fsutil import kill_tree, read_json, same_process
 
     active = []
     for folder in (home / "jobs").glob("*"):
@@ -42,13 +42,13 @@ def stop_job_runners(home: Path, wait: float = 2.0) -> None:
 
 
 class TempHome(unittest.TestCase):
-    """Isolated CLI_SUBAGENTS_HOME, primary setup and fake claude binary."""
+    """Isolated AGT_HOME, primary setup and fake claude binary."""
 
     def setUp(self):
         # A job runner that is still finishing can hold its log open for a moment on Windows.
         self._temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.root = Path(self._temp.name).resolve()
-        self.home = self.root / "csa"
+        self.home = self.root / "agt"
         self.primary = self.root / "primary"
         self.project = self.root / "project"
         for folder in (self.home, self.primary, self.project):
@@ -57,14 +57,14 @@ class TempHome(unittest.TestCase):
         self._env = patch.dict(
             os.environ,
             {
-                "CLI_SUBAGENTS_HOME": str(self.home),
-                "CLI_SUBAGENTS_CLAUDE_COMMAND": json.dumps([sys.executable, str(FAKE_CLAUDE)]),
+                "AGT_HOME": str(self.home),
+                "AGT_CLAUDE_COMMAND": json.dumps([sys.executable, str(FAKE_CLAUDE)]),
                 "FAKE_CLAUDE_RECORD": str(self.record),
                 "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
             },
         )
         self._env.start()
-        for key in ("CLI_SUBAGENTS_DEPTH", "FAKE_CLAUDE_LIMITED", "FAKE_CLAUDE_SCENARIO"):
+        for key in ("AGT_DEPTH", "FAKE_CLAUDE_LIMITED", "FAKE_CLAUDE_SCENARIO"):
             os.environ.pop(key, None)
 
     def tearDown(self):

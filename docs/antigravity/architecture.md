@@ -2,7 +2,7 @@
 
 Superseded: the core runtime's review gate ([Safety](../gemini.md#safety), [research](../research/antigravity-auto-review.md)) replaces this adapter's reviewer and command broker.
 
-This describes the code in [`adapters/antigravity/`](../../adapters/antigravity/) as it works today, limits included. It is the first runtime adapter of CLI Subagents and currently ships its own MCP server. The plan for turning it into one adapter behind a shared server is in [design.md](../design.md).
+This describes the code in [`adapters/antigravity/`](../../adapters/antigravity/) as it works today, limits included. It is the first runtime adapter of Agents Router and currently ships its own MCP server. The plan for turning it into one adapter behind a shared server is in [design.md](../design.md).
 
 ## Execution path
 

@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import cli, hooks, jobs, messages
-from cli_subagents.follow import (
+from agents_router import cli, hooks, jobs, messages
+from agents_router.follow import (
     AntigravityDescriber,
     ClaudeDescriber,
     CodexDescriber,
@@ -19,7 +19,7 @@ from cli_subagents.follow import (
     read_lines,
 )
 
-FOLLOW_RE = re.compile(r"^csa follow (\S+) --from (\d+) # csa-token ([0-9a-f]{32})$", re.MULTILINE)
+FOLLOW_RE = re.compile(r"^agt follow (\S+) --from (\d+) # agt-token ([0-9a-f]{32})$", re.MULTILINE)
 FRAME_RE = re.compile(r" · job ([a-z0-9-]+) · token ([0-9a-f]{32})$")
 
 
@@ -172,7 +172,7 @@ class ReadLinesTests(unittest.TestCase):
 
 
 class FollowTests(TempHome):
-    def csa(self, *argv, stdin=None):
+    def agt(self, *argv, stdin=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), patch("sys.stdin", io.StringIO(stdin or "")):
             code = cli.main(list(argv))
@@ -185,21 +185,21 @@ class FollowTests(TempHome):
         """Event and account lines: everything but the header and the end marker."""
 
         lines = text.splitlines()
-        self.assertTrue(lines[0].startswith("[csa] CLI Subagents · Claude Code"), lines)
+        self.assertTrue(lines[0].startswith("[agt] Agents Router · Claude Code"), lines)
         end = next((index for index, line in enumerate(lines) if line in
                     ("===== RESULT =====", "===== QUESTION =====")), len(lines) - 1)
         return [line[2:] for line in lines[1:end] if line.startswith("| ")]
 
     def test_run_follow_ends_with_done_and_the_result(self):
         self.write_config(accounts=("a1",))
-        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "--model", "haiku", "do the task")
+        code, text = self.agt("run", "--follow", "--cwd", str(self.project), "--model", "haiku", "do the task")
         self.assertEqual(code, 0, text)
         lines = text.splitlines()
-        self.assertRegex(lines[0], r"^\[csa\] CLI Subagents · Claude Code · model haiku · access edit · (account a1 · )?job \S+ · token [0-9a-f]{32}$")
+        self.assertRegex(lines[0], r"^\[agt\] Agents Router · Claude Code · model haiku · access edit · (account a1 · )?job \S+ · token [0-9a-f]{32}$")
         self.assertIn("| tool: Read", lines)
         self.assertIn("| says: done on a1", lines)
         self.assertTrue(any(line.startswith("| started: Claude Code 9.9.9 · claude-haiku-5-5 · 1 MCP server") for line in lines))
-        self.assertRegex(lines[-1], r"^\[csa\] DONE · success · \d+s · 1 tool call · account a1 · job \S+ · token [0-9a-f]{32}$")
+        self.assertRegex(lines[-1], r"^\[agt\] DONE · success · \d+s · 1 tool call · account a1 · job \S+ · token [0-9a-f]{32}$")
         self.assertEqual(lines[-4:-1], ["===== RESULT =====", "| done on a1", "===== END RESULT ====="])
         job_id, token = FRAME_RE.search(lines[0]).groups()
         self.assertEqual(FRAME_RE.search(lines[-1]).groups(), (job_id, token))
@@ -208,7 +208,7 @@ class FollowTests(TempHome):
         self.assertFalse(jobs.claim_delivery(job_id))
         self.assertEqual(hooks.pending_jobs(str(self.project)), [])
         # A plain follow of the finished job prints the whole history again.
-        code, again = self.csa("follow", job_id)
+        code, again = self.agt("follow", job_id)
         # The replay names the account in its header instead of in a line of its own.
         self.assertIn(" · account a1 · ", again.splitlines()[0])
         live = [line for line in self.body(text) if line != "running on account a1"]
@@ -217,22 +217,22 @@ class FollowTests(TempHome):
 
     def test_message_follow_continues_finished_conversation_and_follows_to_done(self):
         self.write_config(accounts=("a1",))
-        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "first task")
+        code, text = self.agt("run", "--follow", "--cwd", str(self.project), "first task")
         self.assertEqual(code, 0, text)
         previous, previous_token = FRAME_RE.search(text.splitlines()[0]).groups()
         session = jobs.read_status(previous)["session_id"]
 
         for prompt in ("one more thing\nkeep the context", "and another follow-up"):
             # Even an offset beyond the new log must be discarded on continuation.
-            code, text = self.csa("message", previous, "--follow", "--from", "9999999", "-", stdin=prompt)
+            code, text = self.agt("message", previous, "--follow", "--from", "9999999", "-", stdin=prompt)
             self.assertEqual(code, 0, text)
             lines = text.splitlines()
-            self.assertTrue(lines[0].startswith("[csa] CLI Subagents"), text)
+            self.assertTrue(lines[0].startswith("[agt] Agents Router"), text)
             current, token = FRAME_RE.search(lines[0]).groups()
             self.assertNotEqual(current, previous)
             self.assertNotEqual(token, previous_token)
             self.assertEqual(FRAME_RE.search(lines[-1]).groups(), (current, token))
-            self.assertTrue(lines[-1].startswith("[csa] DONE"), text)
+            self.assertTrue(lines[-1].startswith("[agt] DONE"), text)
             self.assertIn("| tool: Read", lines)
             self.assertIn("| says: done on a1", lines)
             self.assertEqual(result_body(text), "done on a1")
@@ -249,13 +249,13 @@ class FollowTests(TempHome):
         job_id = self.start()
         self.assertEqual(jobs.wait_for(job_id, 30)["outcome"], "success")
         os.environ["FAKE_CLAUDE_SCENARIO"] = "auth"
-        code, text = self.csa("message", job_id, "--follow", "-", stdin="follow-up")
+        code, text = self.agt("message", job_id, "--follow", "-", stdin="follow-up")
         self.assertEqual(code, 1, text)
         lines = text.splitlines()
         current, token = FRAME_RE.search(lines[0]).groups()
         self.assertNotEqual(current, job_id)
         self.assertEqual(FRAME_RE.search(lines[-1]).groups(), (current, token))
-        self.assertTrue(lines[-1].startswith("[csa] FAILED"), text)
+        self.assertTrue(lines[-1].startswith("[agt] FAILED"), text)
         self.assertIn("Invalid API key", lines[-1])
         self.assertEqual(result_body(text), "")
 
@@ -266,15 +266,15 @@ class FollowTests(TempHome):
         event = {"type": "assistant", "message": {"content": [{"type": "text", "text": "already shown"}]}}
         events.write_bytes((json.dumps(event) + "\n").encode())
         jobs.update_status(job_id, state="running")
-        _, first = self.csa("follow", job_id, "--max-wait", "0")
+        _, first = self.agt("follow", job_id, "--max-wait", "0")
         offset = FOLLOW_RE.search(first).group(2)
         self.assertIn("| says: already shown", first)
 
-        code, text = self.csa("message", job_id, "--follow", "--from", offset, "--max-wait", "0",
+        code, text = self.agt("message", job_id, "--follow", "--from", offset, "--max-wait", "0",
                               "-", stdin="also update the docs")
         self.assertEqual(code, 0, text)
         self.assertEqual(FRAME_RE.search(text.splitlines()[0]).group(1), job_id)
-        self.assertTrue(text.splitlines()[-1].startswith("[csa] STILL RUNNING"), text)
+        self.assertTrue(text.splitlines()[-1].startswith("[agt] STILL RUNNING"), text)
         self.assertEqual(FOLLOW_RE.search(text).group(2), offset)
         self.assertNotIn("already shown", text)
         self.assertEqual([item["text"] for item in messages.take_for_worker(job_id)], ["also update the docs"])
@@ -287,7 +287,7 @@ class FollowTests(TempHome):
         for options, error in ((("--from", "5"), "--from requires --follow"),
                                (("--follow", "--from", "-1"), "--from must be 0 or more")):
             with self.subTest(options=options), contextlib.redirect_stderr(io.StringIO()) as err:
-                code, _ = self.csa("message", job_id, *options, "-", stdin="do not deliver")
+                code, _ = self.agt("message", job_id, *options, "-", stdin="do not deliver")
                 self.assertEqual(code, 2)
                 self.assertIn(error, err.getvalue())
                 self.assertEqual(messages.take_for_worker(job_id), [])
@@ -296,14 +296,14 @@ class FollowTests(TempHome):
     def test_failed_job(self):
         self.write_config(accounts=("a1",))
         os.environ["FAKE_CLAUDE_SCENARIO"] = "auth"
-        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "x")
+        code, text = self.agt("run", "--follow", "--cwd", str(self.project), "x")
         self.assertEqual(code, 1, text)
-        self.assertTrue(text.splitlines()[-1].startswith("[csa] FAILED · auth · Invalid API key · Please run /login · job "))
+        self.assertTrue(text.splitlines()[-1].startswith("[agt] FAILED · auth · Invalid API key · Please run /login · job "))
 
     def test_failover_prints_the_account_switch(self):
         self.write_config(accounts=("a1", "a2"))
         os.environ["FAKE_CLAUDE_LIMITED"] = "a1"
-        code, text = self.csa("run", "--follow", "--cwd", str(self.project), "x")
+        code, text = self.agt("run", "--follow", "--cwd", str(self.project), "x")
         self.assertEqual(code, 0, text)
         body = self.body(text)
         limit = body.index("usage limit reached on this account")
@@ -320,13 +320,13 @@ class FollowTests(TempHome):
         seen, calls, offset = [], 0, None
         while True:
             argv = ["follow", job_id, "--max-wait", "0.3"] + (["--from", str(offset)] if offset is not None else [])
-            code, text = self.csa(*argv)
+            code, text = self.agt(*argv)
             calls += 1
             self.assertEqual(code, 0, text)
             seen += self.body(text)
-            if "[csa] DONE" in text:
+            if "[agt] DONE" in text:
                 break
-            self.assertIn("[csa] STILL RUNNING after", text)
+            self.assertIn("[agt] STILL RUNNING after", text)
             match = FOLLOW_RE.search(text)
             self.assertEqual(match.group(1), job_id)
             self.assertEqual(text.splitlines()[-2], match.group(0))
@@ -334,7 +334,7 @@ class FollowTests(TempHome):
             offset = int(match.group(2))
             self.assertLess(calls, 100)
         self.assertGreater(calls, 1)
-        _, full = self.csa("follow", job_id)
+        _, full = self.agt("follow", job_id)
         # A live follow may announce the first account before a replay's header does.
         self.assertEqual([line for line in seen if line != "running on account a1"], self.body(full))
         self.assertEqual(sum(line.startswith("started:") for line in seen), 1)
@@ -345,29 +345,29 @@ class FollowTests(TempHome):
         job_id = self.start()
         question = messages.post_from_worker(job_id, "Tabs or spaces?", kind="question")
         messages.post_from_worker(job_id, "halfway there")
-        code, text = self.csa("follow", job_id)
+        code, text = self.agt("follow", job_id)
         self.assertEqual(code, 0, text)
         lines = text.splitlines()
         marker = lines.index("===== QUESTION =====")
         self.assertEqual(lines[marker + 1 : marker + 4], ["| Tabs or spaces?", "===== END QUESTION =====", "Answer with:"])
         token = FRAME_RE.search(lines[0]).group(2)
-        self.assertIn(f"csa message {job_id} --reply-to {question['id']} - # csa-token {token}", lines)
-        self.assertTrue(lines[-1].startswith(f"[csa] QUESTION from the worker (id {question['id']}) · job {job_id}"))
+        self.assertIn(f"agt message {job_id} --reply-to {question['id']} - # agt-token {token}", lines)
+        self.assertTrue(lines[-1].startswith(f"[agt] QUESTION from the worker (id {question['id']}) · job {job_id}"))
         self.assertEqual(lines[-3], "Then keep watching with:")
         offset = int(FOLLOW_RE.search(text).group(2))
         # The note after the question waits for the next follow.
         self.assertNotIn("| note for the main session: halfway there", lines)
 
-        code, reply = self.csa("message", job_id, "--reply-to", question["id"], "-", stdin="Spaces, four of them.\n")
+        code, reply = self.agt("message", job_id, "--reply-to", question["id"], "-", stdin="Spaces, four of them.\n")
         self.assertEqual(code, 0, reply)
         self.assertEqual(messages.answers(job_id)[question["id"]], "Spaces, four of them.")
         messages.take_for_worker(job_id)  # the worker's ask_parent picks the answer up
 
-        code, text = self.csa("follow", job_id, "--from", str(offset))
+        code, text = self.agt("follow", job_id, "--from", str(offset))
         self.assertEqual(code, 0, text)
         self.assertNotIn("QUESTION", text)
         self.assertIn("| note for the main session: halfway there", text.splitlines())
-        self.assertIn("[csa] DONE · success", text)
+        self.assertIn("[agt] DONE · success", text)
         # Both worker messages reached the main session through the follower.
         self.assertFalse(messages.has_new_for_host(job_id))
 
@@ -376,16 +376,16 @@ class FollowTests(TempHome):
         os.environ["FAKE_CLAUDE_DELAY"] = "2"
         job_id = self.start()
         messages.post_from_worker(job_id, "Which branch?", kind="question")
-        _, text = self.csa("follow", job_id)
-        self.assertIn("[csa] QUESTION", text)
+        _, text = self.agt("follow", job_id)
+        self.assertIn("[agt] QUESTION", text)
         offset = FOLLOW_RE.search(text).group(2)
         # Not answered, but already handed on: keep watching instead of stopping again.
-        code, text = self.csa("follow", job_id, "--from", offset)
+        code, text = self.agt("follow", job_id, "--from", offset)
         self.assertEqual(code, 0, text)
         self.assertNotIn("QUESTION", text)
-        self.assertIn("[csa] DONE · success", text)
+        self.assertIn("[agt] DONE · success", text)
         # The full history shows the question as a plain line.
-        _, full = self.csa("follow", job_id)
+        _, full = self.agt("follow", job_id)
         self.assertIn("| asked the main session: Which branch?", full.splitlines())
 
     def test_partial_lines_wait_and_offsets_resume(self):
@@ -402,7 +402,7 @@ class FollowTests(TempHome):
         self.assertNotIn("| says: hello", lines)
         offset = len((init + "not json\n").encode())
         self.assertEqual(FOLLOW_RE.search(out.getvalue()).groups()[:2], (job_id, str(offset)))
-        self.assertTrue(lines[-1].startswith("[csa] STILL RUNNING"))
+        self.assertTrue(lines[-1].startswith("[agt] STILL RUNNING"))
 
         with open(events, "ab") as handle:
             handle.write(said[10:].encode())
@@ -422,21 +422,21 @@ class FollowTests(TempHome):
         self.assertEqual(follow(job_id, offset, 0, out), 0)
         lines = out.getvalue().splitlines()
         self.assertNotIn("| says: hello", lines)
-        self.assertTrue(lines[-1].startswith("[csa] DONE · success · 1m 15s · 0 tool calls · account a1 · job "))
+        self.assertTrue(lines[-1].startswith("[agt] DONE · success · 1m 15s · 0 tool calls · account a1 · job "))
         self.assertFalse(jobs.is_pending(job_id))
 
     def test_antigravity_run(self):
         fake = os.path.join(os.path.dirname(__file__), "fake_agy.py")
-        os.environ["CLI_SUBAGENTS_AGY_COMMAND"] = json.dumps([sys.executable, fake])
-        code, text = self.csa("run", "--follow", "--runtime", "antigravity", "--cwd", str(self.project), "--model", "gemini-test", "x")
+        os.environ["AGT_AGY_COMMAND"] = json.dumps([sys.executable, fake])
+        code, text = self.agt("run", "--follow", "--runtime", "antigravity", "--cwd", str(self.project), "--model", "gemini-test", "x")
         self.assertEqual(code, 0, text)
         lines = text.splitlines()
-        self.assertTrue(lines[0].startswith("[csa] CLI Subagents · Antigravity · model gemini-test · access edit"), lines)
+        self.assertTrue(lines[0].startswith("[agt] Agents Router · Antigravity · model gemini-test · access edit"), lines)
         self.assertEqual(
             [line for line in lines[1:lines.index("===== RESULT =====")] if not line.startswith("| running")],
             ["| started: Antigravity · gemini-test", "| step: tool_call", "| says: gemini done"],
         )
-        self.assertRegex(lines[-1], r"^\[csa\] DONE · success · \d+s · 1 tool call · account primary · job \S+ · token [0-9a-f]{32}$")
+        self.assertRegex(lines[-1], r"^\[agt\] DONE · success · \d+s · 1 tool call · account primary · job \S+ · token [0-9a-f]{32}$")
         self.assertEqual(result_body(text), "gemini done")
 
     def test_explicit_offset_zero_does_not_replay_messages(self):
@@ -444,11 +444,11 @@ class FollowTests(TempHome):
         os.environ["FAKE_CLAUDE_DELAY"] = "2"
         job_id = self.start()
         messages.post_from_worker(job_id, "first note")
-        _, text = self.csa("follow", job_id, "--max-wait", "0")
+        _, text = self.agt("follow", job_id, "--max-wait", "0")
         self.assertIn("| note for the main session: first note", text.splitlines())
-        _, text = self.csa("follow", job_id, "--from", "0")
+        _, text = self.agt("follow", job_id, "--from", "0")
         self.assertNotIn("first note", text)
-        self.assertIn("[csa] DONE", text)
+        self.assertIn("[agt] DONE", text)
 
     def test_antigravity_text_split_across_follows(self):
         self.write_config(accounts=("a1",))

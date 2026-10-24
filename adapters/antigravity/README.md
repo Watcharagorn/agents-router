@@ -1,6 +1,6 @@
 # Antigravity adapter (superseded)
 
-The original, standalone MCP server for [Antigravity CLI](https://www.antigravity.google/docs/cli/) (`agy`). The core of CLI Subagents now runs AGY directly as `runtime: "antigravity"` ([guide](../../docs/gemini.md)), and its review gate ([Safety](../../docs/gemini.md#safety), code in [`src/cli_subagents/agy_review/`](../../src/cli_subagents/agy_review/)) replaces this adapter's reviewer.
+The original, standalone MCP server for [Antigravity CLI](https://www.antigravity.google/docs/cli/) (`agy`). The core of Agents Router now runs AGY directly as `runtime: "antigravity"` ([guide](../../docs/gemini.md)), and its review gate ([Safety](../../docs/gemini.md#safety), code in [`src/agents_router/agy_review/`](../../src/agents_router/agy_review/)) replaces this adapter's reviewer.
 
 What the core took over, and how it changed:
 

@@ -1,4 +1,4 @@
-# Installing CLI Subagents through an agent
+# Installing Agents Router through an agent
 
 Research date: 2026-10-14. All pages were fetched on that date and treated as data. Nothing fetched was run. Where a fetch tool summarised a page, the claim is marked as summarised, so re-check it against the page before quoting it.
 
@@ -11,11 +11,11 @@ A user asked their Claude Code agent to "integrate this repo into my setup". The
 Claude Code docs, "Install and manage plugins" and "Plugin commands reference":
 
 - Plugins can be installed from a shell with no session. `claude plugin marketplace add <owner/repo>` and `claude plugin install <plugin>@<marketplace>` both exist, and `claude plugin list` shows the result. The docs describe this as the route for setup scripts.
-- One command can do both steps: `claude plugin install cli-subagents --marketplace lunati228/CLI-Subagents`. It needs Claude Code 2.1.292 or later. In a session the same flag works from 2.1.275, but the session form opens a details panel and asks for a scope, so an agent cannot finish it.
+- One command can do both steps: `claude plugin install agents-router --marketplace Watcharagorn/agents-router`. It needs Claude Code 2.1.292 or later. In a session the same flag works from 2.1.275, but the session form opens a details panel and asks for a scope, so an agent cannot finish it.
 - The default scope is user. Plugins installed from a shell load the next time Claude Code starts, or after `/reload-plugins` in an open session.
 - `/plugin` does not run in `claude -p`; Claude replies that it is not available. So a worker or sandbox running `claude -p` can never run `/plugin install`. This matches the sandbox test.
 - Marketplaces added from the shell are added without a confirmation step. Organisation policy checks still apply.
-- Some plugins install by running a command named in their marketplace entry. Claude Code asks you to accept it. `--yes` skips that prompt, but the docs say `--yes` is ignored when the command runs inside a Claude Code session, for example from the Bash tool. CLI Subagents does not use a command source, so this does not apply.
+- Some plugins install by running a command named in their marketplace entry. Claude Code asks you to accept it. `--yes` skips that prompt, but the docs say `--yes` is ignored when the command runs inside a Claude Code session, for example from the Bash tool. Agents Router does not use a command source, so this does not apply.
 - Claude Code adds Anthropic's official marketplace itself on the first interactive start. Other marketplaces must be added.
 
 Claude Code docs, MCP page:
@@ -70,15 +70,15 @@ Projects avoid it in four ways:
 
 Everyone shares the login step. Every project in the list leaves CLI login to the user, and several add a one-time manual `claude --dangerously-skip-permissions` run to accept terms. That one cannot be automated and the other projects do not try.
 
-### 2. What CLI Subagents should add
+### 2. What Agents Router should add
 
 In order of value:
 
-1. Put the shell commands in the README and in `docs/hosts.md`, above or beside the slash command. For Claude Code: `claude plugin install cli-subagents --marketplace lunati228/CLI-Subagents` (2.1.292+) or the two-step form for older versions: `claude plugin marketplace add lunati228/CLI-Subagents` then `claude plugin install cli-subagents@cli-subagents`. Add `claude plugin list` as the check and a note that a running session needs `/reload-plugins` or a restart. The Codex and Antigravity commands are already terminal commands; keep them.
-2. Add an "Install with your agent" README section with a short copy-paste prompt. It should name the exact commands, so the auto-mode classifier sees the user asking for those exact actions. The prompt should say: install `csa` with pipx, run `csa setup`, register extra accounts, run `csa doctor`, and stop and tell me when a browser login is needed.
-3. Add `csa setup` (or `csa install-plugin`). It detects which of `claude`, `codex` and `agy` are on PATH, runs the matching plugin commands for each, falls back to `claude mcp add` / `codex mcp add` / `agy` equivalents when the plugin route fails, imports existing account folders (for example `~/.claude-*`), runs `csa doctor`, and prints a list of what is left for the user (logins). It should print each command before running it, support `--dry-run` and `--host`, and stay idempotent. Reasons to prefer a script over a prompt: it works the same in every host, and the classifier evaluates one command, not a chain.
+1. Put the shell commands in the README and in `docs/hosts.md`, above or beside the slash command. For Claude Code: `claude plugin install agents-router --marketplace Watcharagorn/agents-router` (2.1.292+) or the two-step form for older versions: `claude plugin marketplace add Watcharagorn/agents-router` then `claude plugin install agents-router@agents-router`. Add `claude plugin list` as the check and a note that a running session needs `/reload-plugins` or a restart. The Codex and Antigravity commands are already terminal commands; keep them.
+2. Add an "Install with your agent" README section with a short copy-paste prompt. It should name the exact commands, so the auto-mode classifier sees the user asking for those exact actions. The prompt should say: install `agt` with pipx, run `agt setup`, register extra accounts, run `agt doctor`, and stop and tell me when a browser login is needed.
+3. Add `agt setup` (or `agt install-plugin`). It detects which of `claude`, `codex` and `agy` are on PATH, runs the matching plugin commands for each, falls back to `claude mcp add` / `codex mcp add` / `agy` equivalents when the plugin route fails, imports existing account folders (for example `~/.claude-*`), runs `agt doctor`, and prints a list of what is left for the user (logins). It should print each command before running it, support `--dry-run` and `--host`, and stay idempotent. Reasons to prefer a script over a prompt: it works the same in every host, and the classifier evaluates one command, not a chain.
 4. Add `AGENTS.md` (read by Codex and others) and a `CLAUDE.md` pointer, and an `llms-install.md` for Cline-style agents, all short and pointing to the same steps. Do not rely on llms.txt alone; no evidence any of the CLIs fetches it on its own.
-5. Add a minimal MCP-only path as the fallback: `claude mcp add --scope user cli-subagents -- csa mcp` and `codex mcp add cli-subagents -- csa mcp`. It skips the plugin entirely, so the agent can finish even when the plugin step is blocked. State what is lost: the skill, the slash command and the wake-up hooks.
+5. Add a minimal MCP-only path as the fallback: `claude mcp add --scope user agents-router -- agt mcp` and `codex mcp add agents-router -- agt mcp`. It skips the plugin entirely, so the agent can finish even when the plugin step is blocked. State what is lost: the skill, the slash command and the wake-up hooks.
 6. Avoid `curl | bash` as the install route: auto mode blocks it by default.
 
 ### 3. What Claude Code will do on its own, with one approval, or never
@@ -88,7 +88,7 @@ These are based on the docs; the auto-mode column for plugin commands is not con
 | Step | Auto mode | Notes |
 |---|---|---|
 | `pipx install git+https://github.com/...` | Observed to run in the sandbox test | Installing from a user-named repo; the user supplied the link |
-| `csa accounts add`, `csa doctor`, other local `csa` commands | Runs | Local files, no external effect |
+| `agt accounts add`, `agt doctor`, other local `agt` commands | Runs | Local files, no external effect |
 | `claude plugin marketplace add` and `claude plugin install` from the Bash tool | Unknown, probably allowed or one approval | Not in the block list or the allow list. The user naming the repo and the commands makes it more likely to pass. Needs a local test. If it stops, one approval click should be enough |
 | `codex plugin ...`, `agy plugin install <url>` from Bash | Same as above | Same classifier, same uncertainty |
 | `claude mcp add` | Probably runs or needs one approval | Writes to `~/.claude.json`; a project-scoped `.mcp.json` entry additionally needs approval in the next interactive session |
@@ -97,12 +97,12 @@ These are based on the docs; the auto-mode column for plugin commands is not con
 | Accepting the terms prompt on first run | Impossible | Interactive, one time |
 | Restarting the session after a plugin install | User | Or `/reload-plugins` typed by the user |
 
-The user must also stay in control of one thing: `--dangerously-skip-permissions` anywhere in the install flow would be blocked by the classifier and is a bad idea; CLI Subagents should not ask for it.
+The user must also stay in control of one thing: `--dangerously-skip-permissions` anywhere in the install flow would be blocked by the classifier and is a bad idea; Agents Router should not ask for it.
 
 ## Gaps and things to test
 
 - Run `claude plugin marketplace add` and `claude plugin install` from an auto-mode session and a manual session on a clean profile. Record the outcome and the exact classifier message if blocked.
-- Check that `claude plugin install cli-subagents --marketplace lunati228/CLI-Subagents` works on 2.1.292+ and that the two-step form works on older versions.
+- Check that `claude plugin install agents-router --marketplace Watcharagorn/agents-router` works on 2.1.292+ and that the two-step form works on older versions.
 - Check whether Codex's plugin commands and `agy plugin install` are accepted by their own sandboxes when run by a Codex or Antigravity agent.
 - The summaries of the nine third-party READMEs came from a fetch tool that paraphrases. Re-read any claim you intend to quote.
 

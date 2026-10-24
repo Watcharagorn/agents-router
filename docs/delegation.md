@@ -1,8 +1,8 @@
 # Delegation rules
 
-`csa rules` prints a ready-made set of instructions for your main agent.
+`agt rules` prints a ready-made set of instructions for your main agent.
 It tells the agent which models to use, when to try another CLI, and how many helpers to start.
-You choose the models. Installing the package or running `csa setup` does not install these rules.
+You choose the models. Installing the package or running `agt setup` does not install these rules.
 
 The rules are opt-in because they change how your agent delegates work.
 Review them before installing. An installing agent should explain them and ask which models you want.
@@ -10,17 +10,17 @@ Review them before installing. An installing agent should explain them and ask w
 ## Preview and install
 
 ```bash
-csa rules
-csa rules --show --target codex
-csa rules --install --target claude --dry-run
-csa rules --install --target claude
+agt rules
+agt rules --show --target codex
+agt rules --install --target claude --dry-run
+agt rules --install --target claude
 ```
 
 The default target is `claude`. Choose `codex` or `antigravity` for those hosts.
 You can also pass the path to an instruction file:
 
 ```bash
-csa rules --install --target ./AGENTS.md
+agt rules --install --target ./AGENTS.md
 ```
 
 Named targets use these files:
@@ -58,14 +58,14 @@ Quote model text that contains spaces. It can include an effort level.
 For example:
 
 ```bash
-csa rules --show --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high" --try-high "Sol 6.1 xhigh" --try-max none
+agt rules --show --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high" --try-high "Sol 6.1 xhigh" --try-max none
 ```
 
 These model names are examples. Choose models available in your CLIs.
 The rules tell the agent to resolve labels to model IDs and use separate `model=`, `effort=` and `access=` lines.
 Relay option lines come first. The worker task follows them and starts with its depth line.
 For UI changes or a request for speed, the agent uses the home model.
-If CLI Subagents refuses a start, the agent falls back to the home model for that tier.
+If Agents Router refuses a start, the agent falls back to the home model for that tier.
 The agent does not check usage itself.
 
 When a later step waits for a cross-CLI result, the agent still starts it.
@@ -77,7 +77,7 @@ You decide whether to switch for speed.
 List each work folder with a separate flag:
 
 ```bash
-csa rules --show --work-folder "<work-folder>" --work-folder "<another-work-folder>"
+agt rules --show --work-folder "<work-folder>" --work-folder "<another-work-folder>"
 ```
 
 The rule covers those folders and their children. Work code and data stay with the home vendor at every depth.
@@ -89,11 +89,11 @@ These are instructions for the agent. The command does not enforce a data bounda
 ## Limits and depth
 
 ```bash
-csa rules --show --main-limit 4 --helper-limit 3
+agt rules --show --main-limit 4 --helper-limit 3
 ```
 
 The main limit counts home vendor subagents started by the main session.
-Their helpers do not count toward it. CLI Subagents controls the other CLI job limits.
+Their helpers do not count toward it. Agents Router controls the other CLI job limits.
 Each depth-1 subagent gets the helper limit, including its cross-CLI agents.
 Depth-2 agents cannot start helpers. Set `--helper-limit 0` to disable helpers.
 The main limit must be at least 1. The helper limit must be at least 0.
@@ -118,17 +118,17 @@ The command renders from its flags and defaults each time; it does not save mode
 Keep your install command if you want to reuse it after a package update.
 
 ```bash
-csa rules --install --target claude --home-high "Opus 5.5" --try-medium "Sol 6.1 high"
-csa rules --remove --target claude --dry-run
-csa rules --remove --target claude
+agt rules --install --target claude --home-high "Opus 5.5" --try-medium "Sol 6.1 high"
+agt rules --remove --target claude --dry-run
+agt rules --remove --target claude
 ```
 
-The block starts with `<!-- cli-subagents:rules:start -->` and ends with `<!-- cli-subagents:rules:end -->`.
+The block starts with `<!-- agents-router:rules:start -->` and ends with `<!-- agents-router:rules:end -->`.
 Edits inside it are replaced on the next install.
 Your own text outside those markers is never changed, including its bytes and line endings.
 Appending a new block adds spacing after your text. Removing a block leaves surrounding spacing intact.
 
-Before the first change to an existing file, the command saves `<filename>.csa-rules-backup` next to it.
+Before the first change to an existing file, the command saves `<filename>.agents-router-rules-backup` next to it.
 It keeps that backup on later installs and removals. A new file needs no backup.
 Repeated installs with the same values make no change.
 Dry runs write no files, backups or folders. Broken or repeated marker pairs are rejected.

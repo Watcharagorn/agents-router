@@ -114,7 +114,7 @@ Headless `grok -p` with `--output-format plain|json|streaming-json`, `-s`, `-r`,
 
 The ACP agents page lists many more agents (Junie, Augment Code, Pi, OpenHands, Qoder CLI and others) that I did not research [docs: https://agentclientprotocol.com/overview/agents]. Aider has `--yes-always` and no classifier mentioned [community].
 
-## 4. Implications for CLI Subagents
+## 4. Implications for Agents Router
 
 When to rely on the native reviewer
 

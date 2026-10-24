@@ -11,11 +11,11 @@ import time
 from unittest.mock import patch
 
 from helpers import TempHome
-from cli_subagents import accounts, cli, jobs, limits, tools
-from cli_subagents.config import QuotaPool, load_config, save_config
-from cli_subagents.follow import follow
-from cli_subagents.fsutil import unlock, write_json, write_text
-from cli_subagents.runner import Runner
+from agents_router import accounts, cli, jobs, limits, tools
+from agents_router.config import QuotaPool, load_config, save_config
+from agents_router.follow import follow
+from agents_router.fsutil import unlock, write_json, write_text
+from agents_router.runner import Runner
 
 WORDS = "user asked for 6 Codex agents"
 MODEL = "gpt-6-luna"
@@ -27,8 +27,8 @@ class OverrideTests(TempHome):
         super().setUp()
         os.environ.update(
             CLAUDE_CONFIG_DIR=str(self.primary), CODEX_HOME=str(self.root / "codex"),
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_codex.py")]),
-            CLI_SUBAGENTS_AGY_COMMAND=json.dumps([sys.executable, str(HERE / "fake_agy.py")]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(HERE / "fake_codex.py")]),
+            AGT_AGY_COMMAND=json.dumps([sys.executable, str(HERE / "fake_agy.py")]),
         )
         self.config = load_config()
         for name, runtime in self.config.runtimes.items():
@@ -172,7 +172,7 @@ class OverrideTests(TempHome):
         self.assertFalse(jobs.jobs_dir().exists())
 
     def test_depth_and_access_validation_still_apply(self):
-        with patch.dict(os.environ, {"CLI_SUBAGENTS_DEPTH": str(self.config.max_depth)}):
+        with patch.dict(os.environ, {"AGT_DEPTH": str(self.config.max_depth)}):
             with self.assertRaisesRegex(ValueError, "nested delegation is disabled"):
                 jobs.create_job(runtime="codex", prompt="x", cwd=str(self.project), override=WORDS)
         with self.assertRaisesRegex(ValueError, "access must be"):
@@ -251,7 +251,7 @@ class OverrideTests(TempHome):
         self.runtime.primary_max_effort = "medium"
         save_config(self.config)
         try:
-            with patch("cli_subagents.runner.time.sleep", side_effect=AssertionError("override queued")):
+            with patch("agents_router.runner.time.sleep", side_effect=AssertionError("override queued")):
                 self.assertEqual(Runner(status["job_id"]).run(), 0)
         finally:
             held.release()
@@ -315,7 +315,7 @@ class OverrideTests(TempHome):
         schema = next(item for item in tools.DEFINITIONS if item["name"] == "subagent_start")["inputSchema"]
         override = schema["properties"]["override"]
         self.assertEqual((override["type"], override["minLength"], override["pattern"]), ("string", 1, r"\S"))
-        for path in (HERE.parent / "agents").glob("cli-subagents-*.md"):
+        for path in (HERE.parent / "agents").glob("agt-*.md"):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("`override=...`", text)

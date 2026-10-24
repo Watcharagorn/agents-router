@@ -13,8 +13,8 @@ Before you start, check the [provider terms](../research/provider-terms.md). Goo
 - A clone path without spaces, quotes or parentheses (AGY's hook runner breaks on them)
 
 ```powershell
-git clone https://github.com/lunati228/CLI-Subagents.git C:\GitHub\CLI-Subagents
-Set-Location C:\GitHub\CLI-Subagents\adapters\antigravity
+git clone https://github.com/Watcharagorn/agents-router.git C:\GitHub\agents-router
+Set-Location C:\GitHub\agents-router\adapters\antigravity
 python --version
 Get-Command agy -ErrorAction SilentlyContinue
 Test-Path (Join-Path $env:LOCALAPPDATA 'agy\bin\agy.exe')

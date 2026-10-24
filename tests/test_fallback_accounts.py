@@ -5,8 +5,8 @@ import unittest
 
 from helpers import TempHome
 
-from cli_subagents import accounts
-from cli_subagents.config import Account, RuntimeConfig, dump_config, load_config, save_config
+from agents_router import accounts
+from agents_router.config import Account, RuntimeConfig, dump_config, load_config, save_config
 
 
 class FallbackAccountTests(TempHome):

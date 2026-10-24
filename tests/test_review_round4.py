@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import accounts, hooks, jobs, messages, tools
-from cli_subagents.config import jobs_dir, load_config
-from cli_subagents.fsutil import try_lock, unlock
+from agents_router import accounts, hooks, jobs, messages, tools
+from agents_router.config import jobs_dir, load_config
+from agents_router.fsutil import try_lock, unlock
 
 JOB = "20260101-000000-abcdef"
 
@@ -83,11 +83,11 @@ class RearmedWakeHookTests(TempHome):
         entries = data["hooks"]["PostToolUse"]
         names = {name for entry in entries for name in entry["matcher"].split("|")}
         self.assertLessEqual(
-            {"mcp__plugin_cli-subagents_cli-subagents__subagent_message", "mcp__cli-subagents__subagent_message"}, names
+            {"mcp__plugin_agents-router_agents-router__subagent_message", "mcp__agents-router__subagent_message"}, names
         )
         for entry in entries:
             handler = entry["hooks"][0]
-            self.assertEqual((handler["command"], handler["async"], handler["asyncRewake"]), ("csa hook await", True, True))
+            self.assertEqual((handler["command"], handler["async"], handler["asyncRewake"]), ("agt hook await", True, True))
 
     def test_finds_the_new_job_in_a_message_reply(self):
         reply = {"job_id": "old-job", "delivered": "continued", "new_job": {"job_id": "new-job", "state": "queued"}}

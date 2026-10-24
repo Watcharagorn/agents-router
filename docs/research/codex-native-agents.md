@@ -10,16 +10,16 @@ used. The app behavior below is documented, with local verification still due.
 Codex supports user-defined native subagents. A relay can run a shell command,
 receive its output, and return a final message to its parent. The documented app
 UI exposes individual subagent threads for inspection; the CLI has `/subagents`
-for switching threads. This supplies the native thread needed for a csa relay.
+for switching threads. This supplies the native thread needed for an agt relay.
 Current documentation calls the desktop surface the ChatGPT desktop app, while
 the installed CLI still calls its launcher `codex app`.
 Sources: [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents),
 [Codex documentation entry point](https://developers.openai.com/codex/subagents).
 
 Codex plugins do not register agent files.
-Install the supported standalone TOML files through `csa setup` and `csa update`.
+Install the supported standalone TOML files through `agt setup` and `agt update`.
 They belong in the main Codex home's `agents/` directory, outside the plugin
-cache. A plugin-only install therefore needs `csa setup --host codex` as well.
+cache. A plugin-only install therefore needs `agt setup --host codex` as well.
 This uses Codex's native agent mechanism; it does not create another job panel.
 
 ## Definitions and discovery
@@ -38,11 +38,11 @@ Sources: [role loader](https://github.com/openai/codex/blob/rust-v0.162.1/codex-
 For example, a standalone relay can set:
 
 ```toml
-name = "cli-subagents-codex"
-description = "Relay a task to a csa Codex worker."
+name = "agt-codex"
+description = "Relay a task to an agt Codex worker."
 model = "gpt-6-luna"
 model_reasoning_effort = "low"
-developer_instructions = "Run the prescribed csa command and relay its result."
+developer_instructions = "Run the prescribed agt command and relay its result."
 ```
 
 `model` and `model_reasoning_effort` apply per role, including when the parent
@@ -50,7 +50,7 @@ uses another model. The native spawn tool selects the role with `agent_type`.
 Its v1 form uses `message` and optional `fork_context`; a fresh context keeps a
 relay from inheriting the parent's transcript. Send follow-ups to that same
 agent through native `send_input` (v1), or `followup_task`/`send_message` (v2).
-The relay then runs `csa message JOB --follow --from OFFSET -`; a finished csa
+The relay then runs `agt message JOB --follow --from OFFSET -`; a finished agt
 job may return a new job ID for its resumed worker conversation.
 Sources: [role application](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/agent/role.rs),
 [spawn schema and messaging tools](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/handlers/multi_agents_spec.rs),
@@ -81,7 +81,7 @@ Returning stdout unchanged is an instruction-following behavior, not a byte
 passthrough API. Preserve the Claude relays' authenticated header, final status,
 result delimiters, worker-line escaping and continuation validation. For Codex
 shell calls, retain the whole output across `exec_command`/`write_stdin` chunks
-before validating framing. A still-running shell session is not a csa
+before validating framing. A still-running shell session is not an agt
 `STILL RUNNING` status. Handle PowerShell stdin separately from POSIX heredocs.
 
 ## Plugin installation
@@ -96,7 +96,7 @@ Sources: [manifest resource type](https://github.com/openai/codex/blob/rust-v0.1
 [plugin loader](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core-plugins/src/loader.rs),
 [plugin packaging](https://developers.openai.com/plugins/build/plugins).
 
-Ship the three TOML templates as csa package resources, which are also present
+Ship the three TOML templates as agt package resources, which are also present
 in the repository installed by the plugin marketplace. Setup and update copy
 them to the supported personal-agent directory after plugin installation
 succeeds. Keep existing file contents in a backup when replacing an agent and

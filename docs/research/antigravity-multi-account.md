@@ -21,7 +21,7 @@ Research date: 2026-10-16. Checked on Windows 11 with Antigravity CLI (`agy`) 1.
 | caam (MIT with a rider) | Per-identity `HOME`; the agy token files are real, everything else is linked back | Yes, it copies token files |
 | Antigravity Manager, CLIProxyAPI | Their own OAuth login plus a local proxy that rotates accounts | Yes, and they forward them |
 | Older Gemini CLI | `GEMINI_CLI_HOME` per account, documented | No |
-| CLI Subagents | Per-account folder plus the SSH variables, so agy keeps that account's login in a file it writes itself | No |
+| Agents Router | Per-account folder plus the SSH variables, so agy keeps that account's login in a file it writes itself | No |
 
 ## What agy writes into a fresh home
 
@@ -51,7 +51,7 @@ Research date: 2026-10-16. Checked on Windows 11 with Antigravity CLI (`agy`) 1.
 
 - The JSON result reports token counts only, with no remaining quota or reset time. `agy models` lists names only.
 - Google's plans page says Pro and Ultra refresh every 5 hours with weekly limits on top; other plans refresh weekly (https://antigravity.google/docs/plans). The exact quota error wording wasn't found.
-- Login errors: `You are not logged into Antigravity.`, `Authentication expired. Please log back in.`, and the headless `Authentication required. Please visit the URL to log in:`, after which a headless run waits until its print timeout. CLI Subagents stops such a run early.
+- Login errors: `You are not logged into Antigravity.`, `Authentication expired. Please log back in.`, and the headless `Authentication required. Please visit the URL to log in:`, after which a headless run waits until its print timeout. Agents Router stops such a run early.
 
 ## Terms
 

@@ -2,7 +2,7 @@
 
 import unittest
 
-from cli_subagents.runtimes.antigravity import takes_effort
+from agents_router.runtimes.antigravity import takes_effort
 
 
 class TakesEffortTests(unittest.TestCase):

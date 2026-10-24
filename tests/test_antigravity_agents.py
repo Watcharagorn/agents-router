@@ -8,18 +8,18 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
-from cli_subagents import setup
-from cli_subagents.config import load_config
+from agents_router import setup
+from agents_router.config import load_config
 from test_setup import SetupBase
 
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIMES = ("claude", "codex", "antigravity")
-TEMPLATES = files("cli_subagents").joinpath("templates", "antigravity-plugin")
+TEMPLATES = files("agents_router").joinpath("templates", "antigravity-plugin")
 
 
 def definition(runtime):
-    text = TEMPLATES.joinpath("agents", f"cli-subagents-{runtime}.md").read_text(encoding="utf-8")
+    text = TEMPLATES.joinpath("agents", f"agt-{runtime}.md").read_text(encoding="utf-8")
     frontmatter, body = text.removeprefix("---\n").split("\n---\n", 1)
     metadata = dict(line.split(": ", 1) for line in frontmatter.splitlines() if not line.startswith("#"))
     return metadata, body
@@ -28,14 +28,14 @@ def definition(runtime):
 class AntigravityAgentDefinitionTests(unittest.TestCase):
     def test_companion_plugin_contains_three_shell_only_flash_agents(self):
         manifest = json.loads(TEMPLATES.joinpath("plugin.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["name"], "cli-subagents-relays")
+        self.assertEqual(manifest["name"], "agents-router-relays")
         self.assertEqual(set(manifest), {"name", "description"})
         self.assertEqual(sorted(path.name for path in TEMPLATES.joinpath("agents").iterdir()),
-                         sorted(f"cli-subagents-{runtime}.md" for runtime in RUNTIMES))
+                         sorted(f"agt-{runtime}.md" for runtime in RUNTIMES))
         for runtime in RUNTIMES:
             with self.subTest(runtime=runtime):
                 metadata, body = definition(runtime)
-                self.assertEqual(metadata["name"], f"cli-subagents-{runtime}")
+                self.assertEqual(metadata["name"], f"agt-{runtime}")
                 self.assertEqual(metadata["model"], "flash")
                 self.assertEqual(metadata["tools"], "[run_command, command_status]")
                 self.assertEqual(metadata["mainAgent"], "false")
@@ -45,12 +45,12 @@ class AntigravityAgentDefinitionTests(unittest.TestCase):
                     "name", "description", "tools", "mainAgent", "subagent", "model", "commandExecutionPolicy",
                 })
                 self.assertIn("subagent_start", json.loads(metadata["description"]))
-                self.assertIn(f"csa run --follow --window 60 --runtime {runtime}", body)
+                self.assertIn(f"agt run --follow --window 60 --runtime {runtime}", body)
 
     def test_authenticated_framing_matches_the_claude_relays(self):
         for runtime in RUNTIMES:
             with self.subTest(runtime=runtime):
-                claude = (ROOT / "agents" / f"cli-subagents-{runtime}.md").read_text(encoding="utf-8")
+                claude = (ROOT / "agents" / f"agt-{runtime}.md").read_text(encoding="utf-8")
                 _, native = definition(runtime)
                 start, end = "## 2. Read the authenticated status", "## 3. Messages"
                 expected = claude[claude.index(start):claude.index(end)]
@@ -64,10 +64,10 @@ class AntigravityAgentDefinitionTests(unittest.TestCase):
         required = (
             "`model=...`", "`access=...`", "`account=...`", "`cwd=...`", "`timeout=...`", "`window=...`", "`override=...`",
             "Never set override on your own judgment", "how much of the 5-hour window is left",
-            "csa message <JOB> --follow --from <OFFSET> --window <WINDOW> -", "csa cancel <JOB>",
+            "agt message <JOB> --follow --from <OFFSET> --window <WINDOW> -", "agt cancel <JOB>",
             "A finished job continues the same worker conversation", "resetting OFFSET if JOB changed",
             "`run_command`", "`command_status`", "until that same command exits",
-            "A running shell handle is not a csa status", "If output was truncated",
+            "A running shell handle is not an agt status", "If output was truncated",
             "Never deduplicate repeated worker lines", "Never restart the initial task",
             "PowerShell", "PYTHONIOENCODING", "multiline single-quoted string", "double each embedded single quote",
             "Do not add commentary or a summary", "WINDOW and OFFSET across native follow-ups",
@@ -81,8 +81,8 @@ class AntigravityAgentDefinitionTests(unittest.TestCase):
 
     def test_wheel_package_data_includes_the_companion_plugin(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        patterns = project["tool"]["setuptools"]["package-data"]["cli_subagents"]
-        paths = ["plugin.json"] + [f"agents/cli-subagents-{runtime}.md" for runtime in RUNTIMES]
+        patterns = project["tool"]["setuptools"]["package-data"]["agents_router"]
+        paths = ["plugin.json"] + [f"agents/agt-{runtime}.md" for runtime in RUNTIMES]
         for name in paths:
             path = Path("templates/antigravity-plugin") / name
             self.assertTrue(any(path.match(pattern) for pattern in patterns), path)
@@ -90,7 +90,7 @@ class AntigravityAgentDefinitionTests(unittest.TestCase):
 
 class AntigravityAgentInstallTests(SetupBase):
     def plugin(self):
-        return self.agy_dir / "config" / "plugins" / "cli-subagents-relays"
+        return self.agy_dir / "config" / "plugins" / "agents-router-relays"
 
     def roles(self):
         return self.plugin() / "agents"
@@ -98,10 +98,10 @@ class AntigravityAgentInstallTests(SetupBase):
     def test_setup_installs_the_companion_and_keeps_main_plugin_commands(self):
         code, out = self.run_cli("--host", "antigravity")
         self.assertEqual(code, 0, out)
-        self.assertIn("agy plugin install https://github.com/lunati228/CLI-Subagents", out)
+        self.assertIn("agy plugin install https://github.com/Watcharagorn/agents-router", out)
         self.assertEqual((self.plugin() / "plugin.json").read_bytes(), TEMPLATES.joinpath("plugin.json").read_bytes())
         for runtime in RUNTIMES:
-            name = f"cli-subagents-{runtime}.md"
+            name = f"agt-{runtime}.md"
             self.assertEqual((self.roles() / name).read_bytes(), TEMPLATES.joinpath("agents", name).read_bytes())
         self.assertIn("Start a new Antigravity session", out)
 
@@ -116,7 +116,7 @@ class AntigravityAgentInstallTests(SetupBase):
 
     def test_enabled_main_plugin_gets_missing_agents_without_reinstall(self):
         self.run_cli("--host", "antigravity")
-        target = self.roles() / "cli-subagents-codex.md"
+        target = self.roles() / "agt-codex.md"
         target.unlink()
         self.log.unlink()
         code, out = self.run_cli("--host", "antigravity")
@@ -134,28 +134,28 @@ class AntigravityAgentInstallTests(SetupBase):
 
     def test_custom_contents_are_backed_up_without_markdown_extension(self):
         self.roles().mkdir(parents=True)
-        target = self.roles() / "cli-subagents-codex.md"
+        target = self.roles() / "agt-codex.md"
         target.write_bytes(b"---\nname: owner-customization\n---\nkeep this\r\n")
         code, out = self.run_cli("--host", "antigravity")
         self.assertEqual(code, 0, out)
-        backup, = self.roles().glob(target.name + ".csa-backup-*")
+        backup, = self.roles().glob(target.name + ".agents-router-backup-*")
         self.assertEqual(backup.read_bytes(), b"---\nname: owner-customization\n---\nkeep this\r\n")
         self.assertNotEqual(backup.suffix, ".md")
 
     def test_managed_earlier_version_is_replaced_without_backup(self):
         self.run_cli("--host", "antigravity")
-        target = self.roles() / "cli-subagents-codex.md"
+        target = self.roles() / "agt-codex.md"
         prefix = b"\n".join(target.read_bytes().splitlines()[:2]) + b"\n"
-        target.write_bytes(prefix + b"old csa version\n")
+        target.write_bytes(prefix + b"old agt version\n")
         code, out = self.run_cli("--host", "antigravity")
         self.assertEqual(code, 0, out)
-        self.assertEqual(list(self.roles().glob("*.csa-backup-*")), [])
+        self.assertEqual(list(self.roles().glob("*.agents-router-backup-*")), [])
         self.assertEqual(target.read_bytes(), TEMPLATES.joinpath("agents", target.name).read_bytes())
 
     def test_dry_run_creates_no_companion_files(self):
         code, out = self.run_cli("--host", "antigravity", "--dry-run")
         self.assertEqual(code, 0, out)
-        self.assertIn("would install relay agent cli-subagents-claude", out)
+        self.assertIn("would install relay agent agt-claude", out)
         self.assertFalse(self.plugin().exists())
 
     def test_failed_main_plugin_install_does_not_install_companion(self):
@@ -165,13 +165,13 @@ class AntigravityAgentInstallTests(SetupBase):
         self.assertFalse(self.plugin().exists())
 
     def test_only_the_companion_does_not_count_as_the_main_plugin(self):
-        data = [{"name": "cli-subagents-relays", "enabled": True}]
+        data = [{"name": "agents-router-relays", "enabled": True}]
         self.assertIsNone(setup._find_plugin(data, "antigravity"))
-        main = {"name": "cli-subagents", "enabled": True}
+        main = {"name": "agents-router", "enabled": True}
         self.assertIs(setup._find_plugin([*data, main], "antigravity"), main)
 
     def test_linked_file_and_plugin_directory_are_left_untouched(self):
-        for relative in (Path("agents/cli-subagents-claude.md"), Path(".")):
+        for relative in (Path("agents/agt-claude.md"), Path(".")):
             with self.subTest(relative=relative):
                 target = self.plugin() / relative
                 report = setup.Report()
@@ -190,16 +190,16 @@ class AntigravityAgentInstallTests(SetupBase):
 
     def test_update_refreshes_agents_and_dry_run_preserves_custom_contents(self):
         self.run_cli("--host", "antigravity")
-        target = self.roles() / "cli-subagents-codex.md"
+        target = self.roles() / "agt-codex.md"
         target.write_bytes(b"owner version")
         code, report = setup.run_update(load_config(), ["antigravity"], package=False, dry_run=True)
         self.assertEqual(code, 0, report)
         self.assertEqual(target.read_bytes(), b"owner version")
-        self.assertFalse(list(self.roles().glob("*.csa-backup-*")))
+        self.assertFalse(list(self.roles().glob("*.agents-router-backup-*")))
         code, report = setup.run_update(load_config(), ["antigravity"], package=False)
         self.assertEqual(code, 0, report)
         self.assertEqual(target.read_bytes(), TEMPLATES.joinpath("agents", target.name).read_bytes())
-        self.assertEqual(next(self.roles().glob(target.name + ".csa-backup-*")).read_bytes(), b"owner version")
+        self.assertEqual(next(self.roles().glob(target.name + ".agents-router-backup-*")).read_bytes(), b"owner version")
 
     def test_update_without_main_plugin_does_not_install_companion(self):
         code, report = setup.run_update(load_config(), ["antigravity"], package=False)

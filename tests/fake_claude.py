@@ -34,7 +34,7 @@ def main():
 
     # Tests that don't set CLAUDE_CONFIG_DIR must not leave a "default" folder in the working directory
     # (the repository root when the suite runs), so fall back to a folder under the temp directory.
-    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path(tempfile.gettempdir()) / "csa-fake-claude" / "default")
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path(tempfile.gettempdir()) / "agt-fake-claude" / "default")
     account = config_dir.name
     projects = config_dir / "projects"
     if "--resume" in argv:

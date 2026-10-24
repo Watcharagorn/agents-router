@@ -13,8 +13,8 @@ import os
 from pathlib import Path
 import sys
 
-REPO = "lunati228/CLI-Subagents"
-PLUGIN_ID = "cli-subagents@cli-subagents"
+REPO = "Watcharagorn/agents-router"
+PLUGIN_ID = "agents-router@agents-router"
 
 
 def main():
@@ -58,10 +58,10 @@ def main():
     if sub[:2] == ["marketplace", "add"]:
         if sub[2] != REPO:
             return 1
-        if "cli-subagents" not in state["marketplaces"]:
-            state["marketplaces"].append("cli-subagents")
+        if "agents-router" not in state["marketplaces"]:
+            state["marketplaces"].append("agents-router")
         save()
-        print("Added marketplace cli-subagents")
+        print("Added marketplace agents-router")
         return 0
     if sub[:2] in (["marketplace", "update"], ["marketplace", "upgrade"]):
         return 0 if sub[2] in state["marketplaces"] else 1
@@ -76,16 +76,16 @@ def main():
             print("WARNING: a warning line before the JSON")
             print(json.dumps({"installed": installed, "available": []}))
         else:
-            print(json.dumps([{"name": "CLI-Subagents", "enabled": value} for value in state["plugins"].values()]))
+            print(json.dumps([{"name": "agents-router", "enabled": value} for value in state["plugins"].values()]))
         return 0
     if sub[:1] in (["install"], ["add"]):
         target = sub[1]
         if kind == "agy":
             if target != f"https://github.com/{REPO}":
                 return 1
-            state["plugins"]["CLI-Subagents"] = True
+            state["plugins"]["agents-router"] = True
         else:
-            if target != PLUGIN_ID or "cli-subagents" not in state["marketplaces"]:
+            if target != PLUGIN_ID or "agents-router" not in state["marketplaces"]:
                 print(f"Plugin {target} not found", file=sys.stderr)
                 return 1
             state["plugins"][PLUGIN_ID] = True

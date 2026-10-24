@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import cli, jobs, messages
-from cli_subagents.follow import CodexDescriber, Follower, follow
+from agents_router import cli, jobs, messages
+from agents_router.follow import CodexDescriber, Follower, follow
 
 
 class FollowWindowTests(TempHome):
@@ -27,7 +27,7 @@ class FollowWindowTests(TempHome):
         self.assertGreaterEqual(time.monotonic() - start, 1)
         lines = out.getvalue().splitlines()
         token = re.search(r"token ([0-9a-f]{32})$", lines[0]).group(1)
-        self.assertIn(f"csa follow {job_id} --from 0 --window 1 # csa-token {token}", lines)
+        self.assertIn(f"agt follow {job_id} --from 0 --window 1 # agt-token {token}", lines)
         self.assertTrue(lines[-1].endswith(f"job {job_id} · token {token}"))
         self.assertIn("STILL RUNNING", lines[-1])
 
@@ -35,8 +35,8 @@ class FollowWindowTests(TempHome):
         job_id, out = self.job(), io.StringIO()
         messages.post_from_worker(job_id, "Which file?", kind="question")
         self.assertEqual(follow(job_id, max_wait=0, out=out, window=60), 0)
-        self.assertRegex(out.getvalue(), rf"csa follow {job_id} --from 0 --window 60 # csa-token [0-9a-f]{{32}}")
-        self.assertIn("[csa] QUESTION", out.getvalue())
+        self.assertRegex(out.getvalue(), rf"agt follow {job_id} --from 0 --window 60 # agt-token [0-9a-f]{{32}}")
+        self.assertIn("[agt] QUESTION", out.getvalue())
 
     def test_default_terminal_wait_and_explicit_max_wait_unchanged(self):
         job_id = self.job()
@@ -44,7 +44,7 @@ class FollowWindowTests(TempHome):
         self.assertEqual(Follower(job_id, None, 10, window=60).max_wait, 10)
         out = io.StringIO()
         follow(job_id, max_wait=0, out=out)
-        command = next(line for line in out.getvalue().splitlines() if line.startswith("csa follow"))
+        command = next(line for line in out.getvalue().splitlines() if line.startswith("agt follow"))
         self.assertNotIn("--window", command)
 
     def test_all_three_commands_forward_window(self):
@@ -52,9 +52,9 @@ class FollowWindowTests(TempHome):
         for argv in (["run", "--follow", "--window", "23", "p"],
                      ["follow", job_id, "--window", "23"],
                      ["message", job_id, "--follow", "--window", "23", "p"]):
-            with self.subTest(argv=argv), patch("cli_subagents.cli._start", return_value={"job_id": job_id}), \
-                    patch("cli_subagents.tools.call", return_value={}), \
-                    patch("cli_subagents.follow.follow", return_value=0) as watching:
+            with self.subTest(argv=argv), patch("agents_router.cli._start", return_value={"job_id": job_id}), \
+                    patch("agents_router.tools.call", return_value={}), \
+                    patch("agents_router.follow.follow", return_value=0) as watching:
                 self.assertEqual(cli.main(argv), 0)
                 self.assertEqual(watching.call_args.kwargs["window"], 23)
 
@@ -83,9 +83,9 @@ class FollowWindowTests(TempHome):
     def test_claude_relays_use_window_with_validated_continuations(self):
         root = Path(__file__).resolve().parents[1]
         for runtime in ("claude", "codex", "antigravity"):
-            text = (root / "agents" / f"cli-subagents-{runtime}.md").read_text(encoding="utf-8")
-            self.assertIn("csa run --follow --window 60", text)
-            self.assertIn("csa follow <JOB> --from <OFFSET> --window <WINDOW> # csa-token <TOKEN>", text)
-            self.assertIn("csa message <JOB> --follow --from <OFFSET> --window <WINDOW> -", text)
+            text = (root / "agents" / f"agt-{runtime}.md").read_text(encoding="utf-8")
+            self.assertIn("agt run --follow --window 60", text)
+            self.assertIn("agt follow <JOB> --from <OFFSET> --window <WINDOW> # agt-token <TOKEN>", text)
+            self.assertIn("agt message <JOB> --follow --from <OFFSET> --window <WINDOW> -", text)
             self.assertIn("WINDOW must be the saved positive integer", text)
             self.assertIn("matching the current header", text)

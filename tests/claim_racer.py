@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 
-from cli_subagents import jobs
+from agents_router import jobs
 
 
 def race(job_ids: list[str], threads: int, start: float, slot: float) -> list[str]:

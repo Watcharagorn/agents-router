@@ -1,11 +1,11 @@
 cff-version: 1.2.0
 message: "If you use or build on this project, please credit it as below."
-title: "CLI Subagents"
+title: "Agents Router"
 abstract: "Let your coding agent delegate tasks to other installed agent CLIs, each running in its own native harness under your own login."
 authors:
-  - alias: "lunati"
-    website: "https://github.com/lunati228"
-repository-code: "https://github.com/lunati228/CLI-Subagents"
+  - alias: "Watcharagorn"
+    website: "https://github.com/Watcharagorn"
+repository-code: "https://github.com/Watcharagorn/agents-router"
 license: Apache-2.0
 keywords:
   - mcp
@@ -14,3 +14,11 @@ keywords:
   - codex
   - antigravity
   - coding-agents
+references:
+  - type: software
+    title: "CLI Subagents"
+    authors:
+      - alias: "lunati"
+        website: "https://github.com/lunati228"
+    repository-code: "https://github.com/lunati228/CLI-Subagents"
+    license: Apache-2.0

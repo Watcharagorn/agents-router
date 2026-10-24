@@ -12,8 +12,8 @@ import unittest
 from unittest.mock import patch
 
 from helpers import TempHome
-from cli_subagents import claude_read_hook, hooks
-from cli_subagents.runtimes.claude import ClaudeRuntime
+from agents_router import claude_read_hook, hooks
+from agents_router.runtimes.claude import ClaudeRuntime
 
 
 class ValidatorTests(unittest.TestCase):
@@ -92,7 +92,7 @@ class ValidatorTests(unittest.TestCase):
             with self.subTest(value=value), contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(claude_read_hook.main(io.StringIO(value)), 0)
                 self.assertEqual(json.loads(output.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
-        with patch("cli_subagents.claude_read_hook.validate", side_effect=RuntimeError), \
+        with patch("agents_router.claude_read_hook.validate", side_effect=RuntimeError), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             claude_read_hook.main(io.StringIO(json.dumps(self.payload("ls"))))
         self.assertEqual(json.loads(output.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -101,7 +101,7 @@ class ValidatorTests(unittest.TestCase):
         script = Path(claude_read_hook.__file__).resolve()
         # Neither cwd nor PYTHONPATH may shadow stdlib/package modules in the hook.
         (self.root / "json.py").write_text("raise RuntimeError('shadowed')", encoding="utf-8")
-        (self.root / "cli_subagents.py").write_text("raise RuntimeError('shadowed')", encoding="utf-8")
+        (self.root / "agents_router.py").write_text("raise RuntimeError('shadowed')", encoding="utf-8")
         env = {**os.environ, "PYTHONPATH": str(self.root), "CLAUDE_CONFIG_DIR": str(self.root / "account")}
         for command in ("ls", "git diff --output=x"):
             completed = subprocess.run([sys.executable, "-I", str(script)], input=json.dumps(self.payload(command)),

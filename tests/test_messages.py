@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from cli_subagents import jobs, mcp_server, messages, tools
+from agents_router import jobs, mcp_server, messages, tools
 
 
 class MessageTests(TempHome):
@@ -79,8 +79,8 @@ class MessageTests(TempHome):
         jobs.wait_for(job, 30)
         argv = self.records()[-1]["argv"]
         config = json.loads(open(argv[argv.index("--mcp-config") + 1], encoding="utf-8").read())
-        self.assertEqual(config["mcpServers"]["csa-parent"]["args"][-1], job)
-        self.assertIn("mcp__csa-parent", argv)
+        self.assertEqual(config["mcpServers"]["agt-parent"]["args"][-1], job)
+        self.assertIn("mcp__agt-parent", argv)
 
     def test_worker_server_lists_only_worker_tools_and_pings_progress(self):
         self.write_config(accounts=("a1",))

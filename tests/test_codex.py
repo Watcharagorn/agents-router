@@ -7,20 +7,20 @@ import unittest
 
 from helpers import TempHome
 
-from cli_subagents import jobs
-from cli_subagents.config import load_config
-from cli_subagents.fsutil import is_link
-from cli_subagents.runtimes.codex import CodexParser, CodexRuntime, self_server_overrides
+from agents_router import jobs
+from agents_router.config import load_config
+from agents_router.fsutil import is_link
+from agents_router.runtimes.codex import CodexParser, CodexRuntime, self_server_overrides
 
 FAKE_CODEX = Path(__file__).with_name("fake_codex.py")
 
 CONFIG = """model = "gpt-test"
 
-[mcp_servers.cli-subagents]
-command = "csa"
+[mcp_servers.agents-router]
+command = "agt"
 args = ["mcp"]
 
-[mcp_servers.cli-subagents.env]
+[mcp_servers.agents-router.env]
 X = "1"
 
 [mcp_servers.docs]
@@ -39,20 +39,20 @@ class SelfServerTests(unittest.TestCase):
             return self_server_overrides([path])
 
     def test_own_servers_are_disabled_and_the_rest_kept(self):
-        text = CONFIG + '\n[mcp_servers.nested]\ncommand = "python"\nargs = ["-m", "cli_subagents", "mcp"]\n'
+        text = CONFIG + '\n[mcp_servers.nested]\ncommand = "python"\nargs = ["-m", "agents_router", "mcp"]\n'
         args = self.overrides(text)
         pairs = [args[index + 1] for index in range(0, len(args), 2)]
         self.assertTrue(all(args[index] == "-c" for index in range(0, len(args), 2)))
-        self.assertIn("mcp_servers.cli-subagents.enabled=false", pairs)
+        self.assertIn("mcp_servers.agents-router.enabled=false", pairs)
         self.assertIn("mcp_servers.nested.enabled=false", pairs)
         self.assertFalse(any("docs" in pair for pair in pairs))
         # Both are defined in config.toml, so neither gets a stub command.
-        self.assertFalse(any(pair.endswith(".command='csa'") for pair in pairs))
+        self.assertFalse(any(pair.endswith(".command='agt'") for pair in pairs))
 
     def test_plugin_name_gets_a_stub_when_not_configured(self):
         # Codex 0.162.1 refuses `enabled=false` alone for an undefined server ("invalid transport").
         args = self.overrides('[mcp_servers.docs]\ncommand = "docs-server"\n')
-        self.assertEqual(args, ["-c", "mcp_servers.cli-subagents.command='csa'", "-c", "mcp_servers.cli-subagents.enabled=false"])
+        self.assertEqual(args, ["-c", "mcp_servers.agents-router.command='agt'", "-c", "mcp_servers.agents-router.enabled=false"])
 
     def test_unparseable_config_fails_clearly(self):
         with self.assertRaisesRegex(RuntimeError, "could not read Codex config"):
@@ -60,7 +60,7 @@ class SelfServerTests(unittest.TestCase):
 
     def test_dotted_self_server_name_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "rename"):
-            self.overrides('[mcp_servers."csa.main"]\ncommand = "csa"\n')
+            self.overrides('[mcp_servers."agt.main"]\ncommand = "agt"\n')
 
 
 class ParserTests(unittest.TestCase):
@@ -109,7 +109,7 @@ class ParserTests(unittest.TestCase):
 class CodexJobTests(TempHome):
     def setUp(self):
         super().setUp()
-        os.environ["CLI_SUBAGENTS_CODEX_COMMAND"] = json.dumps([sys.executable, str(FAKE_CODEX)])
+        os.environ["AGT_CODEX_COMMAND"] = json.dumps([sys.executable, str(FAKE_CODEX)])
         (self.primary / "config.toml").write_text(CONFIG, encoding="utf-8")
         (self.primary / "skills" / "beta").mkdir(parents=True)
         (self.primary / "AGENTS.md").write_text("agents", encoding="utf-8")
@@ -119,7 +119,7 @@ class CodexJobTests(TempHome):
         (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def tearDown(self):
-        os.environ.pop("CLI_SUBAGENTS_CODEX_COMMAND", None)
+        os.environ.pop("AGT_CODEX_COMMAND", None)
         os.environ.pop("FAKE_CODEX_LIMITED", None)
         super().tearDown()
 
@@ -131,7 +131,7 @@ class CodexJobTests(TempHome):
         self.assertEqual(jobs.read_result(status["job_id"])["result"], "codex done on c2")
 
         home = self.root / "codex" / "c2"
-        # The config is copied as is; the worker turns the csa server off with -c instead.
+        # The config is copied as is; the worker turns the agt server off with -c instead.
         self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), CONFIG)
         self.assertTrue((home / "skills" / "beta").exists())
         self.assertEqual((home / "AGENTS.md").read_text(), "agents")
@@ -139,7 +139,7 @@ class CodexJobTests(TempHome):
         record = self.records()[-1]
         self.assertEqual(Path(record["env"]["CODEX_HOME"]), home)
         argv = record["argv"]
-        self.assertIn("mcp_servers.cli-subagents.enabled=false", argv)
+        self.assertIn("mcp_servers.agents-router.enabled=false", argv)
         self.assertIn("cli_auth_credentials_store=file", argv)
         self.assertEqual(argv[argv.index("-s") + 1], "read-only")
         self.assertEqual(argv[-1], "-")
@@ -153,7 +153,7 @@ class CodexJobTests(TempHome):
         status = jobs.wait_for(jobs.create_job(runtime="codex", prompt="t", cwd=str(self.project), effort="max")["job_id"], 60)
         self.assertEqual((status["outcome"], status["account"]), ("success", "primary"), status)
         argv = self.records()[-1]["argv"]
-        self.assertIn("mcp_servers.cli-subagents.enabled=false", argv)
+        self.assertIn("mcp_servers.agents-router.enabled=false", argv)
         self.assertIn("model_reasoning_effort=xhigh", argv)
 
     def test_unparseable_config_fails_the_run(self):
@@ -170,7 +170,7 @@ class CodexJobTests(TempHome):
         (home / "config.toml").write_text("own = 1\n", encoding="utf-8")
         victim = self.root / "victim.toml"
         try:
-            os.symlink(victim, home / "config.toml.before-cli-subagents")
+            os.symlink(victim, home / "config.toml.before-agents-router")
         except OSError:
             self.skipTest("symlinks need extra rights on this system")
         config = load_config().runtime("codex")

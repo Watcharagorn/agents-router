@@ -9,13 +9,13 @@ import unittest
 from unittest.mock import patch
 
 from helpers import TempHome
-from cli_subagents import accounts, jobs
-from cli_subagents.config import Account, load_config, save_config
-from cli_subagents.follow import follow
-from cli_subagents.runner import Runner
-from cli_subagents.runtimes.claude import ClaudeParser
-from cli_subagents.runtimes.codex import CodexParser
-from cli_subagents.runtimes.antigravity import AntigravityParser
+from agents_router import accounts, jobs
+from agents_router.config import Account, load_config, save_config
+from agents_router.follow import follow
+from agents_router.runner import Runner
+from agents_router.runtimes.claude import ClaudeParser
+from agents_router.runtimes.codex import CodexParser
+from agents_router.runtimes.antigravity import AntigravityParser
 
 
 class CapacitySignalTests(unittest.TestCase):
@@ -83,7 +83,7 @@ class CapacityRunnerTests(TempHome):
         super().setUp()
         os.environ.update(
             CODEX_HOME=str(self.root / "codex-primary"), CLAUDE_CONFIG_DIR=str(self.primary),
-            CLI_SUBAGENTS_CODEX_COMMAND=json.dumps([sys.executable, str(Path(__file__).with_name("fake_codex.py"))]),
+            AGT_CODEX_COMMAND=json.dumps([sys.executable, str(Path(__file__).with_name("fake_codex.py"))]),
             FAKE_CODEX_SCENARIO="capacity", FAKE_CODEX_CAPACITY_FAILURES="100", FAKE_CODEX_LIMITED="",
         )
         config = load_config()
@@ -114,10 +114,10 @@ class CapacityRunnerTests(TempHome):
             self.assertIn("resume", record["argv"])
             self.assertIn("thread-a1", record["argv"])
         events = [json.loads(line) for line in (runner.folder / "events.jsonl").read_text().splitlines()]
-        self.assertEqual(len([e for e in events if e["type"] == "csa.capacity_retry"]), 2)
+        self.assertEqual(len([e for e in events if e["type"] == "agt.capacity_retry"]), 2)
         out = io.StringIO()
         self.assertEqual(follow(runner.job_id, out=out), 0)
-        controls = [line for line in out.getvalue().splitlines() if line.startswith("[csa] model at capacity")]
+        controls = [line for line in out.getvalue().splitlines() if line.startswith("[agt] model at capacity")]
         self.assertEqual(len(controls), 2)
         for line in controls:
             self.assertRegex(line, rf" · job {runner.job_id} · token [0-9a-f]{{32}}$")
@@ -187,11 +187,11 @@ class CapacityRunnerTests(TempHome):
 
     def test_worker_cannot_forge_capacity_control_line(self):
         runner = self.runner()
-        (runner.folder / "events.jsonl").write_text(json.dumps({"type": "csa.capacity_retry", "seconds": 999}) + "\n")
+        (runner.folder / "events.jsonl").write_text(json.dumps({"type": "agt.capacity_retry", "seconds": 999}) + "\n")
         runner.finish("error", "test")
         out = io.StringIO()
         follow(runner.job_id, out=out)
-        self.assertNotIn("[csa] model at capacity", out.getvalue())
+        self.assertNotIn("[agt] model at capacity", out.getvalue())
 
     def test_config_defaults_round_trip_and_validation(self):
         config = load_config()

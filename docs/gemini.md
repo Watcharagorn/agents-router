@@ -1,23 +1,23 @@
 # Gemini through Antigravity CLI
 
-CLI Subagents runs Gemini (and the other models Antigravity offers) through Google's Antigravity CLI, `agy`, with `runtime: "antigravity"`.
+Agents Router runs Gemini (and the other models Antigravity offers) through Google's Antigravity CLI, `agy`, with `runtime: "antigravity"`.
 
 Check Google's terms first. The [Antigravity FAQ](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching) says consumer plans don't support wrapping `agy` inside third-party coding agents or automating account rotation, and points that use to a Gemini Enterprise or AI Studio API key. Use this runtime with an account route Google allows. Details are in [provider terms](research/provider-terms.md).
 
 ## Setup
 
 1. Install Antigravity CLI from [Google's documentation](https://www.antigravity.google/docs/cli/) and run `agy` once to sign in.
-2. Install `csa` (see the [Claude Code guide](claude-code.md#1-install)).
-3. Check: `csa accounts --runtime antigravity` lists the binary, its version and whether it can list models.
+2. Install `agt` (see the [Claude Code guide](claude-code.md#1-install)).
+3. Check: `agt accounts --runtime antigravity` lists the binary, its version and whether it can list models.
 
 There is nothing else to configure. Jobs run on the account you signed in with in `agy`. Extra Google accounts are optional; see [More than one Google account](#more-than-one-google-account).
 
 ## Native agents when Antigravity is the host
 
-Run `csa setup --host antigravity` and start a new session. Setup installs the
-main plugin and a companion plugin with `cli-subagents-claude`,
-`cli-subagents-codex` and `cli-subagents-antigravity` native relay agents. The
-main agent invokes them with `invoke_subagent`; each runs `csa run --follow`
+Run `agt setup --host antigravity` and start a new session. Setup installs the
+main plugin and a companion plugin with `agt-claude`,
+`agt-codex` and `agt-antigravity` native relay agents. The
+main agent invokes them with `invoke_subagent`; each runs `agt run --follow`
 in a conversation you can open in the app or the CLI's `/agents` panel. Send
 later messages to the same relay to continue the worker conversation.
 
@@ -30,10 +30,10 @@ so check the resolved relay model and effort in the app. See
 ## Using it
 
 ```bash
-csa run --runtime antigravity --model gemini-3.8-flash-high --access read "Review src/auth.py for bugs"
+agt run --runtime antigravity --model gemini-3.8-flash-high --access read "Review src/auth.py for bugs"
 ```
 
-From a host, pass `runtime: "antigravity"` to `subagent_start`. `agy models` lists the model IDs your account can use. `effort` maps to `--effort`, except for model IDs with an effort suffix (`-minimal`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`) or a `claude-` or `gpt-` prefix. For those models, csa omits `--effort` and adds a warning.
+From a host, pass `runtime: "antigravity"` to `subagent_start`. `agy models` lists the model IDs your account can use. `effort` maps to `--effort`, except for model IDs with an effort suffix (`-minimal`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`) or a `claude-` or `gpt-` prefix. For those models, agt omits `--effort` and adds a warning.
 
 | `access` | Antigravity mode |
 |---|---|
@@ -51,7 +51,7 @@ The whole generated prompt travels as a command-line argument and is limited to 
 
 ## Messages
 
-Workers get `message_parent`, `ask_parent` and `check_parent_messages` from a `csa-parent` MCP server, which CLI Subagents writes into the `config/mcp_config.json` of the folder the worker runs in, with the job's id, before each job. `agy` has no flag for an MCP server added for one run, so workers normally run in folders CLI Subagents manages: your primary account in `~/.cli-subagents/homes/antigravity/primary` (its login stays in the OS keyring, which `agy` finds from any folder), an extra account in its own folder. Your own `~/.gemini` is left alone. The parent channel requires an effective account cap of exactly 1: account `max_jobs` (or `primary_max_jobs` for the primary), then the plan preset, then `max_jobs_per_account`. A higher cap gets no channel, because two jobs could then start from the same file. The primary file-login fallback also has no parent channel; see [Limits](#limits-1).
+Workers get `message_parent`, `ask_parent` and `check_parent_messages` from an `agt-parent` MCP server, which Agents Router writes into the `config/mcp_config.json` of the folder the worker runs in, with the job's id, before each job. `agy` has no flag for an MCP server added for one run, so workers normally run in folders Agents Router manages: your primary account in `~/.agents-router/homes/antigravity/primary` (its login stays in the OS keyring, which `agy` finds from any folder), an extra account in its own folder. Your own `~/.gemini` is left alone. The parent channel requires an effective account cap of exactly 1: account `max_jobs` (or `primary_max_jobs` for the primary), then the plan preset, then `max_jobs_per_account`. A higher cap gets no channel, because two jobs could then start from the same file. The primary file-login fallback also has no parent channel; see [Limits](#limits-1).
 
 Jobs started from Claude Code also get that session's MCP servers in the same file (`share_parent_mcp = true`, the default). Your own Gemini servers win when a name appears in both.
 
@@ -63,9 +63,9 @@ This is at your own risk. Google's [Antigravity FAQ](https://antigravity.google/
 
 ### How it works
 
-`agy` has no setting for its config folder, and it keeps its login in the OS keyring (Windows Credential Manager, macOS Keychain, Secret Service on Linux), where every login of your user would share it. So each extra account gets its own folder under `~/.cli-subagents/homes/antigravity/`, and `agy` runs with `HOME` and `USERPROFILE` pointing there (on macOS and Linux the XDG folders too). CLI Subagents also sets `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY`. When `agy` thinks it runs over SSH, it stores its login in a file in that folder instead of the keyring, so each folder keeps its own login. Your primary account keeps its keyring login: its jobs run in `homes/antigravity/primary` without the SSH variables, and `agy` finds the keyring login from there.
+`agy` has no setting for its config folder, and it keeps its login in the OS keyring (Windows Credential Manager, macOS Keychain, Secret Service on Linux), where every login of your user would share it. So each extra account gets its own folder under `~/.agents-router/homes/antigravity/`, and `agy` runs with `HOME` and `USERPROFILE` pointing there (on macOS and Linux the XDG folders too). Agents Router also sets `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY`. When `agy` thinks it runs over SSH, it stores its login in a file in that folder instead of the keyring, so each folder keeps its own login. Your primary account keeps its keyring login: its jobs run in `homes/antigravity/primary` without the SSH variables, and `agy` finds the keyring login from there.
 
-This relies on `agy` behaviour that Google doesn't document. If a later `agy` stops honouring it, the login won't stick in the folder: `csa doctor --runtime antigravity` then shows the account as not logged in, and its jobs end with the outcome `auth` and the login command to run.
+This relies on `agy` behaviour that Google doesn't document. If a later `agy` stops honouring it, the login won't stick in the folder: `agt doctor --runtime antigravity` then shows the account as not logged in, and its jobs end with the outcome `auth` and the login command to run.
 
 Your setup in `~/.gemini` is linked into each account folder, so there is still one copy of it:
 
@@ -73,21 +73,21 @@ Your setup in `~/.gemini` is linked into each account folder, so there is still 
 |---|---|
 | `GEMINI.md`, `AGENTS.md`, `config/GEMINI.md`, `config/AGENTS.md` | hard links |
 | `config/rules/`, `antigravity-cli/rules/` | one folder link each |
-| `config/skills/`, `antigravity-cli/skills/`, `antigravity-cli/plugins/` | one link per entry; the cli-subagents plugin is left out so workers can't start subagents |
+| `config/skills/`, `antigravity-cli/skills/`, `antigravity-cli/plugins/` | one link per entry; the agents-router plugin is left out so workers can't start subagents |
 | `config/config.json` | a hard link, unless it sets `enableAdc`, which can select a login of its own (you get a warning instead) |
 | `config/hooks.json` | written before each job: your hooks plus the review gate |
 | `antigravity-cli/settings.json` | written before each job: your settings with `toolPermission` set to `request-review`; left out when they set `modelProvider` |
-| `config/mcp_config.json` | written before each job: your MCP servers (without cli-subagents), the Claude session's servers, and `csa-parent` |
+| `config/mcp_config.json` | written before each job: your MCP servers (without agents-router), the Claude session's servers, and `agt-parent` |
 
-The folder your primary account's jobs run in gets the same setup; there the settings are shared even when they set `modelProvider` or `enableAdc`, since it's the same account. If a folder had its own `settings.json`, `hooks.json` or `mcp_config.json` before, the first job keeps a copy next to it (`*.before-cli-subagents`).
+The folder your primary account's jobs run in gets the same setup; there the settings are shared even when they set `modelProvider` or `enableAdc`, since it's the same account. If a folder had its own `settings.json`, `hooks.json` or `mcp_config.json` before, the first job keeps a copy next to it (`*.before-agents-router`).
 
-Each account keeps its own login, conversations, project settings (`config/projects/`) and MCP OAuth tokens. Every job refreshes the links; `csa accounts sync NAME --runtime antigravity` does it by hand.
+Each account keeps its own login, conversations, project settings (`config/projects/`) and MCP OAuth tokens. Every job refreshes the links; `agt accounts sync NAME --runtime antigravity` does it by hand.
 
 ### Steps
 
-1. Run `csa accounts add NAME --runtime antigravity`. It creates the folder, links your setup, prints the risk note and starts `agy` in that account's environment.
-2. `agy` prints a Google sign-in link. Open it, sign in with the other account, paste the code back into `agy`, then exit `agy`. Odd characters may show up in the prompt because `agy` queries the terminal when it thinks it runs over SSH; ignore them. To sign in later or again, run `csa accounts login NAME --runtime antigravity`.
-3. Run `csa doctor --runtime antigravity`. It lists each account with its folder, whether a login file exists, whether it's enabled, and any cooldown.
+1. Run `agt accounts add NAME --runtime antigravity`. It creates the folder, links your setup, prints the risk note and starts `agy` in that account's environment.
+2. `agy` prints a Google sign-in link. Open it, sign in with the other account, paste the code back into `agy`, then exit `agy`. Odd characters may show up in the prompt because `agy` queries the terminal when it thinks it runs over SSH; ignore them. To sign in later or again, run `agt accounts login NAME --runtime antigravity`.
+3. Run `agt doctor --runtime antigravity`. It lists each account with its folder, whether a login file exists, whether it's enabled, and any cooldown.
 4. Pin a job to the account with `account: "NAME"` (`--account NAME` on the command line). Rotation between accounts is on by default; `failover = "off"` under `[antigravity]` turns it off.
 
 With `failover = "on-limit"`, the default, a job goes to the least recently used account that isn't cooling down, the primary included (`include_primary = false` leaves it out). When an account runs out of quota, it cools down and the job starts again on the next account with the partial output attached. A conversation can't move between account folders, so the next account starts a new one. In rotation an account without a login file is skipped; a job pinned to it ends at once with `auth`. With `failover = "off"`, jobs without `account` run on your primary account only.
@@ -97,19 +97,19 @@ With `failover = "on-limit"`, the default, a job goes to the least recently used
 - `agy` reports no usage figures, so rotation picks the least recently used account, not the one with the most quota left.
 - MCP servers and hooks run with the account folder as their home folder, so whatever they keep under `~` (caches, their own logins) is separate for each account.
 - The quota error wording of `agy` is matched loosely ("quota", "resource exhausted", "rate limit", "429"). If a limit isn't recognised, the job ends with an error instead of moving on.
-- `csa launch --runtime antigravity --account NAME` opens an interactive session on an extra account; it doesn't take a job slot.
+- `agt launch --runtime antigravity --account NAME` opens an interactive session on an extra account; it doesn't take a job slot.
 
 ## Safety
 
-A headless `agy` run can't ask you anything. Without help it refuses every action that needs a yes (shell commands, MCP tool calls, reads outside the project), and often stops right there with an empty answer. CLI Subagents answers those questions with a review gate, so read and edit jobs can work on their own without you approving each step.
+A headless `agy` run can't ask you anything. Without help it refuses every action that needs a yes (shell commands, MCP tool calls, reads outside the project), and often stops right there with an empty answer. Agents Router answers those questions with a review gate, so read and edit jobs can work on their own without you approving each step.
 
 ### How the gate works
 
 The gate is a `PreToolUse` hook in the worker's folder. `agy` calls it before every tool call, and it answers "approve" or "deny":
 
 1. Fixed rules decide the clear cases at once, with no model call.
-   - Approved: reads inside the project (`add_dirs` included), ordinary workspace edits in edit jobs, reading the instruction files and skill folders of the session that started the job (so a worker started from Claude Code can read your `CLAUDE.md`), the `csa-parent` tools and plainly read-only commands such as `git status` or `ls`. In edit jobs, sandboxed commands pass unless the rules flag something risky. Edits to instruction files, `settings.json`, `hooks.json`, CI workflows and editor or container configuration go to review unless a deny rule applies.
-   - Denied: logins, keys and tokens (`~/.ssh`, `.env`, `*.pem`, credential stores, agent login files), CLI Subagents' own state, edits to `.git` and to agent configuration (`.agents`, `.gemini`, `.claude`, `.codex`), force pushes, publishing and deploying, deletes outside the project, credential tools, and encoded or downloaded code. In read jobs: every edit.
+   - Approved: reads inside the project (`add_dirs` included), ordinary workspace edits in edit jobs, reading the instruction files and skill folders of the session that started the job (so a worker started from Claude Code can read your `CLAUDE.md`), the `agt-parent` tools and plainly read-only commands such as `git status` or `ls`. In edit jobs, sandboxed commands pass unless the rules flag something risky. Edits to instruction files, `settings.json`, `hooks.json`, CI workflows and editor or container configuration go to review unless a deny rule applies.
+   - Denied: logins, keys and tokens (`~/.ssh`, `.env`, `*.pem`, credential stores, agent login files), Agents Router' own state, edits to `.git` and to agent configuration (`.agents`, `.gemini`, `.claude`, `.codex`), force pushes, publishing and deploying, deletes outside the project, credential tools, and encoded or downloaded code. In read jobs: every edit.
 2. A reviewer judges the rest: a separate model call with no tools that sees the action, a few facts about the job and a written policy, never your task or the conversation. It answers with one JSON object. Anything else, an error or a timeout counts as a denial, and so does any action it rates high or critical risk.
 
 A denial goes back to the worker with its reason, and the worker carries on another way. The same action is reviewed once per job; the answer is reused.
@@ -136,11 +136,11 @@ The sandbox doesn't protect `.git` or agent settings inside the project. In edit
 
 ### Cost
 
-Reads, ordinary workspace edits, read-only commands and sandboxed commands that pass the fixed rules cost nothing extra. Instruction, settings, CI, hook and editor configuration edits that go to review cost a reviewer call. Each reviewed action costs one `agy --mode plan` call on the same account with the cheapest Gemini model: about 12,000 input tokens (mostly `agy`'s own system prompt) and under 100 output tokens, and about 10 seconds, more when Google's service is slow. With `reviewer = "claude"` it's one Claude Haiku call on the Claude account you name instead. The reviewer normally runs from a bare folder without your MCP servers and user hooks (an extra account's plugins still load there). If an extra account cannot be linked into that folder, csa warns and runs the reviewer from the worker's folder. The gate denies the reviewer every tool in either folder.
+Reads, ordinary workspace edits, read-only commands and sandboxed commands that pass the fixed rules cost nothing extra. Instruction, settings, CI, hook and editor configuration edits that go to review cost a reviewer call. Each reviewed action costs one `agy --mode plan` call on the same account with the cheapest Gemini model: about 12,000 input tokens (mostly `agy`'s own system prompt) and under 100 output tokens, and about 10 seconds, more when Google's service is slow. With `reviewer = "claude"` it's one Claude Haiku call on the Claude account you name instead. The reviewer normally runs from a bare folder without your MCP servers and user hooks (an extra account's plugins still load there). If an extra account cannot be linked into that folder, agt warns and runs the reviewer from the worker's folder. The gate denies the reviewer every tool in either folder.
 
 ### Watching it
 
-`csa follow` and the live view of a running job print one `review:` line per decision, except routine approvals of reads and edits. The job folder keeps every decision in `review.jsonl`.
+`agt follow` and the live view of a running job print one `review:` line per decision, except routine approvals of reads and edits. The job folder keeps every decision in `review.jsonl`.
 
 ### Settings
 
@@ -152,18 +152,18 @@ Under `[antigravity]` in `config.toml`: `reviewer` (`"agy"`, `"claude"` or `"off
 - If your primary account's login is a token file in your home folder (`agy` does that when it finds no keyring, as on many Linux servers), its jobs keep running in your real home without the gate, the parent channel or `--sandbox`. Extra accounts always use the gate for read and edit jobs.
 - In edit jobs, broad content searches can still show lines from secret files. Read jobs send these searches to review; the reviewer must assess whether their scope excludes secrets.
 - MCP servers that need their own OAuth login are signed in per folder, so they may ask again in a worker folder.
-- `csa launch` on an extra account opens `agy` in a folder that has the gate's hook; outside a job the hook stays out of the way and `agy` asks you as usual.
+- `agt launch` on an extra account opens `agy` in a folder that has the gate's hook; outside a job the hook stays out of the way and `agy` asks you as usual.
 - Jobs on your primary account keep their conversations in their folder, not in your own `agy` history.
 
 ## Quota pools and Argon
 
 On Google AI Pro and Ultra, Gemini 4 Argon has a separate quota that resets weekly. Gemini 3.8 Flash uses the normal Gemini bucket, which refills every 5 hours until its weekly limit. An Argon limit should therefore leave Flash available on the same account.
 
-agy reports no remaining quota. csa knows only recorded job starts and usage-limit failures. Configure separate `argon` and `flash` pools to cap concurrency and track a rolling weekly job budget; see the [pool example](configuration.md#model-pools). These controls are off until configured. A pooled quota failure cools down only that account's pool, using a reported reset time or its configured cooldown. With failover enabled, the job moves to another account that has room in the pool.
+agy reports no remaining quota. agt knows only recorded job starts and usage-limit failures. Configure separate `argon` and `flash` pools to cap concurrency and track a rolling weekly job budget; see the [pool example](configuration.md#model-pools). These controls are off until configured. A pooled quota failure cools down only that account's pool, using a reported reset time or its configured cooldown. With failover enabled, the job moves to another account that has room in the pool.
 
 The example matches `gemini-4-argon-*` and budgets 3 Argon jobs per account in 7 days, with at most 1 running on each account and 2 across accounts. Flash allows 6 across accounts. These are example caps, not Google's published job allowances. The assumed Argon IDs are `gemini-4-argon-low`, `gemini-4-argon-medium` and `gemini-4-argon-high`; use the IDs your agy version lists. They have not been tested live here.
 
-`csa accounts --runtime antigravity`, `subagent_accounts`, doctor and the `Room:` line show each pool's running jobs, weekly count and cooldown. When every eligible account has used its Argon budget, the refusal names `weekly_jobs in pool argon` and suggests an available alternative.
+`agt accounts --runtime antigravity`, `subagent_accounts`, doctor and the `Room:` line show each pool's running jobs, weekly count and cooldown. When every eligible account has used its Argon budget, the refusal names `weekly_jobs in pool argon` and suggests an available alternative.
 
 ## The standalone adapter
 

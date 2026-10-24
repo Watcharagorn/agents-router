@@ -4,7 +4,7 @@ Research date: 2026-10-14. This is an engineering reading of published rules, no
 
 ## Two separate questions
 
-1. Native delegation: may an agent start the vendor's own CLI on your machine, signed in with your own account, and hand it a task? This is what CLI Subagents does by default.
+1. Native delegation: may an agent start the vendor's own CLI on your machine, signed in with your own account, and hand it a task? This is what Agents Router does by default.
 2. Multiple accounts and rotation: may one person keep several subscriptions of the same vendor, share one setup across them, and have a tool move work to the next account when one hits its usage limit?
 
 Having a headless flag answers neither question. Running the official binary keeps authentication where the vendor put it, which is materially different from a proxy that pulls tokens out and calls the API itself. But vendors can still restrict how an account is used.
@@ -53,13 +53,13 @@ Reading: native delegation to Codex is well supported. Several accounts with one
 
 Gemini CLI: Google [ended consumer and free Code Assist access on 2026-06-18](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/). Enterprise and paid API-key routes continue.
 
-Reading: the Antigravity adapter in this repository is only appropriate with an account route Google allows for wrapping (enterprise or API key). Account rotation is out for AGY consumer plans, and CLI Subagents will refuse to enable it there.
+Reading: the Antigravity adapter in this repository is only appropriate with an account route Google allows for wrapping (enterprise or API key). Account rotation is out for AGY consumer plans, and Agents Router will refuse to enable it there.
 
 ## Cursor
 
 The [headless CLI](https://cursor.com/docs/cli/headless) and [authentication](https://cursor.com/docs/cli/reference/authentication) docs cover scripting and recommend a Cursor API key for automated environments. No restriction comparable to Google's was found in the [terms](https://cursor.com/terms-of-service). This is a bounded finding, not a clearance.
 
-## What this means for CLI Subagents
+## What this means for Agents Router
 
 - The tool never reads, stores or forwards login tokens. Each account signs in through the vendor's own CLI, and every model call is that CLI's own. This is the line the published restrictions draw: they target third-party tools that hold subscription tokens or route requests through them, which this project doesn't do.
 - Sharing one setup across your own accounts and moving work between them is the core feature. For Claude Code and Codex it is on by default (`failover = "on-limit"`); set it to `off` per runtime if you prefer to stop at a limit.

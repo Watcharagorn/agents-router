@@ -1,6 +1,6 @@
 # Codex CLI with several accounts
 
-Research for CLI Subagents: running one shared Codex setup (MCP servers, skills, plugins, settings) across several ChatGPT logins, with the official `codex` binary doing all model traffic.
+Research for Agents Router: running one shared Codex setup (MCP servers, skills, plugins, settings) across several ChatGPT logins, with the official `codex` binary doing all model traffic.
 
 Accessed 2026-10-14. Local version checked: `codex-cli 0.162.1` (local --help).
 
