@@ -16,6 +16,7 @@ from agents_router.config import NAME_RE, Account, config_path, homes_dir, load_
 from agents_router.fsutil import make_private_dir
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from agents_router.runtimes.base import ACCESS_LEVELS, JobSpec
+from agents_router.share import commands as share_commands
 
 
 def _print(value: Any) -> None:
@@ -422,6 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", dest="agt_home", help="Use this folder instead of ~/.agents-router (sets AGT_HOME).")
     sub = parser.add_subparsers(dest="command", required=True)
     rules.add_parser(sub)
+    share_commands.add_parser(sub)
 
     mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
     mcp_parser.add_argument("--worker", help=argparse.SUPPRESS)
@@ -569,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
             return run_job(args.job_id)
         handlers = {
             "rules": rules.command,
+            "share": share_commands.command,
             "accounts": cmd_accounts,
             "setup": cmd_setup,
             "update": cmd_update,
