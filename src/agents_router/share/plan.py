@@ -650,7 +650,10 @@ def table(plan: Plan, shown: list[Item]) -> list[str]:
     return lines
 
 
-def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, nothing was written.") -> str:
+def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, nothing was written.",
+                saves: bool = True) -> str:
+    """The plan as text. `saves` is false for a run that saves no answers (`sync`), so your saved picks aren't news."""
+
     lines = [header, "", "Folders:"]
     used = {provider.label for provider in plan.included}
     for row in plan.rows:
@@ -674,7 +677,7 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
     notes = plan.notices + [note for item in plan.items for note in item.notes]
     if notes:
         lines += ["", "Notes:"] + [f"  {note}" for note in notes]
-    saving = would_save(plan)
+    saving = would_save(plan) if saves else []
     if saving and command:
         lines += ["", "Would save in your user settings:"] + [f"  {line}" for line in saving]
     if plan.new_folders:
@@ -688,7 +691,7 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
     return "\n".join(lines)
 
 
-def proposal(plan: Plan, command: str) -> dict[str, Any]:
+def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:
     """The same plan for an agent: every cell, the answers it needs, and the command to run."""
 
     needs = []
@@ -716,7 +719,7 @@ def proposal(plan: Plan, command: str) -> dict[str, Any]:
         "excluded": [{"kind": e.kind, "name": e.name, "labels": e.labels, "reason": e.reason} for e in plan.excluded],
         "new_folders": [str(folder) for folder in plan.new_folders],
         "notices": plan.notices,
-        "would_save": would_save(plan),
+        "would_save": would_save(plan) if saves else [],
         "summary": f"{len(plan.changes)} changes in {len(plan.folders_changed)} folders, {len(plan.conflicts)} conflicts",
         "command": command,
     }

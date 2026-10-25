@@ -380,8 +380,8 @@ def _sync(args: argparse.Namespace) -> int:
         return 0
     if args.dry_run:
         plan = _plan(args, state.load(), saved)
-        _print(planner.proposal(plan, "agt share sync") if args.json else
-               planner.render_text(plan, "agt share sync", header="agt share sync: dry run, nothing was written."))
+        _print(planner.proposal(plan, "agt share sync", saves=False) if args.json else
+               planner.render_text(plan, "agt share sync", header="agt share sync: dry run, nothing was written.", saves=False))
         return 0
     if apply.in_worker():
         print(IN_WORKER)
@@ -818,6 +818,11 @@ def _undo(args: argparse.Namespace) -> int:
     if key is None:
         raise ValueError(f"agt has no agent or skill named {args.item} and no backup of one")
     name = key.partition("/")[2]
+    if label and manifest and manifest.get("op") == "rm":
+        # One copy back after `rm` would leave the others looking deleted; rm's undo is all or nothing.
+        print(f"agt share undo: `agt share rm` removed {name} from every CLI, so it comes back everywhere or not at all: "
+              f"`agt share undo {name}`.")
+        return 0
     record = state.load().items.get(_identity(key)) or {}
     held = bool(label) and label in (set(record.get("stopped") or []) | set(record.get("released") or [])
                                      | _left_out_in(saved, key, labels))

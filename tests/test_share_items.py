@@ -177,7 +177,13 @@ class PickTests(ItemBase):
         before = self.snapshot()
         out = self.share("sync", "--dry-run")
         self.assertIn("rm removed, with a backup", out)
+        self.assertNotIn("Would save", out)  # a sync saves nothing; these picks are saved already
         self.assertEqual(self.snapshot(), before)
+        settings_now.not_in.clear()
+        settings.save(settings_now)
+        out = self.share("sync", "--dry-run")
+        self.assertIn("0 changes in 0 folders.", out)
+        self.assertNotIn("To apply it", out)
 
     def test_unknown_names_and_labels_are_refused(self):
         self.enable()
@@ -302,6 +308,13 @@ class RemoveTests(ItemBase):
         self.share("undo", "dana")
         self.assertEqual({path: path.read_bytes() for path in paths}, contents)
         self.assertIn("everything is in sync", self.share("sync"))
+
+    def test_after_rm_one_copy_alone_doesnt_come_back(self):
+        self.enable()
+        self.share("rm", "dana")
+        before = self.snapshot()
+        self.assertIn("comes back everywhere or not at all", self.share("undo", "dana", "--in", "kiro"))
+        self.assertEqual(self.snapshot(), before)
 
     def test_rm_a_skill_removes_the_links_and_the_folder(self):
         self.enable()
