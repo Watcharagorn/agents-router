@@ -88,16 +88,19 @@ def _in_temp(path: Path) -> bool:
 
 
 def install_record() -> dict[str, str]:
-    """The Python and package folder running now, and the agt home and settings folder the launcher pins."""
+    """The Python and package folder running now, and the agt home and settings folder the launcher pins.
+
+    The settings folder is always pinned: with AGT_HOME set and no AGT_CONFIG_DIR, agt would look for your
+    settings in the agt home instead of where they are now.
+    """
 
     import agents_router
+    from agents_router.config import user_settings_path
     from agents_router.setup import install_source
 
-    record = {"python": fsutil.python_executable(), "package": str(Path(agents_router.__file__).resolve().parent.parent),
-              "home": str(agt_home().expanduser().absolute()), "source": install_source()}
-    if os.environ.get("AGT_CONFIG_DIR"):
-        record["config_dir"] = str(Path(os.environ["AGT_CONFIG_DIR"]).expanduser().absolute())
-    return record
+    return {"python": fsutil.python_executable(), "package": str(Path(agents_router.__file__).resolve().parent.parent),
+            "home": str(agt_home().expanduser().absolute()), "source": install_source(),
+            "config_dir": str(user_settings_path().parent.expanduser().absolute())}
 
 
 def _notifier() -> list[str] | None:

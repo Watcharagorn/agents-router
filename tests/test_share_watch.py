@@ -84,6 +84,9 @@ class SetUpTests(WatchBase):
         self.assertIn(str(self.claude / "agents"), data["WatchPaths"])
         self.assertIn(str(self.user / ".kiro" / "agents"), data["WatchPaths"])
         self.assertTrue(os.access(launcher, os.X_OK))
+        with patch.dict(os.environ):  # with AGT_HOME alone, agt would look for settings in the agt home
+            os.environ.pop("AGT_CONFIG_DIR")
+            self.assertEqual(triggers.install_record()["config_dir"], str(self.agt_home))
         self.assertIn(f"PY={sys.executable}", launcher.read_text().replace("'", ""))
         self.assertEqual([call[0] for call in self.launchctl()], ["print", "bootstrap"])
         for folder, label in ((self.claude, "claude"), (self.lab, "claude-lab")):
@@ -322,6 +325,17 @@ class LauncherTests(WatchBase):
         self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
         result = self.run_launcher("share", "session", "--label", "claude", stdin="{}")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_watchers_bare_environment_sees_the_same_folders(self):
+        with patch.dict(os.environ):  # like a Mac with neither set: settings in ~/.agt, agt's home in ~/.agents-router
+            os.environ.pop("AGT_HOME")
+            os.environ.pop("AGT_CONFIG_DIR")
+            self.enable()
+            mine = json.loads(self.share("status", "--json"))["folders"]
+        bare = {"HOME": str(self.user), "PATH": "/usr/bin:/bin", "TMPDIR": str(self.root / "tmp")}  # what launchd gives
+        result = subprocess.run(["/bin/sh", str(self.user / ".agents-router" / "bin" / "agt-run"), "share", "status", "--json"],
+                                capture_output=True, text=True, timeout=60, env=bare)
+        self.assertEqual(json.loads(result.stdout).get("folders"), mine, result.stdout + result.stderr)
 
     def test_a_missing_python_says_how_to_reinstall(self):
         self.enable()
