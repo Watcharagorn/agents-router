@@ -7,7 +7,8 @@ match again from the saved settings, `status` says where things stand, and
 
 The item commands act on one item at once: `pick` changes which CLIs get it,
 `resolve` picks the version that wins a conflict, `rm` removes it everywhere,
-and `undo` puts back what the last change to it replaced. Every copy they
+`mv` renames it everywhere, and `undo` puts back what the last change to it
+replaced. Every copy they
 replace or remove goes to the backups first. Nothing writes inside agt's own
 workers, and a command that needs a choice it wasn't given exits 3 with
 `needs_choice` instead of asking an agent.
@@ -96,6 +97,10 @@ def add_parser(subparsers) -> None:
     remove = actions.add_parser("rm", help="Remove an item from every CLI, with backups.")
     remove.add_argument("item")
     remove.add_argument("--json", action="store_true")
+    move = actions.add_parser("mv", help="Rename an item in every CLI, keeping each copy's own fields.")
+    move.add_argument("item")
+    move.add_argument("new_name", metavar="NEW-NAME")
+    move.add_argument("--json", action="store_true")
     undo = actions.add_parser("undo", help="Put back what the last change to an item replaced, from the backups.")
     undo.add_argument("item")
     undo.add_argument("--in", dest="in_label", metavar="LABEL", help="Bring back the copy removed from this CLI.")
@@ -769,6 +774,86 @@ def _rm(args: argparse.Namespace) -> int:
     return 1 if result.failed else 0
 
 
+def _not_movable(item: planner.Item, record: dict) -> str | None:
+    """Why `mv` can't rename the item now, or None: every copy has to match the last sync."""
+
+    decision = item.decision
+    if decision is None or decision.action == engine.CONFLICT:
+        return f"its copies differ; `agt share resolve {item.name}` first"
+    if decision.action == engine.WAIT:
+        return decision.reason
+    if decision.action != engine.NOTHING or not decision.version or item.drops:
+        return "it has changes that haven't reached every copy yet; `agt share sync` spreads them"
+    if record.get("released"):
+        return f"the copy in {', '.join(record['released'])} is your own file now; rename or remove it by hand first"
+    if item.ignored:
+        return f"{', '.join(sorted(item.ignored))} is frozen or left out this run"
+    return None
+
+
+def _mv(args: argparse.Namespace) -> int:
+    saved = _enabled()
+    if saved is None:
+        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        return 0
+    new = args.new_name
+    problem = names.problem(new)
+    if problem:
+        raise ValueError(f"{new}: {problem}")
+    plan = _plan(args, state.load(), saved)
+    key = _existing(plan, args.item)
+    kind, _, name = key.partition("/")
+    if _find(plan, key) is None:
+        print(f"{name} isn't shared ({_not_shared(plan, key)}); rename its files by hand.")
+        return 1
+    if names.identity(new) == names.identity(name):
+        print(f"agt share mv: {name} is already called that.")
+        return 0
+    taken = [entry for entry in [*(i.name for i in plan.items if i.kind == kind), *(e.name for e in plan.excluded if e.kind == kind)]
+             if names.identity(entry) == names.identity(new)]
+    if taken:
+        raise ValueError(f"there's already an item named {taken[0]} in {kind}")
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    included = _folders(load_config(), None, False, saved)[1]
+    with apply.lock([provider.folder for provider in included]):
+        current = state.load()
+        replayed = apply.replay(current)
+        plan = _locked_plan(args, saved, current, {_identity(key)})
+        item = plan.items[0] if plan.items else None
+        record = current.items.get(_identity(key)) or {}
+        why = _not_movable(item, record) if item else "it's gone"
+        changes, problems = planner.rename_changes(item, new, plan.included, set(record.get("made") or [])) if item else ([], [])
+        if why or problems:
+            print(f"agt share mv: nothing was renamed: {why or '; '.join(problems)}.")
+            return 1
+        if not record.get("shape"):
+            # Saved first, so a sync after a cut-off mv sees the rename and finishes it.
+            record["shape"] = next(copy.shape for copy in item.copies if copy.shape)
+            current.items[item.key] = record
+            state.save(current)
+        renamed = planner.Item(kind, new, copies=item.copies, decision=engine.Decision("rename", reason="agt share mv"),
+                               renamed_from=item.key)
+        plan.items, plan.changes = [renamed], changes
+        result = apply.apply(plan, current, op="mv")
+        result.replayed = replayed
+        saved_at = None
+        if result.renamed:
+            new_key = f"{kind}/{new}"
+            for chosen in (saved.not_in, saved.only):
+                if key in chosen:
+                    chosen[new_key] = chosen.pop(key)
+            if key in saved.off:
+                saved.off.discard(key)
+                saved.off.add(new_key)
+            if new_key in saved.not_in or new_key in saved.only or new_key in saved.off:
+                saved_at = settings.save(saved)
+    notes = [f"`agt share mv {new} {name}` renames it back."] if result.renamed else []
+    _report(plan, result, saved_at, args.json, title="agt share mv", notes=notes)
+    return 1 if result.failed else 0
+
+
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:
     """The newest run that left a backup of the item (with `label`, of a copy it removed there).
 
@@ -777,6 +862,12 @@ def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict |
 
     wanted = names.identity(bare)
     for manifest in apply.manifests():
+        renames = [rename for rename in manifest.get("renames") or []
+                   if wanted in (names.identity(rename["from"].partition("/")[2]), names.identity(rename["to"].partition("/")[2]))]
+        if renames:
+            # Backups from before a rename are under the other name: putting them back would bring that name back.
+            old, new = renames[0]["from"].partition("/")[2], renames[0]["to"].partition("/")[2]
+            raise ValueError(f"{old} was renamed to {new}; `agt share mv {new} {old}` renames it back")
         entries = []
         for change in manifest["changes"]:
             kind, _, name = str(change.get("key", "")).partition("/")
@@ -909,8 +1000,8 @@ def command(args: argparse.Namespace) -> int:
             return _sync(args)
         if action == "status":
             return _status(args)
-        if action in ("pick", "resolve", "rm", "undo"):
-            return {"pick": _pick, "resolve": _resolve, "rm": _rm, "undo": _undo}[action](args)
+        if action in ("pick", "resolve", "rm", "mv", "undo"):
+            return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo}[action](args)
     except (settings.SettingsError, state.StateError, apply.Busy) as exc:
         print(f"agt share: {exc}", file=sys.stderr)
         return 1

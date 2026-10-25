@@ -387,3 +387,105 @@ class UndoTests(ItemBase):
                 result, out = self.run_share(*args)
                 self.assertIn(result, (0, 2), out)
         self.assertEqual(self.snapshot(), before)
+
+
+class MoveTests(ItemBase):
+    def test_mv_an_agent_renames_every_copy_and_keeps_their_own_fields(self):
+        git = lambda *args: subprocess.run(["git", "-C", str(self.claude), *args], capture_output=True, text=True, check=False)
+        self.assertEqual(git("init", "-q").returncode, 0)
+        self.enable()
+        self.share("pick", "dana", "--not-in", "codex")
+        kiro_tools = self.kiro("dana")["tools"]
+        out = self.share("mv", "dana", "reviewer")
+        self.assertIn("`agt share mv reviewer dana` renames it back.", out)
+        for folder in (self.claude, self.lab):
+            self.assertFalse((folder / "agents" / "dana.md").exists())
+            text = (folder / "agents" / "reviewer.md").read_text(encoding="utf-8")
+            self.assertIn("name: reviewer", text)
+            self.assertIn("Dana's long instructions.", text)
+        self.assertFalse((self.user / ".kiro" / "agents" / "dana.json").exists())
+        self.assertEqual(self.kiro("reviewer")["name"], "reviewer")
+        self.assertEqual(self.kiro("reviewer")["tools"], kiro_tools)
+        self.assertIsNone(self.record("agents/dana"))
+        self.assertEqual(sorted(self.record("agents/reviewer")["made"]), ["claude-lab", "kiro"])
+        self.assertEqual(settings.load().not_in, {"agents/reviewer": ["codex"]})
+        self.assertEqual(len(self.backups("dana.md")), 2)
+        self.assertIn("everything is in sync", self.share("sync"))
+        # agt's copies only: ~/.claude holds the original, so its exclude file never lists it.
+        self.assertNotIn("reviewer", (self.claude / ".git" / "info" / "exclude").read_text(encoding="utf-8"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.share("undo", "reviewer", code=2)
+        self.assertIn("`agt share mv reviewer dana` renames it back", err.getvalue())
+        self.share("mv", "reviewer", "dana")
+        self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").exists())
+        self.assertIn("everything is in sync", self.share("sync"))
+
+    def test_mv_keeps_the_model_line_of_a_claude_copy(self):
+        self.agent(self.claude, "dana", tools="Bash", body="Dana's long instructions.")
+        path = self.claude / "agents" / "dana.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("tools: Bash\n", "tools: Bash\nmodel: opus\n"), encoding="utf-8")
+        age(path)
+        self.enable()
+        self.share("mv", "dana", "reviewer")
+        for folder in (self.claude, self.lab):
+            self.assertIn("model: opus", (folder / "agents" / "reviewer.md").read_text(encoding="utf-8"))
+
+    def test_mv_a_skill_renames_its_folder_and_agts_links(self):
+        git = lambda *args: subprocess.run(["git", "-C", str(self.claude), *args], capture_output=True, text=True, check=False)
+        self.assertEqual(git("init", "-q").returncode, 0)
+        self.enable()
+        self.share("mv", "interactive-lesson-site", "lesson-site")
+        exclude = (self.claude / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        self.assertIn("/skills/lesson-site\n", exclude)
+        self.assertNotIn("interactive-lesson-site", exclude)
+        real = self.lab / "skills" / "lesson-site"
+        self.assertTrue(real.is_dir() and not real.is_symlink())
+        self.assertIn("name: lesson-site", (real / "SKILL.md").read_text(encoding="utf-8"))
+        for link in (self.claude / "skills" / "lesson-site", self.user / ".kiro" / "skills" / "lesson-site"):
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(link.resolve(), real.resolve())
+        for old in (self.lab, self.claude, self.user / ".kiro"):
+            self.assertFalse(os.path.lexists(old / "skills" / "interactive-lesson-site"))
+        self.assertIn("everything is in sync", self.share("sync"))
+
+    def test_mv_refuses_a_skill_with_your_own_link(self):
+        self.enable()
+        before = self.snapshot()
+        out = self.share("mv", "ask-simply", "ask-well", code=1)
+        self.assertIn("~/.claude-lab/skills/ask-simply is a link you made to it", out)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_mv_refuses_a_taken_name_or_an_item_out_of_sync(self):
+        self.enable()
+        before = self.snapshot()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.share("mv", "dana", "day-plan", code=2)
+            self.share("mv", "dana", "Dana_2", code=2)
+        self.assertIn("there's already an item named day-plan", err.getvalue())
+        self.assertIn("names must be lowercase", err.getvalue())
+        self.write_kiro("dana", prompt="Edited in Kiro.")
+        self.assertIn("haven't reached every copy", self.share("mv", "dana", "reviewer", code=1))
+        self.assertEqual({k: v for k, v in self.snapshot().items() if "dana.json" not in k},
+                         {k: v for k, v in before.items() if "dana.json" not in k})
+
+    def test_a_failed_rename_puts_back_the_ones_done(self):
+        self.enable()
+        before = self.folders()
+        real = apply.fsutil.write_preserving
+        calls = []
+
+        def fail_second(path, data, **kwargs):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError(28, "No space left on device")
+            return real(path, data, **kwargs)
+
+        with patch.object(apply.fsutil, "write_preserving", fail_second):
+            out = self.share("mv", "day-plan", "wrap-up", code=1)
+        self.assertIn("No space left on device", out)
+        self.assertIn("put back: the rename is all or nothing", out)
+        self.assertEqual({k: v for k, v in self.folders().items()}, before)
+        self.assertIsNotNone(self.record("agents/day-plan"))
+        self.assertIsNone(self.record("agents/wrap-up"))

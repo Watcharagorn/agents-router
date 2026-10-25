@@ -54,6 +54,13 @@ class Agent:
     def digest(self) -> str:
         return normalize.digest(self.core)
 
+    @property
+    def shape(self) -> str:
+        """The content without the name: the same agent under another name has the same shape."""
+
+        core = self.core
+        return normalize.digest({"description": core["description"], "body": core["body"]})
+
 
 def agent_files(cli: str, folder: Path) -> list[Path]:
     """Files in an agents folder that are agents: top-level files only (a `templates/` folder isn't one)."""
@@ -161,6 +168,7 @@ class Skill:
     declared_name: str | None
     description: str
     digest: str
+    shape: str = ""  # the content without the name field, for spotting a rename
 
 
 def read_skill(path: Path) -> Skill:
@@ -173,7 +181,8 @@ def read_skill(path: Path) -> Skill:
         raise ItemError(manifest, str(exc)) from None
     declared = fields.get("name")
     return Skill(name=path.name, path=path, real=real, declared_name=str(declared) if declared is not None else None,
-                 description=str(fields.get("description") or ""), digest=skill_digest(real, text))
+                 description=str(fields.get("description") or ""), digest=skill_digest(real, text),
+                 shape=skill_digest(real, frontmatter.update(text, {"name": None}) if declared is not None else text))
 
 
 def skill_digest(real: Path, manifest_text: str | None = None) -> str:

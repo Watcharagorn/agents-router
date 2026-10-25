@@ -36,10 +36,10 @@ import secrets
 import shutil
 import tempfile
 import time
-from typing import Iterator
+from typing import Callable, Iterator
 
 from agents_router import fsutil
-from agents_router.share import engine, gitexclude, model, names, toolmap
+from agents_router.share import engine, frontmatter, gitexclude, model, names, normalize, toolmap
 from agents_router.share import plan as planner
 from agents_router.share.state import State, save as save_state, share_dir
 
@@ -58,6 +58,7 @@ class Outcome:
     ok: bool
     message: str = ""
     backup: Path | None = None
+    version: str | None = None  # a rename's copy as it reads now
 
 
 @dataclass
@@ -66,6 +67,7 @@ class Result:
     outcomes: list[Outcome] = field(default_factory=list)
     replayed: list[str] = field(default_factory=list)
     excluded: list[tuple[Path, list[str]]] = field(default_factory=list)  # git exclude files changed
+    renamed: list[tuple[str, str]] = field(default_factory=list)  # (old key, new key) of the renames that went through
 
     @property
     def written(self) -> list[Outcome]:
@@ -141,6 +143,9 @@ def replay(current: State) -> list[str]:
         if entry.get("step") != "write" or (entry.get("run"), entry.get("path")) in done:
             continue
         path = Path(entry["path"])
+        if entry.get("action") in RENAMES:
+            found += _replay_rename(entry, path)
+            continue
         now = fingerprint(path, entry["kind"])
         if now == entry.get("new"):
             record = current.items.setdefault(entry["key"], {})
@@ -161,6 +166,22 @@ def replay(current: State) -> list[str]:
     save_state(current)
     journal_path().unlink(missing_ok=True)
     return found
+
+
+def _replay_rename(entry: dict, path: Path) -> list[str]:
+    """A rename cut off between making the new entry and moving the old one away: move it now.
+
+    The record still has the old name; the next sync sees the rename and finishes it.
+    """
+
+    to = Path(entry["to"])
+    if to == path or not os.path.lexists(path) or not os.path.lexists(to) or not entry.get("backup"):
+        return []
+    if fingerprint(path, entry["kind"]) != entry.get("old") or fingerprint(to, entry["kind"]) != entry.get("new"):
+        return [f"{path} changed after an interrupted rename; agt treats it as your edit"]
+    Path(entry["backup"]).parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), entry["backup"])
+    return [f"finished an interrupted rename: {path} is now {to}"]
 
 
 # Writing one change ----------------------------------------------------------------
@@ -368,6 +389,143 @@ def restore(entry: dict, run: str) -> Outcome:
     return Outcome(kind, name, labels, action, path, True, "put back", backup=saved)
 
 
+RENAMES = ("rename", "rename-folder", "rename-link")
+
+
+def _rename(change: planner.Change, item: planner.Item, cli: str, run: str, op: str) -> tuple[Outcome, Callable[[], None]]:
+    """Give one entry the item's new name. Returns the outcome and the step that undoes it."""
+
+    path, to, label = change.path, change.to, change.labels[0]
+    backup = _backup_folder(run, label) / path.name
+    if os.path.lexists(backup):
+        raise _Skip(f"{backup} is already there")
+    if to != path and os.path.lexists(to):
+        raise _Skip(f"{to} is already there")
+    entry = {"run": run, "op": op, "step": "write", "key": item.key, "kind": item.kind, "labels": change.labels,
+             "action": change.action, "path": str(path), "to": str(to), "old": fingerprint(path, item.kind),
+             "backup": str(backup)}
+    if change.action == "rename":
+        try:
+            current = model.read_agent(cli, path)
+        except model.ItemError as exc:
+            raise _Skip(f"{path} can't be read now ({exc})") from None
+        if change.version and current.digest != change.version:
+            raise _Skip(f"{path} changed while agt was working")
+        core = normalize.agent_core(item.name, current.description, current.body)
+        data = model.update_agent(cli, path.read_text(encoding="utf-8"), current, core).encode("utf-8")
+        _journal({**entry, "new": "sha256:" + hashlib.sha256(data).hexdigest()})
+        shutil.copy2(os.path.realpath(path), backup)
+        if to == path:  # a file you renamed already: only its name field changes
+            fsutil.write_preserving(path, data)
+            undo = lambda: fsutil.write_preserving(path, backup.read_bytes())
+        else:
+            fsutil.write_preserving(to, data, new=True)
+            shutil.copymode(backup, to)
+            os.unlink(path) if not os.path.islink(path) else fsutil.remove_link(path)
+            undo = lambda: (fsutil.write_preserving(path, backup.read_bytes(), new=True), shutil.copymode(backup, path),
+                            os.unlink(to))
+        try:
+            version = model.read_agent(cli, to).digest
+        except model.ItemError:
+            version = None
+        ok = version == normalize.digest(core)
+    elif change.action == "rename-folder":
+        manifest = path / "SKILL.md"
+        try:
+            if change.version and model.read_skill(path).digest != change.version:
+                raise _Skip(f"{path} changed while agt was working")
+            text = manifest.read_text(encoding="utf-8")
+        except (model.ItemError, OSError) as exc:
+            raise _Skip(f"{path} can't be read now ({exc})") from None
+        new_text = frontmatter.update(text, {"name": item.name})
+        _journal({**entry, "new": "dir"})
+        fsutil.make_private_dir(backup)
+        shutil.copy2(manifest, backup / "SKILL.md")  # the folder itself is renamed, not copied
+        if to != path:
+            os.rename(path, to)
+        fsutil.write_preserving(to / "SKILL.md", new_text.encode("utf-8"))
+        undo = lambda: (fsutil.write_preserving(to / "SKILL.md", text.encode("utf-8")), to != path and os.rename(to, path))
+        try:
+            skill = model.read_skill(to)
+            version, ok = skill.digest, skill.declared_name == item.name
+        except model.ItemError:
+            version, ok = None, False
+    else:  # "rename-link": a link agt made, made again under the new name
+        if not os.path.islink(path):
+            raise _Skip(f"{path} isn't a link any more")
+        if not change.real.is_dir():
+            raise _Skip(f"{change.real} isn't there")
+        _journal({**entry, "new": f"link:{change.real}"})
+        if fsutil.make_dir_link(change.real, to) == "copy":
+            shutil.rmtree(to, ignore_errors=True)
+            return Outcome(item.kind, item.name, change.labels, change.action, to, False,
+                           "this system can't make folder links here"), lambda: None
+        shutil.move(str(path), str(backup))  # a link moves as a link
+        undo = lambda: (fsutil.remove_link(to), shutil.move(str(backup), str(path)))
+        try:
+            skill = model.read_skill(to)
+            version = skill.digest
+            ok = Path(os.path.realpath(to)) == Path(os.path.realpath(change.real))
+        except model.ItemError:
+            version, ok = None, False
+    if not ok:
+        undo()
+        return Outcome(item.kind, item.name, change.labels, change.action, to, False,
+                       "the renamed copy didn't read back as expected, so agt put it back"), lambda: None
+    return Outcome(item.kind, item.name, change.labels, change.action, to, True, backup=backup, version=version), undo
+
+
+def _apply_rename(item: planner.Item, changes: list[planner.Change], by_label: dict, current: State,
+                  result: Result, op: str) -> list[Outcome]:
+    """All of an item's renames, or none: when one fails, the ones done are undone, newest first."""
+
+    done: list[tuple[Outcome, Callable[[], None]]] = []
+    failed: Outcome | None = None
+    for change in changes:
+        try:
+            outcome, undo = _rename(change, item, by_label[change.labels[0]].cli, result.run, op)
+        except _Skip as skip:
+            outcome, undo = Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
+                                    f"skipped this run: {skip}"), lambda: None
+        except OSError as exc:
+            outcome, undo = Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
+                                    f"couldn't rename it ({exc})"), lambda: None
+        if not outcome.ok:
+            failed = outcome
+            break
+        _journal({"run": result.run, "step": "done", "path": str(change.path)})
+        done.append((outcome, undo))
+    if failed:
+        for outcome, undo in reversed(done):
+            with contextlib.suppress(OSError):
+                undo()
+        others = [Outcome(o.kind, o.name, o.labels, o.action, o.path, False, "put back: the rename is all or nothing")
+                  for o, _ in done]
+        return [failed, *others]
+    outcomes = [outcome for outcome, _ in done]
+    # The record moves to the new name, with each copy as it reads now; picks and stops come along.
+    old = current.items.pop(item.renamed_from, None) or {}
+    copies = {label: copy.version for copy in item.copies for label in copy.labels if copy.version}
+    copies.update({label: outcome.version for outcome in outcomes for label in outcome.labels if outcome.version})
+    versions = sorted(set(copies.values()), key=list(copies.values()).count, reverse=True)
+    record = {name: old[name] for name in ("made", "stopped", "released") if old.get(name)}
+    if versions:
+        record.update(version=versions[0], copies=copies)
+        shape = next((copy.shape for copy in item.copies if copy.shape), None) or old.get("shape")
+        if shape:
+            record["shape"] = shape
+    current.items[item.key] = record
+    result.renamed.append((item.renamed_from, item.key))
+    made = set(record.get("made") or [])
+    olds = [change.path for change in changes if change.to != change.path]
+    news = [change.to for change in changes if change.to != change.path and set(change.labels) & made]
+    if olds:
+        result.excluded += gitexclude.update(olds, remove=True)
+    if news:
+        result.excluded += gitexclude.update(news)
+    return outcomes
+
+
 # Recording ------------------------------------------------------------------------
 
 
@@ -407,6 +565,11 @@ def _record(current: State, item: planner.Item, decision: engine.Decision, outco
         record["copies"] = {label: version for label, version in (record.get("copies") or {}).items() if label not in gone}
     if released:
         record["released"] = sorted(set(record.get("released") or []) | released)
+    if record.get("version"):
+        # The name-free shape of the recorded version, so a rename can be spotted later.
+        shape = next((copy.shape for copy in item.copies if copy.version == record["version"] and copy.shape), None)
+        if shape:
+            record["shape"] = shape
     record = {name: value for name, value in record.items() if value not in ([], {}, None)}
     if json.dumps(record, sort_keys=True) == before:
         return False
@@ -448,6 +611,11 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         if decision is None:
             continue
         holders = {label: copy for copy in item.copies for label in copy.labels}
+        if decision.action == "rename":
+            result.outcomes += _apply_rename(item, grouped.get(item.key, []), by_label, current, result, op)
+            save_state(current, rotate=rotate)
+            rotate = False
+            continue
         outcomes: list[Outcome] = []
         for change in grouped.get(item.key, []):
             target = by_label[change.labels[0]].cli
@@ -498,6 +666,8 @@ def write_manifest(result: Result, op: str, records: dict | None = None) -> None
         data = {"run": result.run, "op": op, "time": time.time_ns(), "changes": manifest}
         if records:
             data["records"] = records
+        if result.renamed:
+            data["renames"] = [{"from": old, "to": new} for old, new in result.renamed]
         fsutil.write_json(folder / "manifest.json", data)
 
 

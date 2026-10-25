@@ -63,6 +63,10 @@ class Physical:
     mtime: float = 0.0
     entries: dict[str, Path] = field(default_factory=dict)  # label -> its own entry (a skill can have a link and a folder)
 
+    @property
+    def shape(self) -> str | None:
+        return getattr(self.obj, "shape", None) or None
+
 
 @dataclass
 class Cell:
@@ -80,6 +84,7 @@ class Item:
     notes: list[str] = field(default_factory=list)
     drops: dict[str, str] = field(default_factory=dict)  # label -> "remove" or "release": copies in folders you left out
     ignored: set[str] = field(default_factory=set)  # labels holding a copy the engine didn't weigh (frozen, left out)
+    renamed_from: str | None = None  # the `<kind>/<identity>` key this item had before a rename
 
     @property
     def key(self) -> str:
@@ -91,11 +96,13 @@ class Change:
     kind: str
     name: str
     labels: list[str]
-    action: str  # "copy", "update", "link", "relink" or "remove"
+    action: str  # "copy", "update", "link", "relink", "remove", or a rename: "rename", "rename-folder", "rename-link"
     path: Path
     source: Path
     version: str
     new_folder: Path | None = None
+    to: Path | None = None  # a rename's new path (the same path when only the name field changes)
+    real: Path | None = None  # "rename-link": the skill folder the new link leads to
 
 
 @dataclass
@@ -104,6 +111,7 @@ class Excluded:
     name: str
     labels: list[str]
     reason: str
+    item: Item | None = None  # its copies, when agt read them (a name field that doesn't match, say)
 
 
 @dataclass
@@ -228,7 +236,7 @@ def read_items(included: list[Provider], options: Options, now: float, disabled:
     for item in items.values():
         problem = NOT_SHARED if set(options.names(item)) & options.off else _item_problem(item)
         if problem:
-            excluded.append(Excluded(item.kind, item.name, sorted({l for c in item.copies for l in c.labels}), problem))
+            excluded.append(Excluded(item.kind, item.name, sorted({l for c in item.copies for l in c.labels}), problem, item))
         else:
             shared.append(item)
     return sorted(shared, key=lambda item: (KINDS.index(item.kind), item.name)), excluded
@@ -492,6 +500,47 @@ def newest(item: Item) -> Physical:
     involved = set(item.decision.labels) if item.decision else set()
     candidates = [copy for copy in item.copies if involved & set(copy.labels)] or item.copies
     return max(candidates, key=lambda copy: copy.mtime)
+
+
+def rename_changes(item: Item, new: str, included: list[Provider], made: set[str]) -> tuple[list[Change], list[str]]:
+    """Every entry of the item under its new name, keeping each copy's own fields. Returns (changes, why not).
+
+    An agent file is written again with only its name changed. A skill's folder is renamed (its SKILL.md
+    name too) and agt's links are made again to it; a link you made would break, so it stops the rename.
+    """
+
+    by_label = {provider.label: provider for provider in included}
+    changes: dict[str, Change] = {}
+    problems: list[str] = []
+    for copy in item.copies:
+        real = Path(copy.real)
+        for label, entry in copy.entries.items():
+            key = _entry_key(entry)
+            if key in changes:
+                changes[key].labels.append(label)
+                continue
+            if item.kind == "agents":
+                if entry.name == model.AGY_NESTED:
+                    problems.append(f"{short(entry)} is in a folder of its own; rename it by hand")
+                    continue
+                to = model.new_agent_path(by_label[label].cli, entry.parent, new)
+                changes[key] = Change(item.kind, new, [label], "rename", entry, entry, copy.version or "", to=to)
+            elif os.path.islink(entry):
+                if label not in made:
+                    problems.append(f"{short(entry)} is a link you made to it, and renaming its folder would break it")
+                    continue
+                changes[key] = Change(item.kind, new, [label], "rename-link", entry, entry, copy.version or "",
+                                      to=entry.parent / new, real=real.parent / new)
+            else:
+                changes[key] = Change(item.kind, new, [label], "rename-folder", entry, entry, copy.version or "",
+                                      to=entry.parent / new)
+        if item.kind == "skills" and not any(c.action == "rename-folder" and _real(c.path) == copy.real for c in changes.values()):
+            problems.append(f"its folder {short(real)} isn't in a CLI folder agt shares; rename it by hand")
+    for change in changes.values():
+        if change.to != change.path and os.path.lexists(change.to):
+            problems.append(f"{short(change.to)} is already there")
+    # Folders first, so the new links lead somewhere.
+    return sorted(changes.values(), key=lambda change: change.action != "rename-folder"), problems
 
 
 def removal_changes(item: Item) -> list[Change]:
