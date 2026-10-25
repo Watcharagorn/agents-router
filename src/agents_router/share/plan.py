@@ -131,6 +131,7 @@ class Plan:
     unrenamed: list[dict[str, Any]] = field(default_factory=list)  # renames agt left alone: kind, old, new, message
     instructions: Any = None  # the instruction files' plan (instructions.Plan) when they share
     mcp: Any = None  # the MCP servers' plan (mcp.Plan) when they share
+    hooks: Any = None  # the hooks' plan (hooks.Plan) when they share
 
     @property
     def conflicts(self) -> list[Item]:
@@ -180,6 +181,8 @@ class Plan:
                                        sorted(decision.labels)]
         if self.mcp is not None:
             content["mcp"] = self.mcp.digest_content()
+        if self.hooks is not None:
+            content["hooks"] = self.hooks.digest_content()
         return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -1022,6 +1025,8 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
         lines += ["", plan.instructions.summary()]
     if plan.mcp is not None:
         lines += ["", plan.mcp.summary()]
+    if plan.hooks is not None:
+        lines += ["", plan.hooks.summary()]
     count = len(plan.changes)
     lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
                   f"{'s' if len(plan.folders_changed) != 1 else ''}."]
@@ -1069,6 +1074,13 @@ def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:
             "conflicts": [server.name for server in plan.mcp.conflicts],
             "staying": {server.name: server.held for server in plan.mcp.servers if server.held},
             "blocked": {server.name: server.blocked for server in plan.mcp.servers if server.blocked and not server.held}},
+        "hooks": None if plan.hooks is None else {
+            "summary": plan.hooks.summary(),
+            "hooks": [{"name": hook.name, "event": hook.event, "matcher": hook.matcher, "in": hook.labels,
+                       "verdicts": {label: why or "works" for label, why in hook.verdicts.items()},
+                       "approved": sorted(copy.label for copy in plan.hooks.copies if copy.hook is hook and not copy.waiting),
+                       "changed_since_approved": sorted(copy.label for copy in plan.hooks.copies if copy.hook is hook and copy.waiting)}
+                      for hook in plan.hooks.hooks]},
         "folders": [{"label": row.provider.label, "cli": row.provider.cli, "path": str(row.provider.folder),
                      "used": row.provider.label in {p.label for p in plan.included}, "suggested": row.suggested,
                      "reason": row.reason, "holds": row.holds} for row in plan.rows],

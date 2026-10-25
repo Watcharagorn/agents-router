@@ -11,7 +11,7 @@ It covers your user folders today:
 | Antigravity | `~/.gemini` | `config/agents/<name>.md` | `antigravity-cli/skills/<name>/` |
 | Kiro | `~/.kiro` | `agents/<name>.json` | `skills/<name>/` |
 
-It can share [your instruction files](#sharing-instructions) and [your MCP servers](#sharing-mcp-servers) too, when you turn them on, and [a repo's own agents and skills](#repos) between that repo's CLI folders. Hooks, plugins and commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
+It can share [your instruction files](#sharing-instructions), [your MCP servers](#sharing-mcp-servers) and [your hooks](#sharing-hooks) too, when you turn them on, and [a repo's own agents and skills](#repos) between that repo's CLI folders. Plugins and commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
 
 ## Turning it on
 
@@ -139,6 +139,39 @@ Some servers don't go everywhere:
 - A server that logs in with OAuth needs that login once in each CLI.
 
 agt's own server (`agents-router`) is never shared. Every write backs up what was there first (for Claude, the server's own entry), reads the server back, and puts back what was there if it doesn't match. `agt share undo` doesn't cover MCP servers; their backups are in `~/.agents-router/state/share/backups/<run>/mcp/`. The session hook leaves Claude's writes to the background watcher, because two `claude` starts don't fit in a session start. MCP servers share between your user folders only, not repos. `agt share kinds remove mcp` stops sharing them; every CLI keeps the servers it has.
+
+## Sharing hooks
+
+Hooks are off unless you turn them on: `agt share kinds add hooks`, or `--hooks on` with `enable`. Even then agt copies none until you approve it for a CLI, because a hook runs commands on your machine:
+
+```
+agt share pick hooks/pretooluse-guard-shell                # what it runs, and whether it can run in each CLI
+agt share pick hooks/pretooluse-guard-shell --in codex     # approve it there
+agt share pick hooks/pretooluse-guard-shell --not-in codex # take that back
+```
+
+agt reads your user hooks from Claude Code's `settings.json`, Codex's `hooks.json` and Antigravity's `config/hooks.json`. A hook is one matcher group: its event, its matcher and the commands it runs. It's named after its event and its script, such as `pretooluse-guard-shell`. The same hook in two Claude folders counts once. Kiro's hooks aren't read or written yet.
+
+A hook can go to another CLI when:
+
+- that CLI has its event. Claude Code and Codex have SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd; Antigravity has SessionStart, PreToolUse and PostToolUse;
+- every tool in its matcher has a counterpart there. The shell does (`Bash` in Claude Code and Codex, `run_command` in Antigravity), and MCP tools do between Claude Code and Codex. Matchers like `Edit`, `*` or a regular expression don't;
+- it's a plain command, with no `if` condition;
+- its command has no secret written into it, such as a token in an argument, a header or a variable set on the command line.
+
+Another folder of the same CLI can run any hook as it is.
+
+An approval holds the hook as it was: its commands and the content of every script they call. When you change the hook or one of its scripts, its copies do nothing until you approve it again, and `agt share status` says so.
+
+A copy is one entry at the end of the other CLI's hooks file that calls `agt share hook-run` through agt's launcher. That runs your hook's commands as they are in the CLI you wrote them for. The other CLI's input is translated into that CLI's shape (Antigravity's `run_command` becomes `Bash`), and the answer is translated back:
+
+- A block (exit 2, or a `deny`) blocks the call.
+- `allow`, and a command the hook rewrote (`updatedInput`), go to Claude Code and Codex. Codex has no `ask`, so an `ask` there is no answer.
+- Antigravity gets `deny` or `allow`. `allow` hands the call to Antigravity's own permission settings; agt never answers `auto_approve` for you. A rewrite can't be passed to Antigravity, so the call runs unchanged under those settings.
+- Context the hook adds goes to Claude Code and Codex.
+- In agt's own workers, and whenever something goes wrong, the copy gives no answer, so it never blocks by mistake.
+
+agt keeps its entries' places in each hooks file, since Codex trusts hooks by their position: Codex asks you to trust a new copy once in `/hooks`. agt's own hooks and Antigravity's review gate are never shared, and hooks share between your user folders only, not repos. `agt share kinds remove hooks` (or `agt share disable`) takes every copy out; your approvals stay for next time.
 
 ## What a copy holds
 

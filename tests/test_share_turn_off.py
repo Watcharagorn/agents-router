@@ -171,10 +171,10 @@ class KindsTests(TurnOffBase):
         self.enable()
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            self.share("kinds", "add", "hooks", code=2)
+            self.share("kinds", "add", "plugins", code=2)
             self.share("kinds", "remove", "skills", "--keep-copies")
             self.share("kinds", "remove", "agents", "--keep-copies", code=2)
-        self.assertIn("sharing hooks comes in a later phase", err.getvalue())
+        self.assertIn("sharing plugins comes in a later phase", err.getvalue())
         self.assertIn("agents is the last kind sharing", err.getvalue())
 
 

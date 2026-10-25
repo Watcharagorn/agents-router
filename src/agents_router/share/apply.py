@@ -678,6 +678,8 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         result.outcomes += _apply_mcp(plan, current, result.run)
         save_state(current, rotate=rotate)
         rotate = False
+    if plan.hooks is not None:
+        result.outcomes += _apply_hooks(plan)
     if rotate:
         save_state(current)  # a first run with nothing to write still starts the state
     if made:
@@ -710,6 +712,15 @@ def _apply_mcp(plan: planner.Plan, current: State, run: str) -> list[Outcome]:
             for written in mcp.apply(plan.mcp, current, run)]
 
 
+def _apply_hooks(plan: planner.Plan) -> list[Outcome]:
+    """The hook copies each folder's hooks file now holds, as outcomes (the file is backed up in state/share/backups/hooks)."""
+
+    from agents_router.share import hooks
+
+    return [Outcome(hooks.KIND, written.name, [written.label], "update", written.path, written.ok, written.message)
+            for written in hooks.apply(plan.hooks)]
+
+
 def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None,
          trigger: str = "command") -> None:
     if trigger != "command" and not result.outcomes and not result.replayed:
@@ -727,9 +738,11 @@ def _log(plan: planner.Plan, result: Result, command: str, started: float, extra
 
 
 def write_manifest(result: Result, op: str, records: dict | None = None) -> None:
-    # MCP servers are left out: `undo` puts back whole files, and a Claude server's backup is only its entry.
+    # MCP servers and hooks are left out: `undo` puts back whole files, a Claude server's backup is only its entry,
+    # and hook copies follow your approvals.
     manifest = [{"key": f"{o.kind}/{names.identity(o.name)}", "name": o.name, "labels": o.labels, "action": o.action,
-                 "path": str(o.path), "backup": str(o.backup) if o.backup else None} for o in result.written if o.kind != "mcp"]
+                 "path": str(o.path), "backup": str(o.backup) if o.backup else None}
+                for o in result.written if o.kind not in ("mcp", "hooks")]
     if manifest:
         folder = share_dir() / "backups" / result.run
         fsutil.make_private_dir(folder)

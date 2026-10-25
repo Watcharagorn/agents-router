@@ -135,6 +135,8 @@ if [ ! -x "$PY" ] || [ ! -d "$PKG/agents_router" ]; then
   printf '%s %s\\n' "$(date '+%Y-%m-%dT%H:%M:%S')" {q(message)} >> "$LOG" 2>/dev/null
   case "$1 $2" in
     "share session") printf '%s\\n' {q(session)} ;;
+    "share hook-run")
+      case " $* " in *" --to antigravity "*) printf '%s\\n' '{{"decision": "allow"}}' ;; esac ;;
     "share watch")
       MARK="$AGT_HOME/state/share/launcher-notified"
       if [ -z "$(find "$MARK" -mtime -1 2>/dev/null)" ]; then
@@ -145,6 +147,10 @@ if [ ! -x "$PY" ] || [ ! -d "$PKG/agents_router" ]; then
   exit 0
 fi
 case "$1 $2" in
+  "share hook-run")
+    # A shared hook's copy: the lean runner (standard library only), its stderr is the hook's answer.
+    shift 2
+    exec "$PY" -I "$PKG/agents_router/share/hook_run.py" "$@" ;;
   "share session"|"share saved")
     # A hook entry never fails the session that runs it.
     mkdir -p "$AGT_HOME/state/share" 2>/dev/null
@@ -338,37 +344,45 @@ def hook_command(sub: str, label: str | None = None) -> str:
     return f"[ -x {launcher} ] && exec {launcher} share {sub}{extra} || exit 0"
 
 
-def _ours(handler: Any) -> bool:
-    return isinstance(handler, dict) and isinstance(handler.get("command"), str) and bool(OURS.search(handler["command"]))
+def _ours(handler: Any, pattern: re.Pattern = OURS) -> bool:
+    return isinstance(handler, dict) and isinstance(handler.get("command"), str) and bool(pattern.search(handler["command"]))
 
 
-def _without_ours(hooks: dict[str, Any]) -> dict[str, Any]:
+def _entry(matcher: str, command: str, timeout: int = HOOK_TIMEOUT) -> dict[str, Any]:
+    return {"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+
+
+def _with_ours(hooks: dict[str, Any], wanted: dict[str, list[tuple]], pattern: re.Pattern = OURS) -> dict[str, Any]:
+    """Your entries as they are; agt's entries (those `pattern` picks) that are still wanted stay where they are,
+    the others go, and new ones go at the end of their event. Codex keys trust by position, so nothing moves
+    that doesn't have to; two kinds of agt entries (triggers, hook copies) never push each other around."""
+
+    wanted_entries = {event: [_entry(*entry) for entry in entries] for event, entries in wanted.items()}
     result: dict[str, Any] = {}
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             result[event] = groups
             continue
+        left = list(wanted_entries.get(event, []))
         kept = []
         for group in groups:
-            if isinstance(group, dict) and isinstance(group.get("hooks"), list):
-                handlers = [handler for handler in group["hooks"] if not _ours(handler)]
-                if not handlers and group["hooks"]:
+            if isinstance(group, dict) and isinstance(group.get("hooks"), list) and any(_ours(h, pattern) for h in group["hooks"]):
+                if group in left:
+                    left.remove(group)  # still wanted: it keeps its place
+                    kept.append(group)
+                    continue
+                handlers = [handler for handler in group["hooks"] if not _ours(handler, pattern)]
+                if not handlers:
                     continue  # a group that held only agt's entry goes with it
                 group = {**group, "hooks": handlers}
             kept.append(group)
+        kept += left
+        wanted_entries[event] = []
         if kept or not groups:
             result[event] = kept
-    return result
-
-
-def _with_ours(hooks: dict[str, Any], wanted: dict[str, list[tuple[str, str]]]) -> dict[str, Any]:
-    """Your entries as they are, then agt's at the end of each event (Codex keys trust by position)."""
-
-    result = _without_ours(hooks)
-    for event, entries in wanted.items():
-        for matcher, command in entries:
-            result.setdefault(event, []).append(
-                {"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]})
+    for event, entries in wanted_entries.items():
+        if entries:
+            result.setdefault(event, []).extend(entries)
     return result
 
 
@@ -401,15 +415,16 @@ def _backup(path: Path, text: str, label: str) -> Path:
     return target
 
 
-def set_entries(path: Path, wanted: dict[str, list[tuple[str, str]]], label: str) -> bool:
-    """Make agt's entries in a hooks file exactly `wanted` (none to remove them). Returns whether the file changed.
+def set_entries(path: Path, wanted: dict[str, list[tuple]], label: str, pattern: re.Pattern = OURS) -> bool:
+    """Make agt's entries that `pattern` picks in a hooks file exactly `wanted` (none to remove them): event ->
+    (matcher, command[, timeout]). Returns whether the file changed.
 
     Every other key and entry stays as it is; the file is backed up first and written through a link to it.
     """
 
     data, text = _read_json(path)
     before = data.get("hooks") or {}
-    after = _with_ours(before, wanted)
+    after = _with_ours(before, wanted, pattern)
     if after == before:
         return False
     if not text and not wanted:

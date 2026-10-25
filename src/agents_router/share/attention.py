@@ -92,6 +92,10 @@ def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
         from agents_router.share import mcp
 
         found += mcp.attention(plan.mcp)
+    if plan.hooks is not None:
+        from agents_router.share import hooks
+
+        found += hooks.attention(plan.hooks)
     return found
 
 

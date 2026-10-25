@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 HOOK_SET = "agents-router-review"
+SHARE_SET = "agents-router-share"  # share/hooks.py's set of copies of your other CLIs' hooks
 HOOK_TIMEOUT = 90  # seconds; agy's default of 30 is too short for a cold reviewer call
 # The gate only answers auto_approve or deny. With "request-review" a hook that doesn't
 # load leaves agy's headless default in place (commands, MCP calls and outside reads are
@@ -52,6 +53,7 @@ def merged_hooks(user_hooks: Any, command: str, timeout: int = HOOK_TIMEOUT) -> 
 
     data = copy.deepcopy(user_hooks) if isinstance(user_hooks, dict) else {}
     data.pop(HOOK_SET, None)
+    data.pop(SHARE_SET, None)  # agt share's copies of your hooks: in a worker the review gate is the only gate
     data[HOOK_SET] = {
         "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": timeout}]}]
     }

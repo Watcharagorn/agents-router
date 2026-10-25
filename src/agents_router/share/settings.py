@@ -21,6 +21,7 @@ writes only that file's `[share.targets]`.
     instructions = "block"                # share agt's block of each CLI's instruction file ("off" by default)
     worktrees = "command"                 # a listed repo's worktrees join by `agt share repo add .` ("auto" by default)
     mcp = true                            # share your user MCP servers too (off by default)
+    hooks = true                          # list your hooks for sharing; each copy waits for your approval (off by default)
 
     [[share.folders]]                     # the folders sharing, with their labels
     cli = "claude"
@@ -32,6 +33,9 @@ writes only that file's `[share.targets]`.
     "agents/dana" = { not_in = ["codex"] }
     "agents/explorer" = { only = ["kiro"] }
     "mcp/notes" = { only = ["claude"] }   # an MCP server stays in that folder
+
+    [share.hook_approvals]                # hooks you approved per CLI, pinned to the hook as it was (hooks.py)
+    "pretooluse-guard-shell" = { codex = "1a2b3c4d5e6f" }
 """
 
 from __future__ import annotations
@@ -81,6 +85,8 @@ class Settings:
     instructions: str = "off"
     worktrees: str = "auto"
     mcp: bool = False
+    hooks: bool = False
+    hook_approvals: dict[str, dict[str, str]] = field(default_factory=dict)  # hook name -> label -> identity prefix
 
 
 def path() -> Path:
@@ -139,7 +145,7 @@ def _settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("must be a table")
     known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", "worktrees", "mcp",
-             *SWITCHES}
+             "hooks", "hook_approvals", *SWITCHES}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown key {unknown[0]}")
@@ -168,12 +174,18 @@ def _settings(data: Any) -> Settings:
     worktrees = data.get("worktrees", "auto")
     if worktrees not in WORKTREES:
         raise ValueError(f"worktrees must be {' or '.join(WORKTREES)}")
-    mcp = data.get("mcp", False)
-    if not isinstance(mcp, bool):
-        raise ValueError("mcp must be true or false")
+    mcp, hooks = data.get("mcp", False), data.get("hooks", False)
+    if not isinstance(mcp, bool) or not isinstance(hooks, bool):
+        raise ValueError(f"{'mcp' if not isinstance(mcp, bool) else 'hooks'} must be true or false")
+    approvals = data.get("hook_approvals", {})
+    if not isinstance(approvals, dict) or not all(
+            isinstance(entry, dict) and all(isinstance(label, str) and isinstance(short, str) and short
+                                            for label, short in entry.items()) for entry in approvals.values()):
+        raise ValueError('hook_approvals must be a table of "<hook>" = { <label> = "<hash>" }')
     result = Settings(enabled=enabled, kinds=tuple(kinds), tool_widening=widening,
                       auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, instructions=mode,
-                      worktrees=worktrees, mcp=mcp, **switches)
+                      worktrees=worktrees, mcp=mcp, hooks=hooks,
+                      hook_approvals={name: dict(entry) for name, entry in approvals.items()}, **switches)
     targets = data.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be a table")
@@ -206,6 +218,8 @@ def render(settings: Settings) -> str:
         lines.append(f"worktrees = {value(settings.worktrees)}")
     if settings.mcp:
         lines.append("mcp = true")
+    if settings.hooks:
+        lines.append("hooks = true")
     for folder in settings.folders:
         lines += ["", "[[share.folders]]", f"cli = {value(folder.cli)}", f"label = {value(folder.label)}",
                   f"path = {value(str(folder.path))}"]
@@ -219,6 +233,11 @@ def render(settings: Settings) -> str:
             parts = [f"{field_name} = {value(sorted(chosen[key]))}" for field_name, chosen in
                      (("not_in", settings.not_in), ("only", settings.only)) if key in chosen]
             lines.append(f"{json.dumps(key)} = {{ {', '.join(parts)} }}")
+    approved = {name: entry for name, entry in sorted(settings.hook_approvals.items()) if entry}
+    if approved:
+        lines += ["", "[share.hook_approvals]"]
+        lines += [f"{json.dumps(name)} = {{ {', '.join(f'{json.dumps(label)} = {value(short)}' for label, short in sorted(entry.items()))} }}"
+                  for name, entry in approved.items()]
     return "\n".join(lines) + "\n"
 
 

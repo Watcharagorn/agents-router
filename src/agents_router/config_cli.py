@@ -135,6 +135,8 @@ KEYS: dict[str, Key] = {key.name: key for key in [
         share_settings.WORKTREES, user_only=True, applies=SYNC),
     Key("share.mcp", "bool", "Share your user MCP servers between your CLIs (one with a secret written into it stays put).",
         user_only=True, applies=SYNC),
+    Key("share.hooks", "bool", "List your hooks for sharing; each copy runs only after you approve it for that CLI.",
+        user_only=True, applies=SYNC),
     Key("share.watcher", "bool", "The background watcher (macOS): a sync every minute and when a shared folder changes.",
         user_only=True, applies=AT_ONCE),
     Key("share.push_on_save", "bool", "A save in Claude Code inside a shared folder spreads within seconds.",
@@ -533,6 +535,7 @@ SHARE_COMMANDS = {
     "share.instructions": "agt share kinds add|remove instructions, or agt config set share.instructions block|whole|off",
     "share.worktrees": "agt config set share.worktrees auto|command",
     "share.mcp": "agt share kinds add|remove mcp, or agt config set share.mcp true|false",
+    "share.hooks": "agt share kinds add|remove hooks; approve one with agt share pick hooks/<name> --in <label>",
 }
 
 
@@ -544,7 +547,7 @@ def share_command(args: argparse.Namespace) -> int:
     share = share_settings.parse(layer.data.get("share", {}), user) if layer else share_settings.Settings()
     rows = []
     for key in (KEYS[name] for name in ("share.enabled", "share.kinds", "share.auto_copy", "share.tool_widening",
-                                         "share.instructions", "share.worktrees", "share.mcp",
+                                         "share.instructions", "share.worktrees", "share.mcp", "share.hooks",
                                          *(f"share.{name}" for name in share_settings.SWITCHES))):
         value = _value(key, config.defaults(), share)
         level, found = _source(key, [layer] if layer else [])

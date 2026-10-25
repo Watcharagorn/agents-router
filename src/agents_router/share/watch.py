@@ -155,7 +155,7 @@ def watched_files(saved: settings.Settings, included: list[providers.Provider]) 
     """Files whose change starts a run besides the folders: your settings (and a repo's), the instruction files,
     and the MCP server files (for `.claude.json`, only its servers count: Claude rewrites it all the time)."""
 
-    from agents_router.share import instructions, mcp
+    from agents_router.share import hooks, instructions, mcp
 
     current = scope.current()
     with scope.use(scope.USER):
@@ -163,7 +163,7 @@ def watched_files(saved: settings.Settings, included: list[providers.Provider]) 
     if current.project:
         return [*files, current.settings_file]
     return [*files, *(instructions.signature_files(included) if saved.instructions != "off" else []),
-            *(mcp.watched_files(included) if saved.mcp else [])]
+            *(mcp.watched_files(included) if saved.mcp else []), *(hooks.watched_files(included) if saved.hooks else [])]
 
 
 def repo_scopes(saved: settings.Settings) -> list[scope.Scope]:

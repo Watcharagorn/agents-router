@@ -221,12 +221,13 @@ class DryRunTests(MacCopy):
     def test_bad_flags_are_errors(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            for args in (["--kinds", "hooks"], ["--kinds", "nope"], ["--skip", "dana@nowhere"], ["--skip", "dana"],
+            for args in (["--kinds", "plugins"], ["--kinds", "hooks"], ["--kinds", "nope"], ["--skip", "dana@nowhere"], ["--skip", "dana"],
                          ["--projects", str(self.root / "missing")], ["--claude-dir", str(self.root / "missing")]):
                 with self.subTest(args=args):
                     code, _ = self.run_share("enable", *args, "--dry-run")
                     self.assertEqual(code, 2)
         self.assertIn("later phase", err.getvalue())
+        self.assertIn("hooks aren't a kind of item", err.getvalue())
         self.assertIn("no folder labelled nowhere", err.getvalue())
 
 

@@ -44,13 +44,13 @@ from typing import Any
 from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, instructions, mcp, model, names, normalize, picker, plan as planner, providers, scope,
+    apply, attention, engine, gitexclude, hooks, instructions, mcp, model, names, normalize, picker, plan as planner, providers, scope,
     settings, state, toolmap, triggers,
 )
 from agents_router.share.providers import _short as short
 
 SUPPORTED_KINDS = settings.KINDS
-LATER_KINDS = ("commands", "hooks", "plugins")
+LATER_KINDS = ("commands", "plugins")
 # Runs started by these write to Claude later: two `claude mcp` starts don't fit a session hook's few seconds.
 MCP_LATER_TRIGGERS = ("session", "save", "mcp-start")
 IN_WORKER = "agt share doesn't write inside agt's workers; run it from your own terminal or session."
@@ -94,6 +94,8 @@ def add_parser(subparsers) -> None:
     enable.add_argument("--instructions", choices=settings.INSTRUCTIONS,
                         help="Share each CLI's instruction file too: block (agt's marked block of it) or whole; off by default.")
     enable.add_argument("--mcp", choices=("on", "off"), help="Share your user MCP servers too; off by default.")
+    enable.add_argument("--hooks", choices=("on", "off"),
+                        help="List your hooks for sharing; each copy waits for your approval. Off by default.")
     enable.add_argument("--tool-widening", choices=toolmap.TOOL_WIDENING,
                         help="Codex agents can't limit tools: allow-if-shell (the default) copies agents that have a shell, "
                              "skip copies none with a tool list.")
@@ -113,6 +115,8 @@ def add_parser(subparsers) -> None:
     sync.add_argument("--if-stale", action="store_true", help="Only when something moved since the last sync.")
     sync.add_argument("--quiet", action="store_true", help="Print nothing (a background run).")
     sync.add_argument("--trigger", default="command", help=argparse.SUPPRESS)
+    hook_run = actions.add_parser("hook-run", help=argparse.SUPPRESS)  # the launcher runs hook_run.py directly
+    hook_run.add_argument("hook_args", nargs=argparse.REMAINDER)
     watch = actions.add_parser("watch", help="One run of the background watcher (the LaunchAgent runs it every minute).")
     watch.add_argument("--once", action="store_true", help="Run once and exit (the only mode).")
     watch.add_argument("--quiet", action="store_true")
@@ -212,6 +216,8 @@ def _kinds(value: str) -> tuple[str, ...]:
         raise ValueError("instructions aren't a kind of item: use --instructions block|whole, or `agt share kinds add instructions`")
     if "mcp" in kinds:
         raise ValueError("MCP servers aren't a kind of item: use --mcp on, or `agt share kinds add mcp`")
+    if "hooks" in kinds:
+        raise ValueError("hooks aren't a kind of item: use --hooks on, or `agt share kinds add hooks`")
     later = [kind for kind in kinds if kind in LATER_KINDS]
     if later:
         raise ValueError(f"sharing {', '.join(later)} comes in a later phase; this build shares agents and skills")
@@ -303,7 +309,8 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
     if getattr(args, "projects", "none") not in (None, "none"):
         parts += ["--projects", args.projects]
     for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy),
-                        ("--instructions", getattr(args, "instructions", None)), ("--mcp", getattr(args, "mcp", None))):
+                        ("--instructions", getattr(args, "instructions", None)), ("--mcp", getattr(args, "mcp", None)),
+                        ("--hooks", getattr(args, "hooks", None))):
         if value is not None:
             parts += [flag, value]
     return " ".join(shlex.quote(part) for part in parts)
@@ -349,12 +356,19 @@ def _plan(args: argparse.Namespace, current: state.State, saved: settings.Settin
     if _mcp_on(args, saved) and not scope.current().project:
         later = frozenset({"claude"}) if getattr(args, "trigger", "command") in MCP_LATER_TRIGGERS else frozenset()
         plan.mcp = mcp.build(included, current, options, later=later)
+    if _hooks_on(args, saved) and not scope.current().project:
+        plan.hooks = hooks.build(included, saved.hook_approvals if saved else {})
     return plan
 
 
 def _mcp_on(args: argparse.Namespace, saved: settings.Settings | None) -> bool:
     flag = getattr(args, "mcp", None)
     return flag == "on" if flag else bool(saved and saved.mcp)
+
+
+def _hooks_on(args: argparse.Namespace, saved: settings.Settings | None) -> bool:
+    flag = getattr(args, "hooks", None)
+    return flag == "on" if flag else bool(saved and saved.hooks)
 
 
 def _print(value: Any) -> None:
@@ -365,7 +379,7 @@ def _item_key(plan: planner.Plan, name: str) -> str:
     """`<kind>/<name>`, as the folders spell it, for an item named on the command line (bare when it's unique)."""
 
     kind, slash, bare = name.partition("/")
-    if kind == mcp.KIND and bare:
+    if kind in (mcp.KIND, hooks.KIND) and bare:
         return name
     if not slash:
         kind, bare = "", name
@@ -402,7 +416,9 @@ def _saved_answers(plan: planner.Plan, args: argparse.Namespace, saved: settings
                                auto_copy=options.auto_copy,
                                folders=[settings.Folder(p.cli, p.folder, p.label) for p in plan.included],
                                instructions=getattr(args, "instructions", None) or (saved.instructions if saved else "off"),
-                               worktrees=saved.worktrees if saved else "auto", mcp=_mcp_on(args, saved), **switches)
+                               worktrees=saved.worktrees if saved else "auto", mcp=_mcp_on(args, saved),
+                               hooks=_hooks_on(args, saved), hook_approvals=dict(saved.hook_approvals) if saved else {},
+                               **switches)
     result.off = {_item_key(plan, name) for name in options.off}
     for name, label in options.skip:
         result.not_in.setdefault(_item_key(plan, name), []).append(label)
@@ -904,7 +920,8 @@ def _diff(item: planner.Item) -> list[str]:
 
 WHO = {"choice": "your choice", "action": "for you to do", "agent": "an agent can do it"}
 TITLES = {"conflict": "Conflict", "delete": "Waiting to be deleted", "unreadable": "Can't read", "new": "New",
-          "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed", "watcher": "Watcher stopped"}
+          "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed", "watcher": "Watcher stopped",
+          "changed": "Changed since you approved it"}
 
 
 def _status(args: argparse.Namespace) -> int:
@@ -925,7 +942,7 @@ def _status(args: argparse.Namespace) -> int:
         needs.append({"id": "watcher", "kind": "watcher", "item": attention.FOLDER, "who": "agent",
                       "message": "the background watcher stopped", "fix": ["agt doctor --fix"]})
     shared = plan.instructions
-    servers = plan.mcp
+    servers, shared_hooks = plan.mcp, plan.hooks
     code = 1 if plan.conflicts or pending or plan.frozen or (shared is not None and shared.conflict) \
         or (servers is not None and (servers.conflicts or servers.pending)) else 0
     repos = [] if scope.current().project else [_repo_status(target) for target in _repo_scopes(saved)]
@@ -938,6 +955,7 @@ def _status(args: argparse.Namespace) -> int:
                 "frozen": plan.frozen, "not_shared": len(plan.excluded), "notes": plan.notices, "attention": needs,
                 "watcher": health, "instructions": shared.summary() if shared is not None else None,
                 "mcp": servers.summary() if servers is not None else None,
+                "hooks": shared_hooks.summary() if shared_hooks is not None else None,
                 "repos": [{key: value for key, value in entry.items() if key != "scope"} for entry in repos],
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
@@ -950,6 +968,8 @@ def _status(args: argparse.Namespace) -> int:
         lines.append(f"  {shared.summary()}")
     if servers is not None:
         lines += [f"  {line}" for line in servers.summary().splitlines()]
+    if shared_hooks is not None:
+        lines += [f"  {line}" for line in shared_hooks.summary().splitlines()]
     by_key = {item.key: item for item in plan.items}
     for entry in needs:
         fix = " or ".join(f"`{command}`" for command in entry["fix"])
@@ -1216,6 +1236,8 @@ def _pick(args: argparse.Namespace) -> int:
         return _show_picks(args, plan, None)
     if args.item.startswith(f"{mcp.KIND}/"):
         return _pick_mcp(args, saved, plan, to_in, to_out, only)
+    if args.item.startswith(f"{hooks.KIND}/"):
+        return _pick_hook(args, saved, plan, to_in, to_out, only)
     key = _existing(plan, args.item)
     name = key.partition("/")[2]
     if not (to_in or to_out or only):
@@ -1433,6 +1455,51 @@ def _pick_mcp(args: argparse.Namespace, saved: settings.Settings, plan: planner.
         print(f"{server.name} stays in {', '.join(sorted(left - removing))}: "
               + ("you kept it there." if args.keep_copies else "it's yours there (you added or changed it)."))
     return _mcp_run(args, saved, key, "agt share pick", "pick", removing=removing, save=True)
+
+
+def _pick_hook(args: argparse.Namespace, saved: settings.Settings, plan: planner.Plan, to_in: list[str],
+               to_out: list[str], only: list[str] | None) -> int:
+    """`pick hooks/<name>`: approve a hook for CLIs (as it is now), or withdraw that; no flags shows its verdicts."""
+
+    if plan.hooks is None:
+        raise ValueError("hooks don't share; `agt share kinds add hooks` lists them for approval")
+    name = args.item.partition("/")[2]
+    hook = next((hook for hook in plan.hooks.hooks if hook.name == name), None)
+    if hook is None:
+        raise ValueError(f"no hook named {name} in the folders sharing; `agt share status` lists them")
+    approved = dict(saved.hook_approvals.get(name, {}))
+    if not (to_in or to_out or only):
+        print("\n".join(hooks.describe(hook, plan.hooks, approved)))
+        return 0
+    for label in sorted(set(to_in) | set(only or [])):
+        if label in hook.labels:
+            continue  # it's there already
+        why = hook.verdicts.get(label)
+        if why:
+            raise ValueError(f"{name} can't run in {label}: {why}")
+        approved[label] = hook.short
+    for label in set(to_out) | (set(approved) - set(only) if only else set()):
+        approved.pop(label, None)
+    if approved:
+        saved.hook_approvals[name] = approved
+    else:
+        saved.hook_approvals.pop(name, None)
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    included = _folders(load_config(), None, False, saved)[1]
+    with apply.lock([provider.folder for provider in included]):
+        current = state.load()
+        saved_at = settings.save(saved)
+        plan = _plan(args, current, saved)
+        locked = plan.restricted(set())
+        locked.hooks = plan.hooks
+        result = apply.apply(locked, current, op="pick")
+        _remember(plan, current, result)
+    notes = [f"{name} runs in {', '.join(sorted(approved))} as it is now; if it or its script changes, its copies do "
+             "nothing until you approve it again."] if approved else [f"{name} isn't copied anywhere now."]
+    _report(locked, result, saved_at, args.json, title="agt share pick", notes=notes)
+    return 1 if result.failed else 0
 
 
 def _adopt(args: argparse.Namespace) -> int:
@@ -1800,7 +1867,7 @@ def _disable(args: argparse.Namespace) -> int:
         attention.path().unlink(missing_ok=True)
         synclog.append({"type": "turn-off", **synclog.where(None), "what": "sharing", "answer": "keep", "by": "command",
                         "command": "agt share disable", "copies": synclog.share_copies()})
-        removed = triggers.remove_all()
+        removed = triggers.remove_all() + hooks.remove_all(_folders(load_config(), None, False, saved)[1])
         message = (f"agt share is off. Every copy stays as it is, and your answers stay in {short(at)}: "
                    "`agt share enable` turns it on again.")
         _print({"enabled": False, "settings": str(at), "message": message, "notes": removed} if args.json
@@ -1814,6 +1881,7 @@ def _disable(args: argparse.Namespace) -> int:
         _put_back_replaced(current)
 
     repos = _repo_scopes(saved)
+    hooks.remove_all(_folders(load_config(), None, False, saved)[1])
     code = _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
                      lambda removed: "agt share is off; `agt share enable` turns it on again and fills the copies again.")
     for target in repos if code == 0 else []:
@@ -2009,6 +2077,25 @@ def _kinds_command(args: argparse.Namespace) -> int:
         _say_off(args)
         return 0
     kind = args.kind
+    if kind == hooks.KIND:
+        if args.kinds_command == "add":
+            if saved.hooks:
+                print("agt share: hooks already share.")
+                return 0
+            saved.hooks = True
+            code = _run_sync(args, saved, "agt share kinds add", save=True, notes=[
+                "agt lists your hooks and what each one can do in your other CLIs; none is copied until you approve it "
+                "there: `agt share pick hooks/<name> --in <label>`."])
+            if not args.json and not getattr(args, "dry_run", False):
+                print("\n" + hooks.build(_folders(load_config(), None, False, saved)[1], saved.hook_approvals).summary())
+            return code
+        saved.hooks = False
+        at = settings.save(saved)
+        removed = hooks.remove_all(_folders(load_config(), None, False, saved)[1])
+        _print({"hooks": "off", "settings": str(at), "removed": removed} if args.json else
+               "\n".join(["agt share: hooks don't share any more; agt's copies of them are gone, and your approvals stay "
+                          "for next time.", *removed]))
+        return 0
     if kind == mcp.KIND:
         if args.kinds_command == "add":
             if saved.mcp:
@@ -2244,6 +2331,10 @@ def command(args: argparse.Namespace) -> int:
     action = args.share_command
     if action in ("watch", "session", "saved", "badge"):
         return _background(args)
+    if action == "hook-run":
+        from agents_router.share import hook_run
+
+        return hook_run.main(list(args.hook_args))
     try:
         if action == "enable":
             return _enable(args)
