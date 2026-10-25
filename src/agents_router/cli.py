@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any
 
-from agents_router import __version__, accounts, jobs, plans, rules, setup, sync, tools
+from agents_router import __version__, accounts, config_cli, jobs, levels, plans, rules, setup, sync, synclog, tools
 from agents_router.config import NAME_RE, Account, homes_dir, load_config, save_accounts, user_settings_path
 from agents_router.fsutil import make_private_dir
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
@@ -187,16 +187,6 @@ def cmd_update(args: argparse.Namespace) -> int:
 # Doctor ----------------------------------------------------------------------
 
 
-def _no_parent_channel(runtime_config) -> bool:
-    """True when some Antigravity account gets no parent channel only because max_jobs_per_account isn't 1."""
-
-    for account in runtime_config.pool_accounts():
-        limits = plans.account_limits(runtime_config, account)
-        if limits.max_jobs != 1 and limits.max_jobs_source in ("default", "max_jobs_per_account"):
-            return True
-    return False
-
-
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
     runtime_config = config.runtime(args.runtime)
@@ -237,7 +227,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(text)
         for pool in entry.get("pools", []):
             print(f"    {pool['state']}")
-    if args.runtime == "antigravity" and _no_parent_channel(runtime_config):
+    if args.runtime == "antigravity" and plans.no_parent_channel(runtime_config):
         print(f"Note: Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under [antigravity] "
               f"in {user_settings_path()} to get it.")
     if not report["binary"]:
@@ -373,10 +363,17 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 
 def cmd_jobs(args: argparse.Namespace) -> int:
-    for job in jobs.list_jobs(args.limit):
+    workspace = None if getattr(args, "all", False) else levels.find_workspace()
+    found = jobs.list_jobs(args.limit, workspace)
+    if workspace is not None:
+        print(f"Jobs started in {workspace.root}" + (" and its worktrees" if workspace.checkout else "") + ":")
+    for job in found:
         created = time.strftime("%m-%d %H:%M", time.localtime(job.get("created_at") or 0))
         override = f"  override={json.dumps(job['override'], ensure_ascii=False)}" if job.get("override") else ""
         print(f"{job['job_id']}  {created}  {job.get('runtime')}  {job.get('state')}/{job.get('outcome') or '-'}  {job.get('account') or '-'}{override}")
+    others = jobs.count_elsewhere(workspace) if workspace is not None else 0
+    if others:
+        print(f"{others} more in other workspaces: agt jobs --all")
     return 0
 
 
@@ -426,6 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     rules.add_parser(sub)
     share_commands.add_parser(sub)
+    config_cli.add_parser(sub)
+    synclog.add_parser(sub)
 
     mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
     mcp_parser.add_argument("--worker", help=argparse.SUPPRESS)
@@ -525,8 +524,9 @@ def build_parser() -> argparse.ArgumentParser:
         watcher.add_argument("--window", type=_positive_seconds, nargs="?", const=DEFAULT_WINDOW, metavar="SECONDS",
                              help="Return after this many seconds and repeat the window in continuations "
                              "(bare --window: 60; omitted: keep --max-wait behavior).")
-    jobs_parser = sub.add_parser("jobs", help="List recent jobs.")
+    jobs_parser = sub.add_parser("jobs", help="List recent jobs started in this workspace.")
     jobs_parser.add_argument("--limit", type=int, default=20)
+    jobs_parser.add_argument("--all", action="store_true", help="Every job, from every workspace.")
 
     launcher = sub.add_parser("launch", help="Open an interactive session on the best account with the shared setup.")
     launcher.add_argument("--runtime", default="claude", choices=RUNTIMES)
@@ -574,6 +574,8 @@ def main(argv: list[str] | None = None) -> int:
         handlers = {
             "rules": rules.command,
             "share": share_commands.command,
+            "config": config_cli.command,
+            "log": synclog.command,
             "accounts": cmd_accounts,
             "setup": cmd_setup,
             "update": cmd_update,

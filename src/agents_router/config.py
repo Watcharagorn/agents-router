@@ -423,6 +423,19 @@ def load_config(path: Path | None = None, cwd: Path | str | None = None) -> Conf
         found = [layer for layer in [levels.read("user", path)] if layer]
     else:
         found = levels.layers(user_settings_path(), levels.find_workspace(cwd))
+    return from_layers(found, notes)
+
+
+def defaults() -> Config:
+    """Every setting at its default, as with no settings file."""
+
+    return Config(runtimes={name: _runtime_from(name, {}) for name in RUNTIMES}, **_top_from({}))
+
+
+def from_layers(found: list[levels.Layer], notes: list[str] | None = None) -> Config:
+    """The settings these files give, lowest level first (see load_config)."""
+
+    notes = [] if notes is None else notes
     top: dict[str, Any] = {}
     tables: dict[str, dict[str, Any]] = {name: {} for name in RUNTIMES}
     picks: dict[str, tuple[levels.Layer, list[str]]] = {}

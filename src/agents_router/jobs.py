@@ -21,9 +21,9 @@ import secrets
 import shutil
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable, Iterator
 
-from agents_router import limits, quota
+from agents_router import levels, limits, quota
 from agents_router.config import jobs_dir, load_config, state_dir
 from agents_router.fsutil import (
     file_lock,
@@ -364,21 +364,50 @@ def cancel(job_id: str) -> dict[str, Any]:
     return update_status(job_id, state="done", outcome=CANCELLED, message="cancelled", finished_at=time.time())
 
 
-def list_jobs(limit: int = 20) -> list[dict[str, Any]]:
+def _statuses() -> Iterator[dict[str, Any]]:
     folder = jobs_dir()
     if not folder.is_dir():
-        return []
-    ids = sorted((path.name for path in folder.iterdir() if path.is_dir()), reverse=True)[:limit]
-    jobs = []
-    for job_id in ids:
+        return
+    for job_id in sorted((path.name for path in folder.iterdir() if path.is_dir()), reverse=True):
         try:
-            status = read_status(job_id)
+            yield read_status(job_id)
         except ValueError:
             continue
-        jobs.append(
-            {key: status.get(key) for key in ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd", "override")}
-        )
+
+
+def _started_in(workspace: levels.Workspace, seen: dict[str, str | None]) -> Callable[[dict[str, Any]], bool]:
+    """Whether a job started in `workspace` or one of its worktrees."""
+
+    def check(status: dict[str, Any]) -> bool:
+        cwd = str(status.get("cwd") or "")
+        if cwd not in seen:
+            found = levels.find_workspace(cwd) if cwd else None
+            seen[cwd] = found.family if found else None
+        return seen[cwd] == workspace.family
+
+    return check
+
+
+def list_jobs(limit: int = 20, workspace: levels.Workspace | None = None) -> list[dict[str, Any]]:
+    """The newest jobs; with `workspace`, the newest started in it or its worktrees."""
+
+    keep = _started_in(workspace, {}) if workspace is not None else (lambda status: True)
+    jobs = []
+    for status in _statuses():
+        if len(jobs) == limit:
+            break
+        if keep(status):
+            jobs.append(
+                {key: status.get(key) for key in ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd", "override")}
+            )
     return jobs
+
+
+def count_elsewhere(workspace: levels.Workspace) -> int:
+    """How many jobs started outside `workspace` and its worktrees."""
+
+    keep = _started_in(workspace, {})
+    return sum(1 for status in _statuses() if not keep(status))
 
 
 def clean_old_jobs(days: int) -> int:

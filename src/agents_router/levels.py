@@ -31,6 +31,7 @@ from typing import Any, Callable
 from agents_router import fsutil
 
 LEVELS = ("user", "workspace", "local")
+MISSING = object()  # read_value: the file doesn't set the key
 HEADER_RE = re.compile(r"^\s*\[\[?\s*([A-Za-z0-9_.\-\"' ]+?)\s*\]\]?\s*(?:#.*)?$")  # not a nested array's line
 
 
@@ -47,6 +48,14 @@ class Workspace:
     @property
     def folder(self) -> Path:
         return self.root / ".agt"
+
+    @property
+    def family(self) -> str:
+        """The same for a repo and its worktrees: this workspace's place in the main checkout."""
+
+        if self.checkout is None:
+            return str(self.root)
+        return str((self.main or self.checkout) / self.root.relative_to(self.checkout))
 
     @property
     def settings(self) -> Path:
@@ -106,6 +115,13 @@ def find_workspace(cwd: Path | str | None = None) -> Workspace | None:
     return Workspace(root, checkout, _main_checkout(checkout) if checkout is not None else None)
 
 
+def parse(level: str, path: Path, text: str) -> Layer:
+    try:
+        return Layer(level, path, text, tomllib.loads(text))
+    except tomllib.TOMLDecodeError as exc:
+        raise SettingsError(f"{path}: {exc}") from None
+
+
 def read(level: str, path: Path) -> Layer | None:
     try:
         text = path.read_text(encoding="utf-8")
@@ -113,19 +129,17 @@ def read(level: str, path: Path) -> Layer | None:
         return None
     except OSError as exc:
         raise SettingsError(f"{path} can't be read ({exc})") from None
-    try:
-        return Layer(level, path, text, tomllib.loads(text))
-    except tomllib.TOMLDecodeError as exc:
-        raise SettingsError(f"{path}: {exc}") from None
+    return parse(level, path, text)
 
 
-def layers(user: Path, workspace: Workspace | None) -> list[Layer]:
-    """The settings files that exist, lowest level first."""
+def layers(user: Path, workspace: Workspace | None, override: dict[Path, str] | None = None) -> list[Layer]:
+    """The settings files that exist, lowest level first; `override` gives a file's text before it's written."""
 
+    override = override or {}
     paths = [("user", user)]
     if workspace is not None:
         local = workspace.local
-        if not local.exists():
+        if not local.exists() and local not in override:
             local = workspace.local_fallback() or local
         paths += [("workspace", workspace.settings), ("local", local)]
     found, seen = [], set()
@@ -133,10 +147,21 @@ def layers(user: Path, workspace: Workspace | None) -> list[Layer]:
         if path in seen:  # $AGT_CONFIG_DIR may point inside a workspace
             continue
         seen.add(path)
-        layer = read(level, path)
+        layer = parse(level, path, override[path]) if path in override else read(level, path)
         if layer is not None:
             found.append(layer)
     return found
+
+
+def read_value(text: str, table: str | None, key: str) -> Any:
+    """The value a file's text sets for `key` in `table`, or MISSING."""
+
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return MISSING
+    holder = data.get(table, {}) if table else data
+    return holder.get(key, MISSING) if isinstance(holder, dict) else MISSING
 
 
 def _header(line: str) -> str | None:
@@ -165,6 +190,97 @@ def where(layer: Layer, table: str | None, key: str | None) -> str:
 
     line = line_of(layer.text, table, key) if key else None
     return f"{layer.path}:{line}" if line else str(layer.path)
+
+
+def _comment_at(line: str) -> int | None:
+    """Where a `# comment` starts, outside of strings."""
+
+    quote, index = None, 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if char == "\\" and quote == '"':
+                index += 1
+            elif char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return index
+        index += 1
+    return None
+
+
+def _region(lines: list[str], table: str | None) -> tuple[int, int] | None:
+    """The lines of `[table]` (None: the top level) after its header, as a range, or None without one."""
+
+    start = 0
+    if table is not None:
+        start = next((index + 1 for index, line in enumerate(lines)
+                      if _header(line) == table and not line.lstrip().startswith("[[")), -1)
+        if start == -1:
+            return None
+    end = next((index for index in range(start, len(lines)) if _header(lines[index]) is not None), len(lines))
+    return start, end
+
+
+def _key_line(lines: list[str], region: tuple[int, int] | None, table: str | None, key: str, text: str,
+              path: Path) -> int | None:
+    pattern = re.compile(rf"^\s*[\"']?{re.escape(key)}[\"']?\s*=")
+    index = next((index for index in range(*region) if pattern.match(lines[index])), None) if region else None
+    name = f"{table}.{key}" if table else key
+    if index is None:
+        if read_value(text, table, key) is not MISSING:
+            raise SettingsError(f"{path}: {name} is set as a dotted key or an inline table; change it there by hand")
+        return None
+    try:
+        tomllib.loads(lines[index])
+    except tomllib.TOMLDecodeError:
+        raise SettingsError(f"{path}: {name} spans more than one line; change it there by hand") from None
+    return index
+
+
+def set_line(text: str, table: str | None, key: str, rendered: str, path: Path) -> str:
+    """`text` with `key = <rendered>` in `table`: the value replaced in place (its comment kept), or a line added."""
+
+    lines = text.splitlines()
+    region = _region(lines, table)
+    index = _key_line(lines, region, table, key, text, path)
+    if index is not None:
+        line = lines[index]
+        start = line.index("=") + 1
+        start += len(line[start:]) - len(line[start:].lstrip())
+        end = _comment_at(line[start:])
+        end = len(line) if end is None else start + end
+        while end > start and line[end - 1] in " \t":
+            end -= 1
+        lines[index] = line[:start] + rendered + line[end:]
+    elif region is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ([""] if lines else []) + [f"[{table}]", f"{key} = {rendered}"]
+    else:
+        keys = [at for at in range(*region) if lines[at].strip() and not lines[at].lstrip().startswith("#")]
+        if keys:
+            at = keys[-1] + 1
+        elif table is not None:
+            at = region[0]
+        else:
+            at = next((at for at in range(*region) if not lines[at].lstrip().startswith("#")), region[1])
+        lines.insert(at, f"{key} = {rendered}")
+        if table is None and at + 1 < len(lines) and _header(lines[at + 1]) is not None:
+            lines.insert(at + 1, "")
+    return "\n".join(lines) + "\n"
+
+
+def drop_line(text: str, table: str | None, key: str, path: Path) -> str:
+    """`text` without the line that sets `key` in `table`."""
+
+    lines = text.splitlines()
+    index = _key_line(lines, _region(lines, table), table, key, text, path)
+    if index is not None:
+        del lines[index]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def split(text: str, ours: Callable[[str], bool]) -> tuple[list[str], list[str]]:

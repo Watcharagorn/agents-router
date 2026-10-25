@@ -89,6 +89,12 @@ def load(location: Path | None = None) -> Settings:
         data = tomllib.loads(text).get("share", {})
     except tomllib.TOMLDecodeError as exc:
         raise SettingsError(f"{location}: {exc}") from None
+    return parse(data, location)
+
+
+def parse(data: Any, location: Path) -> Settings:
+    """A `[share]` table's settings; a bad value names the file."""
+
     try:
         return _settings(data)
     except (TypeError, ValueError, KeyError) as exc:

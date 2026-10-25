@@ -130,6 +130,16 @@ def effective_plan(runtime: RuntimeConfig, account: Account) -> tuple[str | None
     return plan, False
 
 
+def no_parent_channel(runtime: RuntimeConfig) -> bool:
+    """True when some Antigravity account gets no parent channel only because max_jobs_per_account isn't 1."""
+
+    for account in runtime.pool_accounts():
+        limits = account_limits(runtime, account)
+        if limits.max_jobs != 1 and limits.max_jobs_source in ("default", "max_jobs_per_account"):
+            return True
+    return False
+
+
 def account_limits(runtime: RuntimeConfig, account: Account) -> Limits:
     plan, auto = effective_plan(runtime, account)
     preset = preset_for(runtime.runtime, plan)

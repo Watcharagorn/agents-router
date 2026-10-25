@@ -285,7 +285,7 @@ class OverrideTests(TempHome):
             jobs.create_job(runtime="codex", prompt="x", cwd=str(self.project))
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            cli.cmd_jobs(argparse.Namespace(limit=20))
+            cli.cmd_jobs(argparse.Namespace(limit=20, all=True))
         self.assertIn(f'override="{WORDS}"', output.getvalue())
         output = io.StringIO()
         follow(job_id, max_wait=0, out=output)

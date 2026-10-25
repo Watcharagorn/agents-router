@@ -92,6 +92,8 @@ def add_parser(subparsers) -> None:
     sync.add_argument("--refill", action="append", default=[], metavar="LABEL",
                       help="A frozen folder: put back the copies that disappeared from it. This run only.")
     sync.add_argument("--json", action="store_true")
+    shown = actions.add_parser("settings", help="Every share setting, where it comes from and the command that changes it.")
+    shown.add_argument("--json", action="store_true")
     status = actions.add_parser("status", help="What's in sync, what differs and what waits for you; writes nothing.")
     status.add_argument("--diff", action="store_true", help="Show how the copies of each conflict differ.")
     status.add_argument("--json", action="store_true")
@@ -1615,6 +1617,10 @@ def command(args: argparse.Namespace) -> int:
             return _sync(args)
         if action == "status":
             return _status(args)
+        if action == "settings":
+            from agents_router import config_cli
+
+            return config_cli.share_command(args)
         if action in ("pick", "resolve", "rm", "mv", "undo", "disable", "cli", "kinds"):
             return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo, "disable": _disable,
                     "cli": _cli, "kinds": _kinds_command}[action](args)
