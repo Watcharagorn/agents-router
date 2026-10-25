@@ -11,7 +11,7 @@ It covers your user folders today:
 | Antigravity | `~/.gemini` | `config/agents/<name>.md` | `antigravity-cli/skills/<name>/` |
 | Kiro | `~/.kiro` | `agents/<name>.json` | `skills/<name>/` |
 
-It can share [your instruction files](#sharing-instructions) too, when you turn that on, and [a repo's own agents and skills](#repos) between that repo's CLI folders. MCP servers, hooks, plugins and commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
+It can share [your instruction files](#sharing-instructions) and [your MCP servers](#sharing-mcp-servers) too, when you turn them on, and [a repo's own agents and skills](#repos) between that repo's CLI folders. Hooks, plugins and commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
 
 ## Turning it on
 
@@ -110,6 +110,35 @@ A file takes part once it has the markers. `agt share adopt codex kiro` adds an 
 An edit to the block in any file reaches the others; different edits are a conflict, and `agt share resolve instructions --prefer <label>` picks the version that wins. Claude's `@path` imports stay in their Claude file and never go to the other CLIs, and agt's own [delegation rules](delegation.md) block is never copied. Every write backs the file up first and keeps its mode and hard links.
 
 `--instructions whole` (or `agt config set share.instructions whole`) shares whole files instead, and makes a missing one. `agt share kinds remove instructions` stops sharing them; every file keeps its text.
+
+## Sharing MCP servers
+
+MCP servers are off unless you turn them on: `agt share kinds add mcp`, or `--mcp on` with `enable` or `agt setup`. Then a server you add or change in one CLI's user settings reaches the others:
+
+| CLI | Where agt reads them | How agt writes them |
+|---|---|---|
+| Claude Code | `mcpServers` in `~/.claude.json` (for another Claude folder, its own `.claude.json`) | `claude mcp add-json --scope user`, with that folder's `CLAUDE_CONFIG_DIR`; agt never edits `.claude.json` itself |
+| Codex | `[mcp_servers.<name>]` in `~/.codex/config.toml` | that table, every other line kept |
+| Antigravity | `~/.gemini/config/mcp_config.json` | a JSON merge |
+| Kiro | `~/.kiro/settings/mcp.json` | a JSON merge |
+
+Each server is an item named `mcp/<name>`, and it follows the same rules as agents and skills:
+
+- An edit anywhere spreads, and different edits are a conflict. `agt share resolve mcp/<name> --prefer <label>` picks the version that wins, or `--prefer skip` stops sharing that server.
+- Deleting a copy agt made stops the server going to that CLI. Deleting the server where it started leaves the other copies until `agt share rm mcp/<name>` takes them out too.
+- `agt share pick mcp/<name> --only claude` keeps a server where you say. The copies agt made in the CLIs you leave out are taken out, with a backup, unless you add `--keep-copies`.
+
+Servers are compared on what every CLI shares: the command, its arguments, `env` and `cwd`, or the URL and headers. A CLI's other settings for a server, such as Kiro's `disabled` and `autoApprove` or Codex's timeouts, stay as they are. `${VAR}` references are copied as written and never expanded. In Codex they become `env_vars`, `bearer_token_env_var` and `env_http_headers`.
+
+Some servers don't go everywhere:
+
+- **A server with a secret written into it** (a token in `env`, a header or an argument, or a password in a URL) stays in the CLIs that have it. Use a `${VAR}` reference instead, and it shares.
+- **Codex** passes variables only by name, so a server whose `env` gives one variable another's value (`"API_TOKEN": "${OTHER}"`) doesn't go there. Neither does an SSE server.
+- **Antigravity** doesn't expand `${VAR}` in its settings, so a server that needs one doesn't go there. Neither does an SSE server.
+- **Kiro** asks you once before it passes a `${VAR}` value to a server.
+- A server that logs in with OAuth needs that login once in each CLI.
+
+agt's own server (`agents-router`) is never shared. Every write backs up what was there first (for Claude, the server's own entry), reads the server back, and puts back what was there if it doesn't match. `agt share undo` doesn't cover MCP servers; their backups are in `~/.agents-router/state/share/backups/<run>/mcp/`. The session hook leaves Claude's writes to the background watcher, because two `claude` starts don't fit in a session start. MCP servers share between your user folders only, not repos. `agt share kinds remove mcp` stops sharing them; every CLI keeps the servers it has.
 
 ## What a copy holds
 
@@ -279,6 +308,7 @@ path = "/Users/you/.claude-work"
 "agents/reviewer" = { not_in = ["kiro"] }
 "skills/release-notes" = { only = ["claude", "codex"] }
 "skills/old-notes" = "off"            # not shared: every copy stays as it is
+"mcp/notes" = { only = ["claude"] }   # an MCP server stays in that Claude folder
 ```
 
 `agt share settings` lists each setting, where it comes from and the command that changes it. Some are plain values: `agt config set share.auto_copy off`, `share.tool_widening skip`, and the switches `share.watcher`, `share.push_on_save`, `share.notify` and `share.codex_session` (true or false). The others change with the commands above, because changing them makes or removes copies. See [Configuration](configuration.md).

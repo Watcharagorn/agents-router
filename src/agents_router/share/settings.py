@@ -20,6 +20,7 @@ writes only that file's `[share.targets]`.
     codex_session = false                 # agt's session-start entry in Codex's hooks.json
     instructions = "block"                # share agt's block of each CLI's instruction file ("off" by default)
     worktrees = "command"                 # a listed repo's worktrees join by `agt share repo add .` ("auto" by default)
+    mcp = true                            # share your user MCP servers too (off by default)
 
     [[share.folders]]                     # the folders sharing, with their labels
     cli = "claude"
@@ -30,6 +31,7 @@ writes only that file's `[share.targets]`.
     "skills/gamma-apikey" = "off"         # not shared: every copy stays as it is
     "agents/dana" = { not_in = ["codex"] }
     "agents/explorer" = { only = ["kiro"] }
+    "mcp/notes" = { only = ["claude"] }   # an MCP server stays in that folder
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from agents_router import config, levels
 from agents_router.share import codex_toml, model, toolmap
 
 KINDS = ("agents", "skills")
+TARGET_KINDS = (*KINDS, "mcp")  # what `[share.targets]` keys can name: items, and MCP servers (mcp.py)
 # On/off switches for the background side (see triggers.py), with their defaults. Saved only when they differ.
 SWITCHES = {"watcher": True, "push_on_save": True, "notify": True, "codex_session": False}
 INSTRUCTIONS = ("off", "block", "whole")  # see instructions.py
@@ -77,6 +80,7 @@ class Settings:
     codex_session: bool = False
     instructions: str = "off"
     worktrees: str = "auto"
+    mcp: bool = False
 
 
 def path() -> Path:
@@ -134,7 +138,8 @@ def _labels(key: str, value: Any) -> list[str]:
 def _settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("must be a table")
-    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", "worktrees", *SWITCHES}
+    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", "worktrees", "mcp",
+             *SWITCHES}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown key {unknown[0]}")
@@ -163,15 +168,18 @@ def _settings(data: Any) -> Settings:
     worktrees = data.get("worktrees", "auto")
     if worktrees not in WORKTREES:
         raise ValueError(f"worktrees must be {' or '.join(WORKTREES)}")
+    mcp = data.get("mcp", False)
+    if not isinstance(mcp, bool):
+        raise ValueError("mcp must be true or false")
     result = Settings(enabled=enabled, kinds=tuple(kinds), tool_widening=widening,
                       auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, instructions=mode,
-                      worktrees=worktrees, **switches)
+                      worktrees=worktrees, mcp=mcp, **switches)
     targets = data.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be a table")
     for key, value in targets.items():
         kind, _, name = key.partition("/")
-        if kind not in KINDS or not name:
+        if kind not in TARGET_KINDS or not name:
             raise ValueError(f"targets: {json.dumps(key)} isn't <kind>/<name>")
         if value == "off":
             result.off.add(key)
@@ -196,6 +204,8 @@ def render(settings: Settings) -> str:
         lines.append(f"instructions = {value(settings.instructions)}")
     if settings.worktrees != "auto":
         lines.append(f"worktrees = {value(settings.worktrees)}")
+    if settings.mcp:
+        lines.append("mcp = true")
     for folder in settings.folders:
         lines += ["", "[[share.folders]]", f"cli = {value(folder.cli)}", f"label = {value(folder.label)}",
                   f"path = {value(str(folder.path))}"]

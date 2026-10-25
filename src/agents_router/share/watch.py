@@ -78,7 +78,12 @@ def signature(included: list[providers.Provider], extra: list[Path] | None = Non
         digest.update(f"{path}\0{fsutil.stat_signature(Path(path))}\n".encode("utf-8", "surrogateescape"))
 
     for path in extra or []:
-        add(path)
+        if Path(path).name == ".claude.json":
+            from agents_router.share import mcp
+
+            digest.update(f"{path}\0{mcp.fingerprint(Path(path))}\n".encode("utf-8", "surrogateescape"))
+        else:
+            add(path)
     for provider in included:
         if provider.cli == "codex":
             add(provider.folder / "config.toml")  # skills it disables are left out
@@ -147,16 +152,18 @@ def included_folders(saved: settings.Settings) -> list[providers.Provider]:
 
 
 def watched_files(saved: settings.Settings, included: list[providers.Provider]) -> list[Path]:
-    """Files whose change starts a run besides the folders: your settings (and a repo's), and the instruction files."""
+    """Files whose change starts a run besides the folders: your settings (and a repo's), the instruction files,
+    and the MCP server files (for `.claude.json`, only its servers count: Claude rewrites it all the time)."""
 
-    from agents_router.share import instructions
+    from agents_router.share import instructions, mcp
 
     current = scope.current()
     with scope.use(scope.USER):
         files = [settings.path()]
     if current.project:
         return [*files, current.settings_file]
-    return [*files, *(instructions.signature_files(included) if saved.instructions != "off" else [])]
+    return [*files, *(instructions.signature_files(included) if saved.instructions != "off" else []),
+            *(mcp.watched_files(included) if saved.mcp else [])]
 
 
 def repo_scopes(saved: settings.Settings) -> list[scope.Scope]:
@@ -219,7 +226,7 @@ def _scope_sync(saved: settings.Settings, trigger: str, if_stale: bool) -> tuple
     extra = watched_files(saved, included)
     if if_stale and signature(included, extra) == saved_signature():
         return "nothing moved", []
-    args = argparse.Namespace(json=False, dry_run=False)
+    args = argparse.Namespace(json=False, dry_run=False, trigger=trigger)
     try:
         with apply.lock([provider.folder for provider in included], timeout=0):
             moved = signature(included, extra)

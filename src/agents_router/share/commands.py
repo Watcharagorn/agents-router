@@ -31,6 +31,7 @@ and an item command run inside a listed repo acts on that repo's item.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import difflib
 import json
 import os
@@ -43,13 +44,15 @@ from typing import Any
 from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, instructions, model, names, normalize, picker, plan as planner, providers, scope,
+    apply, attention, engine, gitexclude, instructions, mcp, model, names, normalize, picker, plan as planner, providers, scope,
     settings, state, toolmap, triggers,
 )
 from agents_router.share.providers import _short as short
 
 SUPPORTED_KINDS = settings.KINDS
-LATER_KINDS = ("mcp", "commands", "hooks", "plugins")
+LATER_KINDS = ("commands", "hooks", "plugins")
+# Runs started by these write to Claude later: two `claude mcp` starts don't fit a session hook's few seconds.
+MCP_LATER_TRIGGERS = ("session", "save", "mcp-start")
 IN_WORKER = "agt share doesn't write inside agt's workers; run it from your own terminal or session."
 NOT_ENABLED = "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."
 TURNED_OFF = "agt share is off. `agt share enable` turns it on again, with your saved answers."
@@ -90,6 +93,7 @@ def add_parser(subparsers) -> None:
     enable.add_argument("--auto-copy", help="New items go to every target: on (the default), off or a list of kinds.")
     enable.add_argument("--instructions", choices=settings.INSTRUCTIONS,
                         help="Share each CLI's instruction file too: block (agt's marked block of it) or whole; off by default.")
+    enable.add_argument("--mcp", choices=("on", "off"), help="Share your user MCP servers too; off by default.")
     enable.add_argument("--tool-widening", choices=toolmap.TOOL_WIDENING,
                         help="Codex agents can't limit tools: allow-if-shell (the default) copies agents that have a shell, "
                              "skip copies none with a tool list.")
@@ -206,6 +210,8 @@ def _kinds(value: str) -> tuple[str, ...]:
     kinds = tuple(dict.fromkeys(kind.strip() for kind in value.split(",") if kind.strip()))
     if "instructions" in kinds:
         raise ValueError("instructions aren't a kind of item: use --instructions block|whole, or `agt share kinds add instructions`")
+    if "mcp" in kinds:
+        raise ValueError("MCP servers aren't a kind of item: use --mcp on, or `agt share kinds add mcp`")
     later = [kind for kind in kinds if kind in LATER_KINDS]
     if later:
         raise ValueError(f"sharing {', '.join(later)} comes in a later phase; this build shares agents and skills")
@@ -297,7 +303,7 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
     if getattr(args, "projects", "none") not in (None, "none"):
         parts += ["--projects", args.projects]
     for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy),
-                        ("--instructions", getattr(args, "instructions", None))):
+                        ("--instructions", getattr(args, "instructions", None)), ("--mcp", getattr(args, "mcp", None))):
         if value is not None:
             parts += [flag, value]
     return " ".join(shlex.quote(part) for part in parts)
@@ -340,7 +346,15 @@ def _plan(args: argparse.Namespace, current: state.State, saved: settings.Settin
     if mode != "off":
         plan.instructions = instructions.build(included, mode, current,
                                                prefer=getattr(options, "instructions_from", None))
+    if _mcp_on(args, saved) and not scope.current().project:
+        later = frozenset({"claude"}) if getattr(args, "trigger", "command") in MCP_LATER_TRIGGERS else frozenset()
+        plan.mcp = mcp.build(included, current, options, later=later)
     return plan
+
+
+def _mcp_on(args: argparse.Namespace, saved: settings.Settings | None) -> bool:
+    flag = getattr(args, "mcp", None)
+    return flag == "on" if flag else bool(saved and saved.mcp)
 
 
 def _print(value: Any) -> None:
@@ -351,6 +365,8 @@ def _item_key(plan: planner.Plan, name: str) -> str:
     """`<kind>/<name>`, as the folders spell it, for an item named on the command line (bare when it's unique)."""
 
     kind, slash, bare = name.partition("/")
+    if kind == mcp.KIND and bare:
+        return name
     if not slash:
         kind, bare = "", name
     elif kind not in SUPPORTED_KINDS:
@@ -386,7 +402,7 @@ def _saved_answers(plan: planner.Plan, args: argparse.Namespace, saved: settings
                                auto_copy=options.auto_copy,
                                folders=[settings.Folder(p.cli, p.folder, p.label) for p in plan.included],
                                instructions=getattr(args, "instructions", None) or (saved.instructions if saved else "off"),
-                               worktrees=saved.worktrees if saved else "auto", **switches)
+                               worktrees=saved.worktrees if saved else "auto", mcp=_mcp_on(args, saved), **switches)
     result.off = {_item_key(plan, name) for name in options.off}
     for name, label in options.skip:
         result.not_in.setdefault(_item_key(plan, name), []).append(label)
@@ -498,9 +514,14 @@ def _report_lines(plan: planner.Plan, result: apply.Result, saved_at: Path | Non
     if plan.conflicts:
         lines += ["", "Left as they are until you pick a version (`agt share status --diff` shows how they differ):"]
         lines += [f"  {item.name} ({item.kind}): {', '.join('/'.join(copy.labels) for copy in item.copies)}" for item in plan.conflicts]
+    if plan.mcp is not None and plan.mcp.conflicts:
+        lines += ["", "MCP servers left as they are until you pick a version:"]
+        lines += [f"  {server.name}: {', '.join(server.decision.labels)} (`agt share resolve {server.key} --prefer <label>`)"
+                  for server in plan.mcp.conflicts]
     if plan.waiting:
         lines += ["", "Waiting:"] + [f"  {item.name}: {item.decision.reason}" for item in plan.waiting]
     notes = extra + result.replayed + plan.notices + [note for item in plan.items for note in item.notes]
+    notes += plan.mcp.notes() if plan.mcp is not None else []
     if notes:
         lines += ["", "Notes:"] + [f"  {note}" for note in notes]
     for path, changed in result.excluded:
@@ -633,7 +654,7 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
             print(f"Nothing was written: the plan changed since your dry run (it was {args.if_plan}, now {plan.digest}).")
             print(planner.render_text(plan, line))
             return 1
-        if plan.conflicts and not (args.if_plan or args.accept_suggested):
+        if (plan.conflicts or (plan.mcp is not None and plan.mcp.conflicts)) and not (args.if_plan or args.accept_suggested):
             return _needs_choice(plan, line, args.json)
         answers = _saved_answers(plan, args, saved)
         saved_at = settings.save(answers)
@@ -904,7 +925,9 @@ def _status(args: argparse.Namespace) -> int:
         needs.append({"id": "watcher", "kind": "watcher", "item": attention.FOLDER, "who": "agent",
                       "message": "the background watcher stopped", "fix": ["agt doctor --fix"]})
     shared = plan.instructions
-    code = 1 if plan.conflicts or pending or plan.frozen or (shared is not None and shared.conflict) else 0
+    servers = plan.mcp
+    code = 1 if plan.conflicts or pending or plan.frozen or (shared is not None and shared.conflict) \
+        or (servers is not None and (servers.conflicts or servers.pending)) else 0
     repos = [] if scope.current().project else [_repo_status(target) for target in _repo_scopes(saved)]
     if any(entry.get("conflicts") or entry.get("pending") for entry in repos):
         code = 1
@@ -914,6 +937,7 @@ def _status(args: argparse.Namespace) -> int:
                 "waiting": [i.name for i in plan.waiting], "pending_delete": [i.name for i in pending],
                 "frozen": plan.frozen, "not_shared": len(plan.excluded), "notes": plan.notices, "attention": needs,
                 "watcher": health, "instructions": shared.summary() if shared is not None else None,
+                "mcp": servers.summary() if servers is not None else None,
                 "repos": [{key: value for key, value in entry.items() if key != "scope"} for entry in repos],
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
@@ -924,6 +948,8 @@ def _status(args: argparse.Namespace) -> int:
     lines += [f"  {line}" for line in watch.health_lines(saved) if not (health["stopped"] and line.startswith("Watcher stopped"))]
     if shared is not None:
         lines.append(f"  {shared.summary()}")
+    if servers is not None:
+        lines += [f"  {line}" for line in servers.summary().splitlines()]
     by_key = {item.key: item for item in plan.items}
     for entry in needs:
         fix = " or ".join(f"`{command}`" for command in entry["fix"])
@@ -940,7 +966,8 @@ def _status(args: argparse.Namespace) -> int:
         lines.append(f"  {entry['line']}")
         lines += [f"    {TITLES.get(need['kind'], need['kind'])}: {need['message']}."
                   + (f" Fix: `{need['fix'][0]}`." if need["fix"] else "") for need in entry.get("attention", [])]
-    if plan.changes or (shared is not None and shared.writes) or any(entry.get("to_write") for entry in repos):
+    if plan.changes or (shared is not None and shared.writes) or (servers is not None and servers.writes) \
+            or any(entry.get("to_write") for entry in repos):
         lines.append("  `agt share sync` writes the changes.")
     print("\n".join(lines))
     return code
@@ -1187,6 +1214,8 @@ def _pick(args: argparse.Namespace) -> int:
         if to_in or to_out or only:
             raise ValueError("name the item: agt share pick <item> --in <label>")
         return _show_picks(args, plan, None)
+    if args.item.startswith(f"{mcp.KIND}/"):
+        return _pick_mcp(args, saved, plan, to_in, to_out, only)
     key = _existing(plan, args.item)
     name = key.partition("/")[2]
     if not (to_in or to_out or only):
@@ -1299,6 +1328,113 @@ def _resolve_instructions(args: argparse.Namespace, saved: settings.Settings) ->
     return 1 if result.failed else 0
 
 
+def _mcp_server(plan: planner.Plan, key: str) -> Any:
+    if plan.mcp is None:
+        raise ValueError("MCP servers don't share; `agt share kinds add mcp` turns them on")
+    server = next((server for server in plan.mcp.servers if server.key == key), None)
+    if server is None:
+        raise ValueError(f"no MCP server named {key.partition('/')[2]} in the folders sharing")
+    return server
+
+
+_REMOVE_ALL = object()
+
+
+def _mcp_run(args: argparse.Namespace, saved: settings.Settings, key: str, title: str, op: str, *,
+             resolve: dict[str, str] | None = None, removing: Any = _REMOVE_ALL, save: bool = False) -> int:
+    """One MCP server's run, holding the lock: `resolve`, `pick` (`save` first) and `rm` (`removing=None`)."""
+
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    included = _folders(load_config(), None, False, saved)[1]
+    with apply.lock([provider.folder for provider in included]):
+        current = state.load()
+        replayed = apply.replay(current)
+        saved_at = settings.save(saved) if save else None  # saved only now, holding the lock
+        plan = _plan(args, current, saved, resolve=resolve)
+        locked = plan.restricted(set())
+        locked.mcp = dataclasses.replace(plan.mcp, servers=[server for server in plan.mcp.servers if server.key == key])
+        if removing is not _REMOVE_ALL:
+            locked.mcp.removing = {key.partition("/")[2]: removing}
+        result = apply.apply(locked, current, op=op)
+        result.replayed = replayed
+        _remember(plan, current, result)
+    _report(locked, result, saved_at, args.json, title=title)
+    return 1 if result.failed else 0
+
+
+def _resolve_mcp(args: argparse.Namespace, saved: settings.Settings) -> int:
+    """`resolve mcp/<name> --prefer <label>`: that CLI's version of the server goes to the others."""
+
+    plan = _plan(args, state.load(), saved)
+    server = _mcp_server(plan, args.item)
+    if server not in plan.mcp.conflicts:
+        print(f"agt share resolve: {server.name} has no conflict; it's the same in every CLI that has it.")
+        return 0
+    labels = server.decision.labels
+    if not args.prefer:
+        if args.json or not _interactive():
+            ask = f"The MCP server {server.name} differs between {', '.join(labels)}. Which version should every CLI get?"
+            _print({"error": "needs_choice", "ask": ask, "choices": [*labels, "skip"],
+                    "retry": f"agt share resolve {server.key} --prefer <label>"} if args.json else
+                   f"{ask} Answer with `agt share resolve {server.key} --prefer <label>` (or skip).")
+            return 3
+        args.prefer = input(f"Which version should every CLI get? {' / '.join(labels)}, s to stop sharing it, q to quit: ").strip()
+        args.prefer = "skip" if args.prefer == "s" else args.prefer
+    if args.prefer == "skip":
+        saved.off.add(server.key)
+        settings.save(saved)
+        print(f"agt share: {server.name} isn't shared any more; every CLI keeps its own version.")
+        return 0
+    if args.prefer not in server.copies:
+        raise ValueError(f"--prefer: {args.prefer} has no copy of {server.name}; its copies are in {', '.join(labels)}")
+    return _mcp_run(args, saved, server.key, "agt share resolve", "resolve", resolve={server.key: args.prefer})
+
+
+def _pick_mcp(args: argparse.Namespace, saved: settings.Settings, plan: planner.Plan, to_in: list[str],
+              to_out: list[str], only: list[str] | None) -> int:
+    """`pick mcp/<name>`: where the server goes. The copies agt made in CLIs you leave out are taken out (with a
+    backup), unless `--keep-copies`; a server you added yourself somewhere stays there."""
+
+    server = _mcp_server(plan, args.item)
+    key = server.key
+    if not (to_in or to_out or only):
+        print(f"MCP server {server.name}:")
+        for label in sorted(plan.mcp.by_label):
+            where = ("has it" if label in server.copies else f"can't: {server.blocked[label]}" if label in server.blocked
+                     else "doesn't have it")
+            print(f"  {label:<20} {where}")
+        print(f"  {server.held}." if server.held else f"  {server.decision.reason or server.decision.action}.")
+        return 0
+    both = sorted(set(to_in) & set(to_out))
+    if both:
+        raise ValueError(f"{', '.join(both)} is in both --in and --not-in")
+    if only:
+        saved.only[key] = sorted(only)
+        saved.not_in.pop(key, None)
+    for label in to_in:
+        saved.not_in[key] = [entry for entry in saved.not_in.get(key, []) if entry != label]
+        if key in saved.only and label not in saved.only[key]:
+            saved.only[key] = sorted([*saved.only[key], label])
+    for label in to_out:
+        saved.not_in[key] = sorted({*saved.not_in.get(key, []), label})
+        if key in saved.only:
+            saved.only[key] = [entry for entry in saved.only[key] if entry != label]
+    for chosen in (saved.not_in, saved.only):
+        if key in chosen and not chosen[key]:
+            del chosen[key]
+    if to_in or only:
+        saved.off.discard(key)
+    allowed = set(saved.only.get(key, plan.mcp.by_label)) - set(saved.not_in.get(key, []))
+    left = {label for label in server.copies if label not in allowed}
+    removing = set() if args.keep_copies else left & mcp.agt_made(server, state.load())
+    if left - removing:
+        print(f"{server.name} stays in {', '.join(sorted(left - removing))}: "
+              + ("you kept it there." if args.keep_copies else "it's yours there (you added or changed it)."))
+    return _mcp_run(args, saved, key, "agt share pick", "pick", removing=removing, save=True)
+
+
 def _adopt(args: argparse.Namespace) -> int:
     """`adopt`: agt's block in these folders' instruction files, then a sync that fills it."""
 
@@ -1339,6 +1475,8 @@ def _resolve(args: argparse.Namespace) -> int:
         return 0
     if args.item == "instructions":
         return _resolve_instructions(args, saved)
+    if (args.item or "").startswith(f"{mcp.KIND}/"):
+        return _resolve_mcp(args, saved)
     plan = _plan(args, state.load(), saved)
     if args.all == bool(args.item):
         raise ValueError("name one item to resolve, or --all")
@@ -1407,6 +1545,12 @@ def _rm(args: argparse.Namespace) -> int:
     if saved is None:
         _say_off(args)
         return 0
+    if args.item.startswith(f"{mcp.KIND}/"):
+        server = _mcp_server(_plan(args, state.load(), saved), args.item)
+        if server.held:
+            print(f"{server.name} isn't shared ({server.held}), so agt leaves it alone in every CLI.")
+            return 1
+        return _mcp_run(args, saved, args.item, "agt share rm", "rm", removing=None)
     plan = _plan(args, state.load(), saved)
     key = _existing(plan, args.item)
     name = key.partition("/")[2]
@@ -1593,6 +1737,8 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
         _no_rename_pending(plan)
         left = planner.leave(plan, current, kinds, labels)
         off = planner.turn_off_plan(plan, left, choice == "remove")
+        if op == "disable" and choice == "remove" and plan.mcp is not None:
+            off.mcp = mcp.removal_only(plan.mcp, {server.name: mcp.agt_made(server, current) for server in plan.mcp.servers})
         copies = [{"item": entry.item.key, "labels": entry.labels, "path": str(entry.path), "status": entry.status}
                   for entry in left]
         result = apply.apply(off, current, op=op, command=retry.split(" --")[0],
@@ -1863,6 +2009,19 @@ def _kinds_command(args: argparse.Namespace) -> int:
         _say_off(args)
         return 0
     kind = args.kind
+    if kind == mcp.KIND:
+        if args.kinds_command == "add":
+            if saved.mcp:
+                print("agt share: MCP servers already share.")
+                return 0
+            saved.mcp = True
+            return _run_sync(args, saved, "agt share kinds add", save=True, notes=[
+                "MCP servers share between your CLIs' user settings; one with a secret written into it stays where it is."])
+        saved.mcp = False
+        at = settings.save(saved)
+        _print({"mcp": "off", "settings": str(at)} if args.json else
+               "agt share: MCP servers don't share any more; every CLI keeps the servers it has.")
+        return 0
     if kind == "instructions":
         if args.kinds_command == "add":
             if saved.instructions != "off":

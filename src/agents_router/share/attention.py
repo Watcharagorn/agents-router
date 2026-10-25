@@ -88,6 +88,10 @@ def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
         from agents_router.share import instructions
 
         found += instructions.attention(plan.instructions)
+    if plan.mcp is not None:
+        from agents_router.share import mcp
+
+        found += mcp.attention(plan.mcp)
     return found
 
 

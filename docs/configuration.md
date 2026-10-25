@@ -319,6 +319,7 @@ These keys take effect at once; the switches set what runs sharing without you (
 |---|---|---|
 | `share.instructions` | `off` | Share each CLI's instruction file: `block` (agt's marked block of it) or `whole`; see [Sharing instructions](share.md#sharing-instructions) |
 | `share.worktrees` | `auto` | A listed repo's worktrees share by themselves, or wait for `agt share repo add .` (`command`) |
+| `share.mcp` | `false` | Share your user MCP servers between your CLIs; see [Sharing MCP servers](share.md#sharing-mcp-servers) |
 | `share.watcher` | `true` | The background watcher (macOS): a sync every minute and when a shared folder changes |
 | `share.push_on_save` | `true` | Claude Code's save entry: a save inside a shared folder spreads within seconds |
 | `share.notify` | `true` | macOS notifications for conflicts and other urgent items, at most once an hour |

@@ -674,6 +674,10 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         result.outcomes += _apply_instructions(plan, current, result.run)
         save_state(current, rotate=rotate)
         rotate = False
+    if plan.mcp is not None:
+        result.outcomes += _apply_mcp(plan, current, result.run)
+        save_state(current, rotate=rotate)
+        rotate = False
     if rotate:
         save_state(current)  # a first run with nothing to write still starts the state
     if made:
@@ -696,6 +700,16 @@ def _apply_instructions(plan: planner.Plan, current: State, run: str) -> list[Ou
             for written in instructions.apply(plan.instructions, current, run)]
 
 
+def _apply_mcp(plan: planner.Plan, current: State, run: str) -> list[Outcome]:
+    """The MCP servers' writes, as outcomes of this run (they share agt's backups folder and log)."""
+
+    from agents_router.share import mcp
+
+    return [Outcome(mcp.KIND, written.name, [written.label], written.action, written.path, written.ok,
+                    written.message, written.backup)
+            for written in mcp.apply(plan.mcp, current, run)]
+
+
 def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None,
          trigger: str = "command") -> None:
     if trigger != "command" and not result.outcomes and not result.replayed:
@@ -713,8 +727,9 @@ def _log(plan: planner.Plan, result: Result, command: str, started: float, extra
 
 
 def write_manifest(result: Result, op: str, records: dict | None = None) -> None:
+    # MCP servers are left out: `undo` puts back whole files, and a Claude server's backup is only its entry.
     manifest = [{"key": f"{o.kind}/{names.identity(o.name)}", "name": o.name, "labels": o.labels, "action": o.action,
-                 "path": str(o.path), "backup": str(o.backup) if o.backup else None} for o in result.written]
+                 "path": str(o.path), "backup": str(o.backup) if o.backup else None} for o in result.written if o.kind != "mcp"]
     if manifest:
         folder = share_dir() / "backups" / result.run
         fsutil.make_private_dir(folder)

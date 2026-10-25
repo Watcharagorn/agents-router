@@ -130,6 +130,7 @@ class Plan:
     frozen: list[dict[str, Any]] = field(default_factory=list)  # folders whose deletes wait for you: label, kind, gone, known
     unrenamed: list[dict[str, Any]] = field(default_factory=list)  # renames agt left alone: kind, old, new, message
     instructions: Any = None  # the instruction files' plan (instructions.Plan) when they share
+    mcp: Any = None  # the MCP servers' plan (mcp.Plan) when they share
 
     @property
     def conflicts(self) -> list[Item]:
@@ -177,6 +178,8 @@ class Plan:
             decision = self.instructions.decision
             content["instructions"] = [decision.action, decision.version, sorted(c.label for c in self.instructions.writes),
                                        sorted(decision.labels)]
+        if self.mcp is not None:
+            content["mcp"] = self.mcp.digest_content()
         return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -1017,10 +1020,13 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
         lines += ["", "New folders: " + ", ".join(short(folder) for folder in plan.new_folders)]
     if plan.instructions is not None:
         lines += ["", plan.instructions.summary()]
+    if plan.mcp is not None:
+        lines += ["", plan.mcp.summary()]
     count = len(plan.changes)
     lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
                   f"{'s' if len(plan.folders_changed) != 1 else ''}."]
-    extra = plan.instructions is not None and (plan.instructions.writes or plan.instructions.conflict)
+    extra = (plan.instructions is not None and (plan.instructions.writes or plan.instructions.conflict)) or \
+        (plan.mcp is not None and (plan.mcp.writes or plan.mcp.conflicts))
     if (count or plan.conflicts or saving or extra) and command:
         lines.append(f"Plan {plan.digest}. To apply it:")
         lines.append(f"  {command}")
@@ -1046,12 +1052,23 @@ def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:
                       "choices": [{"value": label, "path": next((str(c.path) for c in shared.copies if c.label == label), None),
                                    "newer": False} for label in shared.decision.labels],
                       "flag": "--resolve instructions=<choice>"})
+    for server in plan.mcp.conflicts if plan.mcp is not None else []:
+        needs.append({"id": f"resolve:{server.key}", "ask": f"The MCP server {server.name} differs between "
+                      f"{', '.join(server.decision.labels)}. Which version should every CLI get?",
+                      "choices": [{"value": label, "path": None, "newer": False} for label in server.decision.labels]
+                      + [{"value": "skip", "path": None, "newer": False, "means": "don't share it; every copy stays as it is"}],
+                      "flag": f"--resolve {server.key}=<choice>"})
     return {
         "dry_run": True,
         "plan": plan.digest,
         "instructions": None if shared is None else {
             "mode": shared.mode, "summary": shared.summary(), "writes": [copy.label for copy in shared.writes],
             "conflict": shared.conflict, "unadopted": [copy.label for copy in shared.unadopted]},
+        "mcp": None if plan.mcp is None else {
+            "summary": plan.mcp.summary(), "writes": [{"name": server.name, "label": label} for server, label in plan.mcp.writes],
+            "conflicts": [server.name for server in plan.mcp.conflicts],
+            "staying": {server.name: server.held for server in plan.mcp.servers if server.held},
+            "blocked": {server.name: server.blocked for server in plan.mcp.servers if server.blocked and not server.held}},
         "folders": [{"label": row.provider.label, "cli": row.provider.cli, "path": str(row.provider.folder),
                      "used": row.provider.label in {p.label for p in plan.included}, "suggested": row.suggested,
                      "reason": row.reason, "holds": row.holds} for row in plan.rows],

@@ -4,8 +4,11 @@ The first argument picks the CLI (claude, codex or agy). State lives in a JSON f
 in the CLI's config folder: CLAUDE_CONFIG_DIR, CODEX_HOME, or FAKE_AGY_HOME for agy.
 A file named `logged_in` in that folder means the folder is logged in.
 
-  FAKE_HOST_FAIL   a subcommand that exits 1 (e.g. "install" or "add")
+  FAKE_HOST_FAIL   a subcommand that exits 1 (e.g. "install", "add" or "add-json")
+
+`claude mcp add-json|remove --scope user` edit `mcpServers` in `.claude.json`.
   FAKE_HOST_LOG    file to append each argv to, one JSON list per line
+  FAKE_HOST_FAIL_ONCE  a file; while it exists, the next `claude mcp add-json` fails and removes it
 """
 
 import json
@@ -46,6 +49,8 @@ def main():
             return 0
         print("Not logged in")
         return 1
+    if kind == "claude" and argv[:1] == ["mcp"]:
+        return claude_mcp(argv[1:])
     if argv[:1] != ["plugin"]:
         print(f"fake {kind}: unsupported {argv}", file=sys.stderr)
         return 2
@@ -103,6 +108,43 @@ def main():
         return 0
     print(f"fake {kind}: unsupported {argv}", file=sys.stderr)
     return 2
+
+
+def claude_mcp(argv):
+    """`claude mcp add-json|remove --scope user`, in `.claude.json` where Claude Code keeps it.
+
+    With CLAUDE_CONFIG_DIR that's the folder's own `.claude.json`; without it, `~/.claude.json`.
+    """
+
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = Path(config) / ".claude.json" if config else Path.home() / ".claude.json"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    command, rest = argv[0], [arg for arg in argv[1:] if arg not in ("--scope", "-s", "user")]
+    once = os.environ.get("FAKE_HOST_FAIL_ONCE")  # a file: while it's there, add-json fails once and removes it
+    if command == os.environ.get("FAKE_HOST_FAIL") or (command == "add-json" and once and Path(once).exists()):
+        if once:
+            Path(once).unlink(missing_ok=True)
+        print(f"error: {command} failed on purpose", file=sys.stderr)
+        return 1
+    servers = data.setdefault("mcpServers", {})
+    if command == "add-json":
+        name, body = rest
+        if name in servers:
+            print(f"MCP server {name} already exists in user config", file=sys.stderr)
+            return 1
+        entry = json.loads(body)
+        servers[name] = {"type": "stdio", **entry} if "command" in entry else entry  # Claude adds the type
+    elif command == "remove":
+        if rest[0] not in servers:
+            print(f"No user-scoped MCP server found with name: {rest[0]}", file=sys.stderr)
+            return 1
+        del servers[rest[0]]
+    else:
+        print(f"fake claude: unsupported mcp {argv}", file=sys.stderr)
+        return 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":
