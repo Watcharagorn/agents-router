@@ -221,7 +221,7 @@ class DryRunTests(MacCopy):
     def test_bad_flags_are_errors(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            for args in (["--kinds", "plugins"], ["--kinds", "hooks"], ["--kinds", "nope"], ["--skip", "dana@nowhere"], ["--skip", "dana"],
+            for args in (["--kinds", "commands"], ["--kinds", "hooks"], ["--kinds", "plugins"], ["--kinds", "nope"], ["--skip", "dana@nowhere"], ["--skip", "dana"],
                          ["--projects", str(self.root / "missing")], ["--claude-dir", str(self.root / "missing")]):
                 with self.subTest(args=args):
                     code, _ = self.run_share("enable", *args, "--dry-run")

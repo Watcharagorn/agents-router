@@ -50,7 +50,7 @@ from agents_router import config, levels
 from agents_router.share import codex_toml, model, toolmap
 
 KINDS = ("agents", "skills")
-TARGET_KINDS = (*KINDS, "mcp")  # what `[share.targets]` keys can name: items, and MCP servers (mcp.py)
+TARGET_KINDS = (*KINDS, "mcp", "plugins")  # what `[share.targets]` keys name: items, MCP servers, plugins never offered
 # On/off switches for the background side (see triggers.py), with their defaults. Saved only when they differ.
 SWITCHES = {"watcher": True, "push_on_save": True, "notify": True, "codex_session": False}
 INSTRUCTIONS = ("off", "block", "whole")  # see instructions.py

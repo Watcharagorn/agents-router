@@ -11,7 +11,7 @@ It covers your user folders today:
 | Antigravity | `~/.gemini` | `config/agents/<name>.md` | `antigravity-cli/skills/<name>/` |
 | Kiro | `~/.kiro` | `agents/<name>.json` | `skills/<name>/` |
 
-It can share [your instruction files](#sharing-instructions), [your MCP servers](#sharing-mcp-servers) and [your hooks](#sharing-hooks) too, when you turn them on, and [a repo's own agents and skills](#repos) between that repo's CLI folders. Plugins and commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
+It can share [your instruction files](#sharing-instructions), [your MCP servers](#sharing-mcp-servers) and [your hooks](#sharing-hooks) too, when you turn them on, [offer your plugins](#plugins) to your other CLIs, and share [a repo's own agents and skills](#repos) between that repo's CLI folders. Commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
 
 ## Turning it on
 
@@ -172,6 +172,20 @@ A copy is one entry at the end of the other CLI's hooks file that calls `agt sha
 - In agt's own workers, and whenever something goes wrong, the copy gives no answer, so it never blocks by mistake.
 
 agt keeps its entries' places in each hooks file, since Codex trusts hooks by their position: Codex asks you to trust a new copy once in `/hooks`. agt's own hooks and Antigravity's review gate are never shared, and hooks share between your user folders only, not repos. `agt share kinds remove hooks` (or `agt share disable`) takes every copy out; your approvals stay for next time.
+
+## Plugins
+
+Claude Code and Codex install the same plugin packages. `agt share plugins` lists each plugin that's on in one of them and that the other could install from the same marketplace, with the commands it would run:
+
+```
+agt share plugins
+agt share plugins apply                              # asks about each one, in a terminal
+agt share plugins apply formatter@tools:codex --yes  # installs the ones you name
+```
+
+Nothing is installed on its own: not by a sync, not by the watcher. In a terminal, `apply` asks about each plugin (`x` means "never offer it again", saved as `"plugins/<id>" = "off"` under `[share.targets]`). Without a terminal, it lists them and exits 3 until you name them with `--yes`. agt runs each CLI's own commands (`claude plugin marketplace add`, `claude plugin install`, `codex plugin marketplace add`, `codex plugin add`) for that folder, then checks `plugin list` shows the plugin.
+
+agt reads Claude Code's `enabledPlugins` with `plugins/installed_plugins.json` and `known_marketplaces.json`, and Codex's `[plugins."<id>"]` and `[marketplaces]` tables in `config.toml`. A plugin turned off on purpose in a CLI is never installed there, a plugin installed only for a project isn't offered user-wide, and agt's own plugin is left to `agt setup`. When an install fails, agt doesn't offer it again until the plugin's version changes, unless you name it. Antigravity and Kiro aren't offered plugins yet.
 
 ## What a copy holds
 

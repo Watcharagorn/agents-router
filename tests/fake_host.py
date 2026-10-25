@@ -63,12 +63,12 @@ def main():
         print(json.dumps({"marketplaces": items} if kind == "codex" else items))
         return 0
     if sub[:2] == ["marketplace", "add"]:
-        if sub[2] != REPO:
-            return 1
-        if "agents-router" not in state["marketplaces"]:
-            state["marketplaces"].append("agents-router")
+        # agt's own repo, or any other source: the marketplace is named after its last part (example/tools: tools).
+        name = "agents-router" if sub[2] == REPO else Path(sub[2].rstrip("/")).name.removesuffix(".git")
+        if name not in state["marketplaces"]:
+            state["marketplaces"].append(name)
         save()
-        print("Added marketplace agents-router")
+        print(f"Added marketplace {name}")
         return 0
     if sub[:2] in (["marketplace", "update"], ["marketplace", "upgrade"]):
         return 0 if sub[2] in state["marketplaces"] else 1
@@ -92,10 +92,12 @@ def main():
                 return 1
             state["plugins"]["agents-router"] = True
         else:
-            if target != PLUGIN_ID or "agents-router" not in state["marketplaces"]:
+            if target.partition("@")[2] not in state["marketplaces"]:
                 print(f"Plugin {target} not found", file=sys.stderr)
                 return 1
-            state["plugins"][PLUGIN_ID] = True
+            state["plugins"][target] = True
+            if target != PLUGIN_ID:
+                record_install(kind, folder, target)
         save()
         print("Installed")
         return 0
@@ -108,6 +110,25 @@ def main():
         return 0
     print(f"fake {kind}: unsupported {argv}", file=sys.stderr)
     return 2
+
+
+def record_install(kind, folder, plugin_id):
+    """Where Claude Code and Codex note an installed plugin, for share's plugin inventory (not agt's own plugin)."""
+
+    if kind == "claude":
+        settings = folder / "settings.json"
+        data = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+        data.setdefault("enabledPlugins", {})[plugin_id] = True
+        settings.write_text(json.dumps(data), encoding="utf-8")
+        installed = folder / "plugins" / "installed_plugins.json"
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        known = json.loads(installed.read_text(encoding="utf-8")) if installed.exists() else {"version": 2, "plugins": {}}
+        known["plugins"][plugin_id] = [{"scope": "user", "installPath": str(folder / "plugins" / plugin_id), "version": "1.0.0"}]
+        installed.write_text(json.dumps(known), encoding="utf-8")
+    elif kind == "codex":
+        config = folder / "config.toml"
+        text = config.read_text(encoding="utf-8") if config.exists() else ""
+        config.write_text(text + f'\n[plugins."{plugin_id}"]\nenabled = true\n', encoding="utf-8")
 
 
 def claude_mcp(argv):

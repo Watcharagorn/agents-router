@@ -44,13 +44,13 @@ from typing import Any
 from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, hooks, instructions, mcp, model, names, normalize, picker, plan as planner, providers, scope,
+    apply, attention, engine, gitexclude, hooks, instructions, mcp, model, plugins, names, normalize, picker, plan as planner, providers, scope,
     settings, state, toolmap, triggers,
 )
 from agents_router.share.providers import _short as short
 
 SUPPORTED_KINDS = settings.KINDS
-LATER_KINDS = ("commands", "plugins")
+LATER_KINDS = ("commands",)
 # Runs started by these write to Claude later: two `claude mcp` starts don't fit a session hook's few seconds.
 MCP_LATER_TRIGGERS = ("session", "save", "mcp-start")
 IN_WORKER = "agt share doesn't write inside agt's workers; run it from your own terminal or session."
@@ -116,6 +116,15 @@ def add_parser(subparsers) -> None:
     sync.add_argument("--quiet", action="store_true", help="Print nothing (a background run).")
     sync.add_argument("--trigger", default="command", help=argparse.SUPPRESS)
     hook_run = actions.add_parser("hook-run", help=argparse.SUPPRESS)  # the launcher runs hook_run.py directly
+    plugins_parser = actions.add_parser("plugins", help="Plugins on in one CLI that another could install; `apply` installs "
+                                                        "the ones you say yes to.")
+    plugins_parser.add_argument("--json", action="store_true")
+    plugin_actions = plugins_parser.add_subparsers(dest="plugins_command")
+    plugins_apply = plugin_actions.add_parser("apply", help="Install plugins in the CLIs that don't have them, after you say yes.")
+    plugins_apply.add_argument("offers", nargs="*", metavar="PLUGIN:LABEL",
+                               help="Only these (as `agt share plugins` lists them); needed with --yes.")
+    plugins_apply.add_argument("--yes", action="store_true", help="Install the plugins you named without asking.")
+    plugins_apply.add_argument("--json", action="store_true")
     hook_run.add_argument("hook_args", nargs=argparse.REMAINDER)
     watch = actions.add_parser("watch", help="One run of the background watcher (the LaunchAgent runs it every minute).")
     watch.add_argument("--once", action="store_true", help="Run once and exit (the only mode).")
@@ -218,6 +227,8 @@ def _kinds(value: str) -> tuple[str, ...]:
         raise ValueError("MCP servers aren't a kind of item: use --mcp on, or `agt share kinds add mcp`")
     if "hooks" in kinds:
         raise ValueError("hooks aren't a kind of item: use --hooks on, or `agt share kinds add hooks`")
+    if "plugins" in kinds:
+        raise ValueError("plugins aren't a kind of item: `agt share plugins` lists the ones another CLI could install")
     later = [kind for kind in kinds if kind in LATER_KINDS]
     if later:
         raise ValueError(f"sharing {', '.join(later)} comes in a later phase; this build shares agents and skills")
@@ -1502,6 +1513,79 @@ def _pick_hook(args: argparse.Namespace, saved: settings.Settings, plan: planner
     return 1 if result.failed else 0
 
 
+def _plugins(args: argparse.Namespace) -> int:
+    """`plugins`: what another CLI could install natively. `plugins apply`: install them, after you say yes."""
+
+    saved = _enabled()
+    if saved is None:
+        _say_off(args)
+        return 0
+    included = _folders(load_config(), None, False, saved)[1]
+    found = plugins.offers(included, saved.off)
+    shown = [{"plugin": offer.plugin.id, "from": offer.source_label, "to": offer.label, "key": offer.key,
+              "commands": [" ".join([offer.cli, *step]) for step in offer.steps], "why_not": offer.why_not,
+              "failed_before": offer.failed} for offer in found]
+    if getattr(args, "plugins_command", None) != "apply":
+        if args.json:
+            _print({"offers": shown})
+        else:
+            print("\n".join(plugins.summary(found)))
+            for offer in found:
+                if not offer.why_not:
+                    print(f"  {offer.key}: " + "; ".join(" ".join([offer.cli, *step]) for step in offer.steps))
+        return 0
+    by_key = {offer.key: offer for offer in found}
+    unknown = [key for key in args.offers if key not in by_key]
+    if unknown:
+        raise ValueError(f"{', '.join(unknown)}: not a plugin another CLI could install; `agt share plugins` lists them")
+    chosen = [by_key[key] for key in args.offers] if args.offers else \
+        [offer for offer in found if not offer.why_not and not offer.failed]
+    blocked = [offer for offer in chosen if offer.why_not]
+    if blocked:
+        raise ValueError("; ".join(f"{offer.key}: {offer.why_not}" for offer in blocked))
+    if not chosen:
+        print("agt share plugins: nothing to install.")
+        return 0
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    if args.yes and not args.offers:
+        raise ValueError("--yes installs only plugins you name: agt share plugins apply <plugin>:<label> --yes")
+    if not args.yes:
+        if args.json or not _interactive():
+            ask = "Install these plugins? " + ", ".join(f"{offer.plugin.name} in {offer.label}" for offer in chosen)
+            _print({"error": "needs_choice", "ask": ask, "choices": [entry for entry in shown if entry["key"] in
+                                                                    {offer.key for offer in chosen}],
+                    "retry": "agt share plugins apply " + " ".join(offer.key for offer in chosen) + " --yes"}
+                   if args.json else f"Nothing was installed. {ask}? Answer with "
+                   f"`agt share plugins apply {' '.join(offer.key for offer in chosen)} --yes`.")
+            return 3
+        approved, never = [], []
+        for offer in chosen:
+            steps = "; ".join(" ".join([offer.cli, *step]) for step in offer.steps)
+            answer = input(f"Install {offer.plugin.name} in {offer.label} ({steps})? y / n / x never / q quit: ").strip().lower()
+            if answer == "q":
+                break
+            if answer == "y":
+                approved.append(offer)
+            elif answer == "x":
+                never.append(offer)
+        if never:
+            saved.off |= {f"plugins/{offer.plugin.id}" for offer in never}
+            settings.save(saved)
+            print("Not offered again: " + ", ".join(offer.plugin.id for offer in never) + ".")
+        chosen = approved
+    by_label = {provider.label: provider for provider in included}
+    failed = 0
+    for offer in chosen:
+        ok, lines = plugins.install(offer, by_label[offer.label])
+        failed += not ok
+        print(f"{'+' if ok else '!'} {offer.plugin.name} in {offer.label}" + "".join(f"\n    {line}" for line in lines))
+    if chosen and not failed:
+        print("Restart those CLIs (or run /reload-plugins in Claude Code) to load them.")
+    return 1 if failed else 0
+
+
 def _adopt(args: argparse.Namespace) -> int:
     """`adopt`: agt's block in these folders' instruction files, then a sync that fills it."""
 
@@ -2124,6 +2208,9 @@ def _kinds_command(args: argparse.Namespace) -> int:
         return 0
     if kind in LATER_KINDS:
         raise ValueError(f"sharing {kind} comes in a later phase; this build shares agents and skills")
+    if kind == plugins.KIND:
+        raise ValueError("plugins aren't shared as a kind: `agt share plugins` lists the ones another CLI could install, "
+                         "and `agt share plugins apply` installs them after you say yes")
     if kind not in SUPPORTED_KINDS:
         raise ValueError(f"unknown kind {kind}; use agents or skills")
     if args.kinds_command == "add":
@@ -2349,6 +2436,8 @@ def command(args: argparse.Namespace) -> int:
         if action in ("pick", "resolve", "rm", "mv", "undo"):
             with scope.use(_item_scope(args)):
                 return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo}[action](args)
+        if action == "plugins":
+            return _plugins(args)
         if action in ("disable", "cli", "kinds", "adopt", "repo"):
             return {"disable": _disable, "cli": _cli, "kinds": _kinds_command, "adopt": _adopt, "repo": _repo}[action](args)
     except (settings.SettingsError, state.StateError, apply.Busy) as exc:
