@@ -161,6 +161,17 @@ class SettingsFileTests(TempHome):
         text = "".join(path.read_text(encoding="utf-8") for path in synclog.folder().iterdir())
         self.assertNotIn("secret", text.replace("sha256:", ""))
 
+    def test_secrets_inside_a_list_of_tables_are_hashed_too(self):
+        self.team.write_text('[[servers]]\nname = "x"\nenv = { API = "plain-value" }\nheaders = ["h"]\n', encoding="utf-8")
+        self.start()
+        self.team.write_text('[[servers]]\nname = "y"\nenv = { API = "plain-value-2" }\nheaders = ["h"]\n', encoding="utf-8")
+        self.start()
+        entry = logged("setting")[0]
+        self.assertEqual((entry["key"], entry["old"][0]["name"], entry["new"][0]["name"]), ("servers", "x", "y"))
+        self.assertTrue(entry["new"][0]["env"].startswith("sha256:"))
+        text = "".join(path.read_text(encoding="utf-8") for path in synclog.folder().iterdir())
+        self.assertNotIn("plain-value", text)
+
     def test_config_set_is_logged_once_not_again_as_a_hand_edit(self):
         self.start()
         cwd = os.getcwd()

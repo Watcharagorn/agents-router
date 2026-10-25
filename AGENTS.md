@@ -57,7 +57,10 @@ The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`,
 | `src/agents_router/cli.py` | The `agt` command |
 | `src/agents_router/setup.py` | `agt setup` and `agt update`: plugin install and update per host, account registration |
 | `src/agents_router/jobs.py`, `runner.py` | Job records and the background runner |
-| `src/agents_router/accounts.py`, `config.py` | Account pool, cooldowns, `~/.agents-router/config.toml` |
+| `src/agents_router/accounts.py`, `config.py` | Account pool, cooldowns, the settings in effect |
+| `src/agents_router/levels.py` | The settings files: `~/.agt/settings.toml`, `<workspace>/.agt/settings.toml` and `settings.local.toml`, and finding the workspace |
+| `src/agents_router/config_cli.py`, `synclog.py` | `agt config show/set/unset`, and agt's log with `agt log` |
+| `src/agents_router/share/` | `agt share`: keeping agents and skills the same across the CLIs |
 | `src/agents_router/sync.py`, `fsutil.py` | Linking the shared setup into account folders |
 | `src/agents_router/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
 | `src/agents_router/runtimes/` | Claude Code, Codex and Antigravity adapters |

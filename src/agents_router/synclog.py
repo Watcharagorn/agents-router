@@ -140,6 +140,20 @@ def _keep_seen(data: dict[str, Any]) -> None:
     fsutil.write_json(_seen_path(), data)
 
 
+def _secret_name(name: str) -> bool:
+    return any(SECRET_RE.search(part) for part in name.split("."))
+
+
+def _scrub(value: Any) -> Any:
+    """A list's tables (`[[...]]` entries) with the values that can hold a secret hashed."""
+
+    if isinstance(value, list):
+        return [_scrub(item) for item in value]
+    if isinstance(value, dict):
+        return {key: secret(item) if _secret_name(str(key)) else _scrub(item) for key, item in value.items()}
+    return value
+
+
 def _flat(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     flat: dict[str, Any] = {}
     for key, value in data.items():
@@ -147,7 +161,7 @@ def _flat(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
         if isinstance(value, dict):
             flat.update(_flat(value, name + "."))
         else:
-            flat[name] = secret(value) if any(SECRET_RE.search(part) for part in name.split(".")) else value
+            flat[name] = secret(value) if _secret_name(name) else _scrub(value)
     return flat
 
 
