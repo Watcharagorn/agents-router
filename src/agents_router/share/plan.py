@@ -44,6 +44,7 @@ class Options:
     off: set[str] = field(default_factory=set)  # items that aren't shared, by name or <kind>/<name>
     auto_copy: tuple[str, ...] = KINDS  # kinds whose new items go to every target
     keep_copies: bool = False  # a copy left out by a pick stays as your own file instead of being removed
+    deletes: dict[str, str] = field(default_factory=dict)  # frozen label -> "apply" or "refill", for this run only
 
     def names(self, item: "Item") -> tuple[str, str]:
         return item.name, f"{item.kind}/{item.name}"
@@ -123,6 +124,8 @@ class Plan:
     excluded: list[Excluded]
     options: Options
     notices: list[str] = field(default_factory=list)
+    frozen: list[dict[str, Any]] = field(default_factory=list)  # folders whose deletes wait for you: label, kind, gone, known
+    unrenamed: list[dict[str, Any]] = field(default_factory=list)  # renames agt left alone: kind, old, new, message
 
     @property
     def conflicts(self) -> list[Item]:
@@ -155,7 +158,8 @@ class Plan:
         changes = [change for change in self.changes if f"{change.kind}/{names.identity(change.name)}" in keys]
         return Plan(self.included, self.rows, [item for item in self.items if item.key in keys], changes,
                     [entry for entry in self.excluded if f"{entry.kind}/{names.identity(entry.name)}" in keys],
-                    self.options, list(self.notices))
+                    self.options, list(self.notices), list(self.frozen),
+                    [entry for entry in self.unrenamed if f"{entry['kind']}/{entry['old']}" in keys])
 
     @property
     def digest(self) -> str:
@@ -301,19 +305,31 @@ def _blocked(item: Item, provider: Provider, options: Options, source: Physical 
     return None
 
 
-def absent_labels(items: list[Item], included: list[Provider], options: Options, state: State) -> tuple[dict[str, set[str]], list[str]]:
+@dataclass
+class Absent:
+    labels: dict[str, set[str]]  # kind -> labels agt neither fills nor deletes in this run
+    notices: list[str]
+    frozen: list[dict[str, Any]]
+    refill: dict[str, set[str]]  # kind -> frozen labels you asked to fill again (`sync --refill`)
+
+
+def absent_labels(items: list[Item], included: list[Provider], options: Options, state: State) -> Absent:
     """Per kind, the labels that count as absent this run, and why.
 
     A folder whose kind folder is missing, after agt has synced it, is absent:
     nothing is filled or deleted there. So is a folder where more than
-    max(3, 25%) of the items agt knew disappeared at once: its deletes freeze
-    until you look. Labels that stopped sharing are absent too.
+    max(3, 25%) of the items agt knew disappeared at once: its deletes freeze,
+    run after run, until you answer: `sync --allow-deletes <label>` lets them
+    go, and `sync --refill <label>` puts the copies back. Labels that stopped
+    sharing are absent too.
     """
 
     by_label = {provider.label: provider for provider in included}
     present = {(item.key, label) for item in items for copy in item.copies for label in copy.labels}
     absent: dict[str, set[str]] = {kind: set() for kind in options.kinds}
     notices: list[str] = []
+    frozen: list[dict[str, Any]] = []
+    refill: dict[str, set[str]] = {kind: set() for kind in options.kinds}
     for kind in options.kinds:
         known: dict[str, int] = {}
         gone: dict[str, int] = {}
@@ -332,11 +348,19 @@ def absent_labels(items: list[Item], included: list[Provider], options: Options,
             if location is None or not location.path.is_dir():
                 absent[kind].add(label)
                 notices.append(f"{label}'s {kind} folder is missing: nothing is filled or deleted there until it's back")
-        for label in engine.frozen(known, gone) - absent[kind]:
+        for label in sorted(engine.frozen(known, gone) - absent[kind]):
+            answer = options.deletes.get(label)
+            if answer == "apply":
+                continue  # the deletes go through this run, like any other
+            if answer == "refill":
+                refill[kind].add(label)
+                continue
             absent[kind].add(label)
-            notices.append(f"{gone[label]} of {known[label]} {kind} disappeared from {label} at once, "
-                           "so deletes there wait until you check (`agt share status`)")
-    return absent, notices
+            frozen.append({"label": label, "kind": kind, "gone": gone[label], "known": known[label]})
+            notices.append(f"{gone[label]} of {known[label]} {kind} disappeared from {label} at once, so agt deletes "
+                           f"nothing there until you say: `agt share sync --allow-deletes {label}` lets them go, "
+                           f"`--refill {label}` puts them back")
+    return Absent(absent, notices, frozen, refill)
 
 
 def _drop(label: str, copy: Physical, wanted: set[str], last: engine.Last | None, made: set[str],
@@ -363,13 +387,18 @@ def _drop(label: str, copy: Physical, wanted: set[str], last: engine.Last | None
 
 
 def decide_items(items: list[Item], included: list[Provider], options: Options, state: State,
-                 absent: dict[str, set[str]] | None = None) -> list[str]:
+                 found: Absent | None = None) -> list[str]:
     by_label = {provider.label: provider for provider in included}
-    notices: list[str] = []
-    if absent is None:
-        absent, notices = absent_labels(items, included, options, state)
+    found = found or absent_labels(items, included, options, state)
+    absent = found.labels
     for item in items:
         last = state.last(item.kind, names.identity(item.name))
+        holding = {label for copy in item.copies for label in copy.labels}
+        back = found.refill.get(item.kind, set()) - holding
+        if last is not None and back & set(last.copies):
+            # `sync --refill`: the copies that disappeared from a frozen folder are filled again, not deleted.
+            last = engine.Last(last.version, {label: v for label, v in last.copies.items() if label not in back},
+                               last.made, last.stopped, last.released)
         made = set((state.items.get(item.key) or {}).get("made") or [])
         holders = {label: copy for copy in item.copies for label in copy.labels}
         source = next((copy for copy in item.copies if copy.version), None)
@@ -411,7 +440,7 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
         left_out = {label for label in holders if label in unwanted and item.cells[label].state != HAS}
         copies = [engine.Copy(label, copy.version, copy.fresh, copy.problem) for label, copy in holders.items()]
         ignore = absent.get(item.kind, set()) | left_out
-        item.ignored = ignore & set(holders)
+        item.ignored = ignore  # their state entries stay as they were, so a freeze lasts until you answer it
         decision = engine.decide(copies, targets | (set(holders) - left_out), last, ignore)
         choice = options.resolve.get(item.name) or options.resolve.get(f"{item.kind}/{item.name}")
         if decision.action == engine.CONFLICT and choice:
@@ -425,7 +454,7 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
                     item.cells[label] = Cell(held, decision.reason)
         for label in decision.updates:
             item.cells[label] = Cell(UPDATE)
-    return notices
+    return found.notices
 
 
 def _resolved(item: Item, decision: engine.Decision, choice: str, holders: dict[str, Physical],
@@ -573,7 +602,7 @@ def _expected_entry(provider: Provider, kind: str, name: str) -> Path | None:
 
 
 def detect_renames(items: list[Item], excluded: list[Excluded], included: list[Provider], state: State,
-                   absent: dict[str, set[str]]) -> tuple[list[Item], list[Change], list[str]]:
+                   absent: dict[str, set[str]]) -> tuple[list[Item], list[Change], list[dict[str, Any]]]:
     """Items that came back under another name: (rename items, their changes, notes on ones agt left alone).
 
     A rename is an item agt knew that disappeared from some CLIs, plus a new item there whose content,
@@ -620,20 +649,23 @@ def detect_renames(items: list[Item], excluded: list[Excluded], included: list[P
     claimed = [item.key for found in candidates.values() for item, _ in found]
     renamed: list[Item] = []
     changes: list[Change] = []
-    notes: list[str] = []
+    notes: list[dict[str, Any]] = []
     for key, found in candidates.items():
         record, old, gone = lost[key]
         old_name = key.partition("/")[2]
         if len(found) != 1 or claimed.count(found[0][0].key) != 1:
-            notes.append(f"{old_name} may have been renamed, but more than one item matches it, so agt leaves them as they are")
+            notes.append({"kind": lost[key][1].kind if lost[key][1] else key.partition("/")[0], "old": old_name, "new": None,
+                          "message": f"{old_name} may have been renamed, but more than one item matches it, "
+                                     "so agt leaves them as they are"})
             continue
         new, declared = found[0]
         # A copy at its last-synced version is unchanged, even if agt itself wrote it a moment ago.
         stale = sorted(label for copy in (old.copies if old else []) for label in copy.labels
                        if copy.version is None or record["copies"].get(label) != copy.version)
         if stale:
-            notes.append(f"{new.name} looks like {old_name} renamed, but {old_name} in {', '.join(stale)} changed since "
-                         "the last sync, so agt treats them as two items")
+            notes.append({"kind": new.kind, "old": old_name, "new": None,
+                          "message": f"{new.name} looks like {old_name} renamed, but {old_name} in {', '.join(stale)} changed "
+                                     "since the last sync, so agt treats them as two items"})
             continue
         made = set(record.get("made") or [])
         planned, problems = rename_changes(old, new.name, included, made) if old else ([], [])
@@ -652,12 +684,14 @@ def detect_renames(items: list[Item], excluded: list[Excluded], included: list[P
                 if link is None or not os.path.islink(link) or os.path.exists(link):
                     continue
                 if label not in made:
-                    notes.append(f"{short(link)} is a link you made, and it leads nowhere now; fix or remove it by hand")
+                    notes.append({"kind": new.kind, "old": old_name, "new": None,
+                                  "message": f"{short(link)} is a link you made, and it leads nowhere now; fix or remove it by hand"})
                     continue
                 planned.append(Change(new.kind, new.name, [label], "rename-link", link, link, "", to=link.parent / new.name,
                                       real=Path(new.copies[0].real)))
         if problems:
-            notes.append(f"{new.name} looks like {old_name} renamed, but agt can't rename it: {'; '.join(problems)}")
+            notes.append({"kind": new.kind, "old": old_name, "new": None,
+                          "message": f"{new.name} looks like {old_name} renamed, but agt can't rename it: {'; '.join(problems)}"})
             continue
         for change in planned:
             change.name = new.name
@@ -747,18 +781,17 @@ def build(config: Any, rows: list[providers.Candidate], included: list[Provider]
     codex = next((provider.folder for provider in included if provider.cli == "codex"), None)
     disabled = exclude.codex_disabled_skills(codex) if codex else set()
     items, excluded = read_items(included, options, now, disabled, own)
-    absent, notices = absent_labels(items, included, options, state)
-    renamed, changes, found = detect_renames(items, excluded, included, state, absent)
+    found = absent_labels(items, included, options, state)
+    renamed, changes, unrenamed = detect_renames(items, excluded, included, state, found.labels)
     involved = {item.renamed_from for item in renamed} | {item.key for item in renamed}
     items = [item for item in items if item.key not in involved]
     excluded = [entry for entry in excluded if entry.item is None or entry.item.key not in involved]
-    decide_items(items, included, options, state, absent)
+    decide_items(items, included, options, state, found)
     changes += [change for item in items for change in changes_for(item, included)]
     add_notes(items, included, home)
     items = sorted(items + renamed, key=lambda item: (KINDS.index(item.kind), item.name))
-    notices += found
     return Plan(included=included, rows=rows, items=items, changes=changes, excluded=excluded, options=options,
-                notices=notices)
+                notices=found.notices + [entry["message"] for entry in unrenamed], frozen=found.frozen, unrenamed=unrenamed)
 
 
 # Showing it --------------------------------------------------------------------

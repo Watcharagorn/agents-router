@@ -191,6 +191,9 @@ class _Skip(Exception):
     """This change can't be made safely now; the next run looks again."""
 
 
+SKIPPED = "skipped this run: "
+
+
 def _backup_folder(run: str, label: str) -> Path:
     folder = share_dir() / "backups" / run / label
     fsutil.make_private_dir(folder)
@@ -486,7 +489,7 @@ def _apply_rename(item: planner.Item, changes: list[planner.Change], by_label: d
             outcome, undo = _rename(change, item, by_label[change.labels[0]].cli, result.run, op)
         except _Skip as skip:
             outcome, undo = Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
-                                    f"skipped this run: {skip}"), lambda: None
+                                    f"{SKIPPED}{skip}"), lambda: None
         except OSError as exc:
             outcome, undo = Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
                                     f"couldn't rename it ({exc})"), lambda: None
@@ -565,6 +568,12 @@ def _record(current: State, item: planner.Item, decision: engine.Decision, outco
         record["copies"] = {label: version for label, version in (record.get("copies") or {}).items() if label not in gone}
     if released:
         record["released"] = sorted(set(record.get("released") or []) | released)
+    # Runs in a row where a write failed (not one skipped because a copy changed meanwhile): 3 make an attention entry.
+    failures = [outcome for outcome in outcomes if not outcome.ok and not outcome.message.startswith(SKIPPED)]
+    if failures:
+        record["failing"] = {"runs": int((record.get("failing") or {}).get("runs", 0)) + 1, "message": failures[0].message}
+    elif outcomes and all(outcome.ok for outcome in outcomes):
+        record.pop("failing", None)
     if record.get("version"):
         # The name-free shape of the recorded version, so a rename can be spotted later.
         shape = next((copy.shape for copy in item.copies if copy.version == record["version"] and copy.shape), None)
@@ -631,7 +640,7 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
                     outcome = _write_skill(change, item, decision, holders, result.run)
             except _Skip as skip:
                 outcome = Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
-                                  f"skipped this run: {skip}")
+                                  f"{SKIPPED}{skip}")
             except OSError as exc:
                 outcome = Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
                                   f"couldn't write it ({exc}); the next run tries again")

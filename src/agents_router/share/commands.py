@@ -29,7 +29,7 @@ from typing import Any
 from agents_router import hosts
 from agents_router.config import load_config
 from agents_router.share import (
-    apply, engine, gitexclude, model, names, normalize, plan as planner, providers, settings, state, toolmap,
+    apply, attention, engine, gitexclude, model, names, normalize, plan as planner, providers, settings, state, toolmap,
 )
 from agents_router.share.providers import _short as short
 
@@ -73,6 +73,10 @@ def add_parser(subparsers) -> None:
     _folder_flags(scan)
     sync = actions.add_parser("sync", help="Make every copy match again, from your saved settings.")
     sync.add_argument("--dry-run", action="store_true", help="Show what the sync would do; write nothing.")
+    sync.add_argument("--allow-deletes", action="append", default=[], metavar="LABEL",
+                      help="A frozen folder: many items disappeared from it at once, and you meant it. This run only.")
+    sync.add_argument("--refill", action="append", default=[], metavar="LABEL",
+                      help="A frozen folder: put back the copies that disappeared from it. This run only.")
     sync.add_argument("--json", action="store_true")
     status = actions.add_parser("status", help="What's in sync, what differs and what waits for you; writes nothing.")
     status.add_argument("--diff", action="store_true", help="Show how the copies of each conflict differ.")
@@ -173,6 +177,12 @@ def _options(args: argparse.Namespace, labels: set[str], saved: settings.Setting
         options.off -= {item, *(f"{kind}/{item}" for kind in SUPPORTED_KINDS)}
     options.resolve.update(resolve or {})
     options.keep_copies = keep_copies
+    for answer, flag in (("apply", "allow_deletes"), ("refill", "refill")):
+        for label in getattr(args, flag, []):
+            _check_label(label, labels, "--" + flag.replace("_", "-"))
+            if options.deletes.get(label, answer) != answer:
+                raise ValueError(f"{label} can't take both --allow-deletes and --refill")
+            options.deletes[label] = answer
     return options
 
 
@@ -344,6 +354,17 @@ def _outcome(outcome: apply.Outcome) -> dict[str, Any]:
             "path": str(outcome.path), "message": outcome.message}
 
 
+def _remember(plan: planner.Plan, current: state.State, result: apply.Result, keys: set[str] | None = None) -> None:
+    """After a writing run: log what passed, and update the attention list (only these items' entries, with `keys`)."""
+
+    for outcome in result.failed:
+        kind = "skipped" if outcome.message.startswith(apply.SKIPPED) else "write-failed"
+        attention.event(kind, f"{outcome.kind}/{names.identity(outcome.name)}", f"{outcome.path}: {outcome.message}")
+    for line in result.replayed:
+        attention.event("replayed", "journal", line)
+    attention.save(plan, current, keys)
+
+
 def _move_picks(saved: settings.Settings, old: str, new: str) -> bool:
     """Your picks for an item follow it to its new name (`<kind>/<identity>` keys). Returns whether any moved."""
 
@@ -411,6 +432,7 @@ def _enable(args: argparse.Namespace) -> int:
         result.replayed = replayed
         _after_renames(argparse.Namespace(**{key: value for key, value in vars(args).items() if key != "kinds"}),
                        answers, current, result)
+        _remember(plan, current, result)
     _report(plan, result, saved_at, args.json)
     return 1 if result.failed else 0
 
@@ -439,6 +461,7 @@ def _sync(args: argparse.Namespace) -> int:
         result = apply.apply(plan, current)
         result.replayed = replayed
         saved_at = _after_renames(args, saved, current, result)
+        _remember(plan, current, result)
     _report(plan, result, saved_at, args.json)
     return 1 if result.failed else 0
 
@@ -470,35 +493,46 @@ def _diff(item: planner.Item) -> list[str]:
     return lines
 
 
+WHO = {"choice": "your choice", "action": "for you to do", "agent": "an agent can do it"}
+TITLES = {"conflict": "Conflict", "delete": "Waiting to be deleted", "unreadable": "Can't read", "new": "New",
+          "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed"}
+
+
 def _status(args: argparse.Namespace) -> int:
     saved = settings.load()
     if not saved.enabled:
         _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
         return 0
-    plan = _plan(args, state.load(), saved)
+    current = state.load()
+    plan = _plan(args, current, saved)
     pending = [item for item in plan.items if item.decision and item.decision.action == engine.PENDING_DELETE]
     in_sync = [item for item in plan.items if item.decision and item.decision.action == engine.NOTHING and item.decision.version]
-    code = 1 if plan.conflicts or pending else 0
+    waiting = [item for item in plan.waiting if item.decision.reason == "saved less than 3 s ago"]
+    needs = attention.entries(plan, current)
+    code = 1 if plan.conflicts or pending or plan.frozen else 0
     if args.json:
         _print({"enabled": True, "folders": [{"label": p.label, "cli": p.cli, "path": str(p.folder)} for p in plan.included],
                 "in_sync": len(in_sync), "to_write": len(plan.changes), "conflicts": [i.name for i in plan.conflicts],
                 "waiting": [i.name for i in plan.waiting], "pending_delete": [i.name for i in pending],
-                "not_shared": len(plan.excluded), "notes": plan.notices,
+                "frozen": plan.frozen, "not_shared": len(plan.excluded), "notes": plan.notices, "attention": needs,
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
     lines = ["agt share is on for " + ", ".join(f"{p.label} ({short(p.folder)})" for p in plan.included) + ".",
              f"  {len(in_sync)} items in sync, {len(plan.changes)} changes for the next sync, "
              f"{len(plan.conflicts)} conflicts, {len(plan.waiting)} waiting, {len(pending)} waiting to be deleted, "
              f"{len(plan.excluded)} not shared."]
-    for item in plan.conflicts:
-        lines.append(f"  Conflict: {item.name} ({item.kind}) differs in {', '.join('/'.join(c.labels) for c in item.copies)}.")
-        if args.diff:
-            lines += [f"    {line}" for line in _diff(item)]
-    for item in pending:
-        lines.append(f"  Waiting to be deleted: {item.name}: {item.decision.reason}.")
-    for item in plan.waiting:
+    by_key = {item.key: item for item in plan.items}
+    for entry in needs:
+        fix = " or ".join(f"`{command}`" for command in entry["fix"])
+        lines.append(f"  {TITLES.get(entry['kind'], entry['kind'])}: {entry['message']}. "
+                     f"{WHO[entry['who']].capitalize()}{': ' + fix if fix else ''}.")
+        if args.diff and entry["kind"] == "conflict" and entry["item"] in by_key:
+            lines += [f"    {line}" for line in _diff(by_key[entry["item"]])]
+    for item in waiting:
         lines.append(f"  Waiting: {item.name}: {item.decision.reason}.")
-    lines += [f"  Note: {note}" for note in plan.notices]
+    shown = {entry["message"] for entry in needs}
+    lines += [f"  Note: {note}" for note in plan.notices if not any(note.startswith(message) for message in shown)
+              and "disappeared from" not in note]
     if plan.changes:
         lines.append("  `agt share sync` writes the changes.")
     print("\n".join(lines))
@@ -653,6 +687,7 @@ def _pick(args: argparse.Namespace) -> int:
         plan = _locked_plan(args, saved, current, {_identity(key)}, keep_copies=args.keep_copies)
         result = apply.apply(plan, current, op="pick")
         result.replayed = replayed
+        _remember(plan, current, result, {_identity(key)})
     undo = [f"`agt share undo {name} --in {label}` brings a removed copy back."
             for label in sorted({label for outcome in result.written if outcome.action == "remove" for label in outcome.labels})]
     _report(plan, result, saved_at, args.json, title="agt share pick", notes=undo)
@@ -765,6 +800,7 @@ def _resolve(args: argparse.Namespace) -> int:
         plan = _locked_plan(args, saved, current, set(choices), resolve=winners)
         result = apply.apply(plan, current, op="resolve")
         result.replayed = replayed
+        _remember(plan, current, result, set(choices))
     notes = skipped + [f"{key.partition('/')[2]}: not shared any more; every copy stays as it is" for key in off]
     _report(plan, result, saved_at, args.json, title="agt share resolve", notes=notes)
     return 1 if result.failed or plan.conflicts else 0
@@ -805,6 +841,7 @@ def _rm(args: argparse.Namespace) -> int:
         if not result.failed:
             current.items.pop(item.key, None)  # gone everywhere; the manifest keeps the record for undo
             state.save(current)
+        _remember(plan, current, result, {item.key})
     notes = [f"{name} in {', '.join(edited)} had an edit the other copies didn't have; it's in the backups too"] if edited and last else []
     if result.written:
         notes.append(f"`agt share undo {name}` puts it back.")
@@ -876,6 +913,7 @@ def _mv(args: argparse.Namespace) -> int:
         plan.items, plan.changes = [renamed], changes
         result = apply.apply(plan, current, op="mv")
         result.replayed = replayed
+        _remember(plan, current, result, {item.key, renamed.key})
         saved_at = settings.save(saved) if result.renamed and _move_picks(saved, _identity(key), f"{kind}/{new}") else None
     _report(plan, result, saved_at, args.json, title="agt share mv")
     return 1 if result.failed else 0
@@ -1002,6 +1040,7 @@ def _undo(args: argparse.Namespace) -> int:
         # Copies agt made that came back go in their repo's exclude file again; your own files never do.
         made = set((current.items.get(_identity(key)) or {}).get("made") or [])
         result.excluded += gitexclude.update([outcome.path for outcome, entry in came_back if set(entry["labels"]) & made])
+        _remember(plan, current, result, {_identity(key)})
     _report(plan, result, saved_at, args.json, title="agt share undo",
             notes=[f"`agt share undo {name}` again puts back what this undo replaced."]
             if any(outcome.backup for outcome in result.written) else [])
