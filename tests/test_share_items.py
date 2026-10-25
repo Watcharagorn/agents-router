@@ -397,7 +397,7 @@ class MoveTests(ItemBase):
         self.share("pick", "dana", "--not-in", "codex")
         kiro_tools = self.kiro("dana")["tools"]
         out = self.share("mv", "dana", "reviewer")
-        self.assertIn("`agt share mv reviewer dana` renames it back.", out)
+        self.assertIn("dana is reviewer now, in every CLI. `agt share mv reviewer dana` renames it back.", out)
         for folder in (self.claude, self.lab):
             self.assertFalse((folder / "agents" / "dana.md").exists())
             text = (folder / "agents" / "reviewer.md").read_text(encoding="utf-8")
@@ -489,3 +489,109 @@ class MoveTests(ItemBase):
         self.assertEqual({k: v for k, v in self.folders().items()}, before)
         self.assertIsNotNone(self.record("agents/day-plan"))
         self.assertIsNone(self.record("agents/wrap-up"))
+
+
+class RenameDetectionTests(ItemBase):
+    def rename_file(self, folder, old, new):
+        os.rename(folder / "agents" / f"{old}.md", folder / "agents" / f"{new}.md")
+        age(folder / "agents" / f"{new}.md")
+
+    def test_a_file_you_renamed_is_renamed_everywhere(self):
+        self.enable()
+        self.share("pick", "dana", "--not-in", "codex")
+        self.rename_file(self.claude, "dana", "reviewer")  # its name field still says dana
+        before = self.snapshot()
+        out = self.share("sync", "--dry-run")
+        self.assertIn("Renames (agt renames every copy", out)
+        self.assertIn("dana -> reviewer (agents) in claude, claude-lab, kiro", out)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("dana is reviewer now, in every CLI.", self.share("sync"))
+        self.assertIn("name: reviewer", (self.claude / "agents" / "reviewer.md").read_text(encoding="utf-8"))
+        self.assertIn("name: reviewer", (self.lab / "agents" / "reviewer.md").read_text(encoding="utf-8"))
+        self.assertEqual(self.kiro("reviewer")["name"], "reviewer")
+        for path in (self.lab / "agents" / "dana.md", self.user / ".kiro" / "agents" / "dana.json"):
+            self.assertFalse(path.exists(), path)
+        self.assertFalse((self.user / ".codex" / "agents" / "reviewer.toml").exists())  # the pick came along
+        self.assertEqual(settings.load().not_in, {"agents/reviewer": ["codex"]})
+        self.assertIsNone(self.record("agents/dana"))
+        self.assertIn("everything is in sync", self.share("sync"))
+
+    def test_a_skill_folder_you_renamed_gets_agts_links_again(self):
+        self.enable()
+        old, new = self.lab / "skills" / "interactive-lesson-site", self.lab / "skills" / "lesson-site"
+        os.rename(old, new)
+        manifest = new / "SKILL.md"
+        manifest.write_text(manifest.read_text(encoding="utf-8").replace("name: interactive-lesson-site", "name: lesson-site"),
+                            encoding="utf-8")
+        age(new, manifest)
+        self.share("sync")
+        for link in (self.claude / "skills" / "lesson-site", self.user / ".kiro" / "skills" / "lesson-site"):
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(link.resolve(), new.resolve())
+        for link in (self.claude / "skills" / "interactive-lesson-site", self.user / ".kiro" / "skills" / "interactive-lesson-site"):
+            self.assertFalse(os.path.lexists(link), link)
+        self.assertEqual(sorted(self.record("skills/lesson-site")["made"]), ["claude", "kiro"])
+        self.assertIn("everything is in sync", self.share("sync"))
+
+    def test_an_edited_copy_left_under_the_old_name_stops_it(self):
+        self.enable()
+        self.write_kiro("dana", prompt="Dana, edited in Kiro.")
+        self.rename_file(self.claude, "dana", "reviewer")
+        out = self.share("sync")
+        self.assertNotIn("Renames", out)
+        self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").exists())
+        self.assertFalse((self.lab / "agents" / "reviewer.md").exists())
+
+    def test_two_matching_items_stop_it(self):
+        self.enable()
+        self.rename_file(self.claude, "dana", "reviewer")
+        (self.claude / "agents" / "critic.md").write_text(
+            (self.claude / "agents" / "reviewer.md").read_text(encoding="utf-8"), encoding="utf-8")
+        age(self.claude / "agents" / "critic.md")
+        out = self.share("sync")
+        self.assertIn("more than one item matches it", out)
+        self.assertTrue((self.lab / "agents" / "dana.md").exists())
+
+    def test_a_fresh_file_waits(self):
+        self.enable()
+        os.rename(self.claude / "agents" / "dana.md", self.claude / "agents" / "reviewer.md")
+        os.utime(self.claude / "agents" / "reviewer.md")  # saved just now
+        self.assertNotIn("Renames", self.share("sync", "--dry-run"))
+        age(self.claude / "agents" / "reviewer.md")
+        self.assertIn("Renames", self.share("sync", "--dry-run"))
+
+    def test_a_frozen_folder_stops_it(self):
+        for index in range(5):
+            self.skill(self.lab, f"extra-{index}")
+        age(*self.lab.rglob("*"))
+        self.enable()
+        for index in range(4):
+            (self.user / ".kiro" / "skills" / f"extra-{index}").unlink()
+        self.rename_file(self.claude, "dana", "reviewer")
+        kiro = self.user / ".kiro" / "agents"
+        os.rename(kiro / "dana.json", kiro / "reviewer.json")
+        age(kiro / "reviewer.json")
+        self.assertIn("Renames", self.share("sync", "--dry-run"))  # the agents folder isn't frozen
+        os.rename(self.user / ".kiro" / "skills" / "ask-simply", self.user / ".kiro" / "skills" / "ask-better")
+        self.assertNotIn("ask-simply -> ask-better", self.share("sync", "--dry-run"))
+
+    def test_a_mv_cut_off_is_finished_by_the_next_sync(self):
+        self.enable()
+        real = apply._rename
+        calls = []
+
+        def rename_then_stop(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            return real(*args, **kwargs)
+
+        with patch.object(apply, "_rename", rename_then_stop):
+            self.assertEqual(self.run_share("mv", "day-plan", "wrap-up")[0], 130)
+        self.share("sync")
+        for folder in (self.claude, self.lab):
+            self.assertFalse((folder / "agents" / "day-plan.md").exists(), folder)
+            self.assertIn("name: wrap-up", (folder / "agents" / "wrap-up.md").read_text(encoding="utf-8"))
+        self.assertEqual(self.kiro("wrap-up")["name"], "wrap-up")
+        self.assertIsNone(self.record("agents/day-plan"))
+        self.assertIn("everything is in sync", self.share("sync"))

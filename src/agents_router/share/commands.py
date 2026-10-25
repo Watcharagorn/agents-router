@@ -287,7 +287,8 @@ def _needs_choice(plan: planner.Plan, command: str, as_json: bool) -> int:
 
 
 def _outcome_line(outcome: apply.Outcome) -> str:
-    mark = {"copy": "+", "link": "+", "update": "~", "relink": "~", "remove": "-"}.get(outcome.action, "?")
+    mark = {"copy": "+", "link": "+", "update": "~", "relink": "~", "remove": "-", "rename": ">", "rename-folder": ">",
+            "rename-link": ">"}.get(outcome.action, "?")
     line = f"  {mark} {outcome.kind}/{outcome.name} in {', '.join(outcome.labels)}: {short(outcome.path)}"
     return f"{line} ({outcome.message})" if outcome.message else line
 
@@ -301,7 +302,9 @@ def _kept(plan: planner.Plan) -> list[str]:
 
 def _report(plan: planner.Plan, result: apply.Result, saved_at: Path | None, as_json: bool, *,
             title: str = "agt share", notes: list[str] | None = None) -> None:
-    extra = (notes or []) + _kept(plan)
+    extra = [f"{old.partition('/')[2]} is {new.partition('/')[2]} now, in every CLI. "
+             f"`agt share mv {new.partition('/')[2]} {old.partition('/')[2]}` renames it back."
+             for old, new in result.renamed] + (notes or []) + _kept(plan)
     if as_json:
         _print({
             "run": result.run, "written": [_outcome(o) for o in result.written], "failed": [_outcome(o) for o in result.failed],
@@ -341,6 +344,38 @@ def _outcome(outcome: apply.Outcome) -> dict[str, Any]:
             "path": str(outcome.path), "message": outcome.message}
 
 
+def _move_picks(saved: settings.Settings, old: str, new: str) -> bool:
+    """Your picks for an item follow it to its new name (`<kind>/<identity>` keys). Returns whether any moved."""
+
+    moved = False
+    for chosen in (saved.not_in, saved.only):
+        for key in [key for key in chosen if _identity(key) == old]:
+            chosen[new] = chosen.pop(key)
+            moved = True
+    for key in [key for key in saved.off if _identity(key) == old]:
+        saved.off.discard(key)
+        saved.off.add(new)
+        moved = True
+    return moved
+
+
+def _after_renames(args: argparse.Namespace, saved: settings.Settings, current: state.State,
+                   result: apply.Result) -> Path | None:
+    """After a rename agt spotted: your picks move to the new name, then the item is filled where it's missing.
+
+    Call it holding the lock. Returns where the settings were saved, if they changed.
+    """
+
+    if not result.renamed:
+        return None
+    saved_at = settings.save(saved) if any([_move_picks(saved, old, new) for old, new in result.renamed]) else None
+    again = _plan(args, current, saved).restricted({new for _, new in result.renamed})
+    more = apply.apply(again, current)
+    result.outcomes += more.outcomes
+    result.excluded += more.excluded
+    return saved_at
+
+
 def _enable(args: argparse.Namespace) -> int:
     if args.projects != "none":
         raise ValueError("project scope (--projects) comes in a later phase; use --projects none")
@@ -374,6 +409,8 @@ def _enable(args: argparse.Namespace) -> int:
         saved_at = settings.save(answers)
         result = apply.apply(plan, current)
         result.replayed = replayed
+        _after_renames(argparse.Namespace(**{key: value for key, value in vars(args).items() if key != "kinds"}),
+                       answers, current, result)
     _report(plan, result, saved_at, args.json)
     return 1 if result.failed else 0
 
@@ -401,7 +438,8 @@ def _sync(args: argparse.Namespace) -> int:
             plan = _plan(args, current, saved)
         result = apply.apply(plan, current)
         result.replayed = replayed
-    _report(plan, result, None, args.json)
+        saved_at = _after_renames(args, saved, current, result)
+    _report(plan, result, saved_at, args.json)
     return 1 if result.failed else 0
 
 
@@ -838,19 +876,8 @@ def _mv(args: argparse.Namespace) -> int:
         plan.items, plan.changes = [renamed], changes
         result = apply.apply(plan, current, op="mv")
         result.replayed = replayed
-        saved_at = None
-        if result.renamed:
-            new_key = f"{kind}/{new}"
-            for chosen in (saved.not_in, saved.only):
-                if key in chosen:
-                    chosen[new_key] = chosen.pop(key)
-            if key in saved.off:
-                saved.off.discard(key)
-                saved.off.add(new_key)
-            if new_key in saved.not_in or new_key in saved.only or new_key in saved.off:
-                saved_at = settings.save(saved)
-    notes = [f"`agt share mv {new} {name}` renames it back."] if result.renamed else []
-    _report(plan, result, saved_at, args.json, title="agt share mv", notes=notes)
+        saved_at = settings.save(saved) if result.renamed and _move_picks(saved, _identity(key), f"{kind}/{new}") else None
+    _report(plan, result, saved_at, args.json, title="agt share mv")
     return 1 if result.failed else 0
 
 

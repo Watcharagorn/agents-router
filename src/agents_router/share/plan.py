@@ -362,9 +362,12 @@ def _drop(label: str, copy: Physical, wanted: set[str], last: engine.Last | None
     return "remove", Cell(REMOVE, "removed, with a backup")
 
 
-def decide_items(items: list[Item], included: list[Provider], options: Options, state: State) -> list[str]:
+def decide_items(items: list[Item], included: list[Provider], options: Options, state: State,
+                 absent: dict[str, set[str]] | None = None) -> list[str]:
     by_label = {provider.label: provider for provider in included}
-    absent, notices = absent_labels(items, included, options, state)
+    notices: list[str] = []
+    if absent is None:
+        absent, notices = absent_labels(items, included, options, state)
     for item in items:
         last = state.last(item.kind, names.identity(item.name))
         made = set((state.items.get(item.key) or {}).get("made") or [])
@@ -557,6 +560,119 @@ def removal_changes(item: Item) -> list[Change]:
     return sorted(found.values(), key=lambda change: not os.path.islink(change.path))
 
 
+# Renames ---------------------------------------------------------------------
+
+NAME_FIELD = "its name field says"
+
+
+def _expected_entry(provider: Provider, kind: str, name: str) -> Path | None:
+    location = provider.writable(kind)
+    if location is None:
+        return None
+    return model.new_agent_path(provider.cli, location.path, name) if kind == "agents" else location.path / name
+
+
+def detect_renames(items: list[Item], excluded: list[Excluded], included: list[Provider], state: State,
+                   absent: dict[str, set[str]]) -> tuple[list[Item], list[Change], list[str]]:
+    """Items that came back under another name: (rename items, their changes, notes on ones agt left alone).
+
+    A rename is an item agt knew that disappeared from some CLIs, plus a new item there whose content,
+    without its name, is the same (its `shape`). It only counts when the match is one to one, every
+    copy left under the old name is as agt last synced it, no copy was saved in the last 3 s, and no
+    folder involved is missing or frozen. A new file whose name field still says the old name counts
+    too (`mv dana.md reviewer.md`): agt sets the field to match.
+    """
+
+    if state.first_run:
+        return [], [], []
+    by_label = {provider.label: provider for provider in included}
+    present = {item.key: item for item in items}
+    lost: dict[str, tuple[dict, Item | None, set[str]]] = {}
+    for key, record in state.items.items():
+        kind = key.partition("/")[0]
+        if not record.get("version") or not record.get("shape") or kind not in absent:
+            continue
+        item = present.get(key)
+        known = set(record.get("copies") or {})
+        held = {label for copy in item.copies for label in copy.labels} if item else set()
+        gone = known - held
+        if gone and not known & absent[kind]:
+            lost[key] = (record, item, gone)
+    newcomers: list[tuple[Item, str | None]] = [(item, None) for item in items if state.last(item.kind, names.identity(item.name)) is None]
+    for entry in excluded:
+        if entry.item is not None and entry.reason.startswith(NAME_FIELD):
+            declared = {getattr(copy.obj, "declared_name", None) for copy in entry.item.copies}
+            if len(declared) == 1:
+                newcomers.append((entry.item, declared.pop()))
+    candidates: dict[str, list[tuple[Item, str | None]]] = {}
+    for item, declared in newcomers:
+        labels = {label for copy in item.copies for label in copy.labels}
+        shapes = {copy.shape for copy in item.copies}
+        if len(shapes) != 1 or None in shapes or any(copy.fresh or copy.version is None for copy in item.copies) \
+                or labels & absent.get(item.kind, set()):
+            continue
+        shape = shapes.pop()
+        for key, (record, _old, gone) in lost.items():
+            old_name = key.partition("/")[2]
+            if key.partition("/")[0] == item.kind and record["shape"] == shape and labels <= gone \
+                    and (declared is None or names.identity(declared) == old_name):
+                candidates.setdefault(key, []).append((item, declared))
+    claimed = [item.key for found in candidates.values() for item, _ in found]
+    renamed: list[Item] = []
+    changes: list[Change] = []
+    notes: list[str] = []
+    for key, found in candidates.items():
+        record, old, gone = lost[key]
+        old_name = key.partition("/")[2]
+        if len(found) != 1 or claimed.count(found[0][0].key) != 1:
+            notes.append(f"{old_name} may have been renamed, but more than one item matches it, so agt leaves them as they are")
+            continue
+        new, declared = found[0]
+        # A copy at its last-synced version is unchanged, even if agt itself wrote it a moment ago.
+        stale = sorted(label for copy in (old.copies if old else []) for label in copy.labels
+                       if copy.version is None or record["copies"].get(label) != copy.version)
+        if stale:
+            notes.append(f"{new.name} looks like {old_name} renamed, but {old_name} in {', '.join(stale)} changed since "
+                         "the last sync, so agt treats them as two items")
+            continue
+        made = set(record.get("made") or [])
+        planned, problems = rename_changes(old, new.name, included, made) if old else ([], [])
+        if declared is not None:  # the new file still has the old name inside: set the field to match
+            for copy in new.copies:
+                for label, entry in copy.entries.items():
+                    if new.kind == "agents":
+                        planned.append(Change(new.kind, new.name, [label], "rename", entry, entry, copy.version or "", to=entry))
+                    elif not os.path.islink(entry):
+                        planned.insert(0, Change(new.kind, new.name, [label], "rename-folder", entry, entry, copy.version or "",
+                                                 to=entry))
+        if new.kind == "skills":
+            # agt's links to the old folder lead nowhere now; they're made again under the new name.
+            for label in sorted(gone - {l for copy in new.copies for l in copy.labels}):
+                link = _expected_entry(by_label[label], "skills", old_name) if label in by_label else None
+                if link is None or not os.path.islink(link) or os.path.exists(link):
+                    continue
+                if label not in made:
+                    notes.append(f"{short(link)} is a link you made, and it leads nowhere now; fix or remove it by hand")
+                    continue
+                planned.append(Change(new.kind, new.name, [label], "rename-link", link, link, "", to=link.parent / new.name,
+                                      real=Path(new.copies[0].real)))
+        if problems:
+            notes.append(f"{new.name} looks like {old_name} renamed, but agt can't rename it: {'; '.join(problems)}")
+            continue
+        for change in planned:
+            change.name = new.name
+        item = Item(new.kind, new.name, copies=new.copies, decision=engine.Decision("rename", reason=f"renamed from {old_name}"),
+                    renamed_from=key)
+        touched = {label for change in planned for label in change.labels}
+        for label in by_label:
+            held = any(label in copy.labels for copy in new.copies)
+            item.cells[label] = Cell(UPDATE, f"renamed from {old_name}") if label in touched else \
+                Cell(HAS) if held else Cell(WAITING, "filled right after the rename")
+        renamed.append(item)
+        changes += planned
+    return renamed, changes, notes
+
+
 # Notes ---------------------------------------------------------------------
 
 
@@ -631,9 +747,16 @@ def build(config: Any, rows: list[providers.Candidate], included: list[Provider]
     codex = next((provider.folder for provider in included if provider.cli == "codex"), None)
     disabled = exclude.codex_disabled_skills(codex) if codex else set()
     items, excluded = read_items(included, options, now, disabled, own)
-    notices = decide_items(items, included, options, state)
-    changes = [change for item in items for change in changes_for(item, included)]
+    absent, notices = absent_labels(items, included, options, state)
+    renamed, changes, found = detect_renames(items, excluded, included, state, absent)
+    involved = {item.renamed_from for item in renamed} | {item.key for item in renamed}
+    items = [item for item in items if item.key not in involved]
+    excluded = [entry for entry in excluded if entry.item is None or entry.item.key not in involved]
+    decide_items(items, included, options, state, absent)
+    changes += [change for item in items for change in changes_for(item, included)]
     add_notes(items, included, home)
+    items = sorted(items + renamed, key=lambda item: (KINDS.index(item.kind), item.name))
+    notices += found
     return Plan(included=included, rows=rows, items=items, changes=changes, excluded=excluded, options=options,
                 notices=notices)
 
@@ -711,6 +834,13 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
         detail = row.reason or f"{row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
         lines.append(f"  {mark} {provider.label:<16} {short(provider.folder):<22} {detail}")
     lines += table(plan, [item for item in plan.items if any(cell.state != HAS for cell in item.cells.values())])
+    renames = [item for item in plan.items if item.decision and item.decision.action == "rename"]
+    if renames:
+        lines += ["", "Renames (agt renames every copy; each keeps its own fields, and what it replaces is backed up):"]
+        for item in renames:
+            where = sorted({label for change in plan.changes if change.name == item.name and change.kind == item.kind
+                            for label in change.labels})
+            lines.append(f"  {item.renamed_from.partition('/')[2]} -> {item.name} ({item.kind}) in {', '.join(where)}")
     if plan.conflicts:
         lines += ["", "Conflicts (nothing is written for these until you pick a version):"]
         for item in plan.conflicts:
@@ -763,7 +893,10 @@ def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:
                    "cells": {label: {"state": cell.state, "note": cell.note} for label, cell in item.cells.items()},
                    "notes": item.notes} for item in plan.items],
         "changes": [{"kind": c.kind, "name": c.name, "labels": c.labels, "action": c.action, "path": str(c.path),
-                     "source": str(c.source), "new_folder": str(c.new_folder) if c.new_folder else None} for c in plan.changes],
+                     "source": str(c.source), "new_folder": str(c.new_folder) if c.new_folder else None,
+                     "to": str(c.to) if c.to else None} for c in plan.changes],
+        "renames": [{"kind": item.kind, "from": item.renamed_from.partition("/")[2], "to": item.name}
+                    for item in plan.items if item.decision and item.decision.action == "rename"],
         "needs_answer": needs,
         "excluded": [{"kind": e.kind, "name": e.name, "labels": e.labels, "reason": e.reason} for e in plan.excluded],
         "new_folders": [str(folder) for folder in plan.new_folders],
