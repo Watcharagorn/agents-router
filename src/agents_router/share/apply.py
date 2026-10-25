@@ -38,7 +38,7 @@ import tempfile
 import time
 from typing import Callable, Iterator
 
-from agents_router import fsutil
+from agents_router import fsutil, synclog
 from agents_router.share import engine, frontmatter, gitexclude, model, names, normalize, toolmap
 from agents_router.share import plan as planner
 from agents_router.share.state import State, save as save_state, share_dir
@@ -597,14 +597,18 @@ def new_run_id() -> str:
 
 
 def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: str = "sync",
-          run: str | None = None, prior: list[Outcome] | None = None, records: dict | None = None) -> Result:
+          run: str | None = None, prior: list[Outcome] | None = None, records: dict | None = None,
+          command: str | None = None, log: dict | None = None) -> Result:
     """Make the plan's changes and record them. Call it holding `lock()`, after `replay()`.
 
     `op` names the command for the manifest. `prior` holds writes the command already made in this
     run (undo's restores), so the manifest lists them too. `records` keeps state records the command
-    drops (`rm`), so undo can bring them back.
+    drops (`rm`), so undo can bring them back. The run goes to agt's log as `command` (by default
+    `agt share <op>`), with `log`'s fields added.
     """
 
+    started = time.monotonic()
+    synclog.notice(None)  # a hand edit of your share settings shows before this run's line
     home = home or Path.home()
     result = Result(run=run or new_run_id(), outcomes=list(prior or []))
     by_label = {provider.label: provider for provider in plan.included}
@@ -667,7 +671,21 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         result.excluded += gitexclude.update(removed + released, remove=True)
     write_manifest(result, op, records)
     journal_path().unlink(missing_ok=True)
+    _log(plan, result, command or f"agt share {op}", started, log)
     return result
+
+
+def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None) -> None:
+    changes = [{"item": f"{o.kind}/{o.name}", "labels": o.labels, "action": o.action, "path": str(o.path), "ok": o.ok,
+                "backup": str(o.backup) if o.backup else None, **({"message": o.message} if not o.ok else {})}
+               for o in result.outcomes]
+    kept = [{"item": item.key, "label": label} for item in plan.items for label, how in item.drops.items() if how == "release"]
+    conflicts = sorted(item.key for item in plan.items if item.decision and item.decision.action == engine.CONFLICT)
+    names = {o.name for o in result.outcomes} | {entry["item"].partition("/")[2] for entry in kept} | \
+        {key.partition("/")[2] for key in conflicts}
+    synclog.append({"type": "sync", **synclog.where(None), "command": command, "trigger": "command", "run": result.run,
+                    "items": sorted(names), "changes": changes, "kept": kept, "conflicts": conflicts,
+                    "seconds": round(time.monotonic() - started, 3), **(extra or {})})
 
 
 def write_manifest(result: Result, op: str, records: dict | None = None) -> None:

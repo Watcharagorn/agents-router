@@ -566,10 +566,16 @@ def dump_config(config: Config) -> str:
 def save_accounts(config: Config, path: Path | None = None) -> Path:
     """Write every runtime's `[[<runtime>.accounts]]` tables to the user settings, keeping every other line."""
 
+    from agents_router import synclog
+
+    location = path or user_settings_path()
     tables = {f"{name}.accounts" for name in RUNTIMES}
     blocks = ["\n".join(_account_lines(name, account)) for name in RUNTIMES for account in config.runtimes[name].accounts]
     rendered = "\n\n".join(blocks) + "\n" if blocks else ""
-    return levels.replace_tables(path or user_settings_path(), lambda header: header in tables, rendered)
+    synclog.notice_file(location, "user", None)
+    written = levels.replace_tables(location, lambda header: header in tables, rendered)
+    synclog.saved(written)
+    return written
 
 
 def save_config(config: Config, path: Path | None = None) -> Path:

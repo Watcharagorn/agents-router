@@ -23,7 +23,7 @@ import subprocess
 import time
 from typing import Any, Callable, Iterator
 
-from agents_router import levels, limits, quota
+from agents_router import levels, limits, quota, synclog
 from agents_router.config import jobs_dir, load_config, state_dir
 from agents_router.fsutil import (
     file_lock,
@@ -90,7 +90,13 @@ def _create_job(
     start: bool = True,
 ) -> dict[str, Any]:
     limits.validate_override(override)
-    config = load_config(cwd=cwd)
+    workspace = levels.find_workspace(cwd)
+    try:
+        config = load_config(cwd=cwd)
+    except levels.SettingsError as exc:
+        synclog.refused(str(exc), workspace)
+        raise
+    synclog.notice(workspace)
     runtime_config = config.runtime(runtime)
     depth = int(os.environ.get("AGT_DEPTH", "0") or 0)
     if depth >= config.max_depth:

@@ -387,8 +387,10 @@ def _change(args: argparse.Namespace, unset: bool) -> int:
         else:
             print(f"agt: {report['ask']}\nThen run: {report['retry']}", file=sys.stderr)
         return NEEDS_WORDS
+    synclog.notice(workspace)  # a hand edit made before this change is logged as one
     backup = _backup(location, level)
     levels.write(location, new_text)
+    synclog.saved(location)
     excluded = _exclude_local(location) if level == "local" and not old_text else None
     if level_old is levels.MISSING:
         undo = f"agt config unset {key.name} --{level}"

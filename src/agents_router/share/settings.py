@@ -174,4 +174,10 @@ def render(settings: Settings) -> str:
 def save(settings: Settings, location: Path | None = None) -> Path:
     """Replace the `[share]` tables in the settings file, keeping every other line."""
 
-    return levels.replace_tables(location or path(), lambda header: header.split(".")[0] == "share", render(settings))
+    from agents_router import synclog
+
+    location = location or path()
+    synclog.notice_file(location, "user", None)
+    written = levels.replace_tables(location, lambda header: header.split(".")[0] == "share", render(settings))
+    synclog.saved(written)
+    return written

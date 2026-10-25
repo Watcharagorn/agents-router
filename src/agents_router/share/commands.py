@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agents_router import hosts
+from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
     apply, attention, engine, gitexclude, model, names, normalize, picker, plan as planner, providers, settings, state, toolmap,
@@ -483,7 +483,7 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
             return _needs_choice(plan, line, args.json)
         answers = _saved_answers(plan, args)
         saved_at = settings.save(answers)
-        result = apply.apply(plan, current)
+        result = apply.apply(plan, current, command="agt share enable")
         result.replayed = replayed
         _after_renames(argparse.Namespace(**{key: value for key, value in vars(args).items() if key != "kinds"}),
                        answers, current, result)
@@ -1252,7 +1252,10 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
         _no_rename_pending(plan)
         left = planner.leave(plan, current, kinds, labels)
         off = planner.turn_off_plan(plan, left, choice == "remove")
-        result = apply.apply(off, current, op=op)
+        copies = [{"item": entry.item.key, "labels": entry.labels, "path": str(entry.path), "status": entry.status}
+                  for entry in left]
+        result = apply.apply(off, current, op=op, command=retry.split(" --")[0],
+                             log={"turned_off": what, "answer": choice, "copies": copies})
         result.replayed = replayed
         saved_at = None
         if not result.failed:
@@ -1306,6 +1309,8 @@ def _disable(args: argparse.Namespace) -> int:
         saved.enabled = False
         at = settings.save(saved)
         attention.path().unlink(missing_ok=True)
+        synclog.append({"type": "turn-off", **synclog.where(None), "what": "sharing", "answer": "keep", "by": "command",
+                        "command": "agt share disable", "copies": synclog.share_copies()})
         message = (f"agt share is off. Every copy stays as it is, and your answers stay in {short(at)}: "
                    "`agt share enable` turns it on again.")
         _print({"enabled": False, "settings": str(at), "message": message} if args.json else message)
