@@ -247,8 +247,8 @@ def main(argv: list[str]) -> int:
         spec = json.loads(spec_path(home, os.path.basename(name)).read_text(encoding="utf-8"))
         event = spec["event"]
         now = identity(event, spec["matcher"], spec["handlers"], spec.get("folder") or "")
-        if not wanted or not now.startswith(wanted):
-            return _neutral(target)  # changed since you approved it: it waits for you
+        if not wanted or wanted not in (spec.get("approved") or []) or not now.startswith(wanted):
+            return _neutral(target)  # changed since you approved it (or its scripts did): it waits for you
         started = time.monotonic()
         raw = sys.stdin.buffer.read()
         payload = json.loads(raw.decode("utf-8")) if raw.strip() else {}

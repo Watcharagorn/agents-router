@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from test_share_items import ItemBase
 
-from agents_router.share import hooks, providers, settings, triggers
+from agents_router.share import hooks, providers, settings, triggers, watch
 
 GUARD = '''import json, sys
 payload = json.load(sys.stdin)
@@ -125,8 +125,14 @@ class HookTests(ItemBase):
         self.enable("--hooks", "on")
         self.share("pick", f"hooks/{NAME}", "--in", "codex")
         command = self.copy_command(self.codex_hooks())
+        codex = (self.user / ".codex" / "hooks.json").read_bytes()
         self.script.write_text(GUARD.replace("no rm -rf here", "still no"), encoding="utf-8")
         self.assertEqual(self.run_entry(command, self.shell("rm -rf x")), (0, "", ""))  # it does nothing now
+        # A sync (the watcher runs one within a minute) must not approve the change for you.
+        self.share("sync")
+        watch.background_sync("watcher", if_stale=False)
+        self.assertEqual((self.user / ".codex" / "hooks.json").read_bytes(), codex)  # no new entry for Codex to trust
+        self.assertEqual(self.run_entry(self.copy_command(self.codex_hooks()), self.shell("rm -rf x")), (0, "", ""))
         status = self.share("status", code=0)
         self.assertIn("changed since you approved it", status)
         self.share("pick", f"hooks/{NAME}", "--in", "codex")
@@ -212,7 +218,7 @@ class HookTests(ItemBase):
         self.assertEqual(json.loads(self.run_entry(command, call("ls"))[1]), {"decision": "allow"})  # never auto_approve
         self.assertEqual(json.loads(self.run_entry(command, call("echo"), {"AGT_JOB_ID": "j1"})[1]), {"decision": "allow"})
         with patch.object(triggers, "launcher_path", lambda: self.root / "gone" / "agt-run"):
-            gone = hooks.command(plan.copies[0].hook, "antigravity")
+            gone = hooks.command(plan.copies[0].hook, "antigravity", plan.copies[0].approved)
         self.assertEqual(json.loads(self.run_entry(gone, call("rm -rf x"))[1]), {"decision": "allow"})
 
 

@@ -108,6 +108,23 @@ class KiroJobTests(TempHome):
         self.assertIn("--trust-tools=fs_read,glob,grep", record["argv"])
         self.assertIn("count the files", record["stdin"])
 
+    def test_the_relay_path_follows_a_kiro_job(self):
+        import contextlib
+        import io
+
+        from agents_router import cli
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), patch("sys.stdin", io.StringIO("")):
+            code = cli.main(["run", "--follow", "--runtime", "kiro", "--access", "read", "--cwd", str(self.project),
+                             "count the files"])
+        lines = out.getvalue().splitlines()
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(lines[0].startswith("[agt] Agents Router · Kiro · model default · access read"), lines)
+        body = lines[lines.index("===== RESULT =====") + 1:lines.index("===== END RESULT =====")]
+        self.assertEqual(body, ["| Looked at it.", "| Done: count the files"])
+        self.assertRegex(lines[-1], r"^\[agt\] DONE · success · .* · job \S+ · token [0-9a-f]{32}$")
+
     def test_a_usage_limit_is_reported_as_one(self):
         os.environ["FAKE_KIRO_SCENARIO"] = "limit"
         status = jobs.wait_for(jobs.create_job(runtime="kiro", prompt="t", cwd=str(self.project), access="read")["job_id"], 60)

@@ -228,7 +228,8 @@ def read(included: list[providers.Provider]) -> tuple[list[Hook], list[str]]:
 class Copy:
     hook: Hook
     label: str
-    waiting: bool  # changed since you approved it: the entry stays, and hook-run answers neutrally
+    approved: str  # the hook's identity prefix when you approved it: the entry carries this, never the current one
+    waiting: bool  # changed since you approved it: the entry stays as it was, and hook-run answers neutrally
 
 
 @dataclass
@@ -250,7 +251,7 @@ class Plan:
         wanted: dict[str, list[tuple[str, str, int]]] = {}
         for copy in sorted((copy for copy in self.copies if copy.label == label), key=lambda copy: copy.hook.name):
             hook = copy.hook
-            wanted.setdefault(hook.event, []).append((matcher_for(hook, cli), command(hook, cli), _timeout(hook)))
+            wanted.setdefault(hook.event, []).append((matcher_for(hook, cli), command(hook, cli, copy.approved), _timeout(hook)))
         return wanted
 
     def summary(self) -> str:
@@ -272,7 +273,7 @@ class Plan:
         return any(copy.hook is hook and copy.label == label for copy in self.copies)
 
     def digest_content(self) -> list[Any]:
-        return sorted([copy.hook.name, copy.label, copy.hook.short, copy.waiting] for copy in self.copies)
+        return sorted([copy.hook.name, copy.label, copy.approved, copy.waiting] for copy in self.copies)
 
 
 def build(included: list[providers.Provider], approvals: dict[str, dict[str, str]]) -> Plan:
@@ -290,13 +291,15 @@ def build(included: list[providers.Provider], approvals: dict[str, dict[str, str
             if why is not None:
                 plan.refused.append(f"{name} in {label}: approved, but {why}")
                 continue
-            plan.copies.append(Copy(hook, label, waiting=not hook.identity.startswith(short)))
+            plan.copies.append(Copy(hook, label, short, waiting=not hook.identity.startswith(short)))
     return plan
 
 
-def command(hook: Hook, cli: str) -> str:
+def command(hook: Hook, cli: str, approved: str) -> str:
+    """The copy's entry. It names the hook as you approved it: a changed hook never re-arms itself on a sync."""
+
     launcher = shlex.quote(str(triggers.launcher_path()))
-    run = f"{launcher} share hook-run {shlex.quote(hook.name)} --to {cli} --hash {hook.short}"
+    run = f"{launcher} share hook-run {shlex.quote(hook.name)} --to {cli} --hash {shlex.quote(approved)}"
     otherwise = "printf '%s\\n' '{\"decision\": \"allow\"}'" if cli == "antigravity" else "exit 0"
     return f"[ -x {launcher} ] && exec {run} || {otherwise}"
 
@@ -309,10 +312,12 @@ def _timeout(hook: Hook) -> int:
 # Writing -----------------------------------------------------------------------------------------
 
 
-def _spec(hook: Hook, waiting: bool) -> dict[str, Any]:
+def _spec(hook: Hook, approved: list[str]) -> dict[str, Any]:
+    """The hook as it is now, for hook_run, with the identities you approved (it runs only when they still match)."""
+
     return {"name": hook.name, "event": hook.event, "matcher": hook.matcher, "handlers": hook.handlers, "cli": hook.cli,
             "folder": str(hook.folder), "default_folder": hook.default_folder,
-            "identity": hook.identity, "waiting": waiting, "deadline": _timeout(hook) - 1}
+            "identity": hook.identity, "approved": approved, "deadline": _timeout(hook) - 1}
 
 
 def _read_sets(path: Path) -> tuple[dict[str, Any], str]:
@@ -376,7 +381,7 @@ def apply(plan: Plan) -> list[Written]:
     for copy in plan.copies:
         target = folder / f"{copy.hook.name}.json"  # where hook_run.spec_path looks
         keep.add(target.name)
-        spec = _spec(copy.hook, any(other.waiting for other in plan.copies if other.hook is copy.hook))
+        spec = _spec(copy.hook, sorted({other.approved for other in plan.copies if other.hook is copy.hook and not other.waiting}))
         text = json.dumps(spec, indent=2) + "\n"
         if not target.exists() or target.read_text(encoding="utf-8") != text:
             fsutil.make_private_dir(target.parent)

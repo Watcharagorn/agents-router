@@ -75,7 +75,7 @@ def host_context(host: str, cwd: str, env: dict[str, str] | None = None) -> dict
     return {"host": host, "instructions": _existing(instructions), "skills": _existing(skills)}
 
 
-HOST_LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity CLI"}
+HOST_LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity CLI", "kiro": "Kiro CLI"}
 
 
 def parent_note(parent: dict[str, Any] | None, runtime: str) -> str:

@@ -38,7 +38,7 @@ POLL_SECONDS = 0.5
 DEFAULT_MAX_WAIT = 540.0  # keeps one Bash call under Claude Code's 10-minute ceiling
 DEFAULT_WINDOW = 60
 SUMMARY_CHARS = 200
-RUNTIME_LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
+RUNTIME_LABELS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity", "kiro": "Kiro"}
 RESULT_RULE = "===== RESULT ====="
 RESULT_END_RULE = "===== END RESULT ====="
 QUESTION_RULE = "===== QUESTION ====="
