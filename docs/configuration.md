@@ -313,6 +313,15 @@ The alternative names depend on which other installed runtimes have room. `agt a
 
 The `[share]` tables of your user file hold `agt share`'s answers: what shares, between which folders, and your picks per item. See [Sharing agents and skills](share.md#settings). `agt share settings` lists them with the command that changes each.
 
+Four switches set what runs sharing without you (see [Staying in sync without you](share.md#staying-in-sync-without-you)). Each takes effect at once:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `share.watcher` | `true` | The background watcher (macOS): a sync every minute and when a shared folder changes |
+| `share.push_on_save` | `true` | Claude Code's save entry: a save inside a shared folder spreads within seconds |
+| `share.notify` | `true` | macOS notifications for conflicts and other urgent items, at most once an hour |
+| `share.codex_session` | `false` | agt's session-start entry in Codex's `hooks.json` (Codex asks you to trust it in `/hooks`) |
+
 ## Files
 
 Your settings are in the files under [Settings files](#settings-files), not here. The rest is under `~/.agents-router/` (or `AGT_HOME`):
@@ -326,7 +335,8 @@ Your settings are in the files under [Settings files](#settings-files), not here
 | `state/<runtime>-usage.json` | Last known usage, cooldowns and last use per account |
 | `state/leases/` | Lock files for per-account job slots |
 | `cache/claude/<account>/` | Generated `settings.json` overlay and MCP config passed to workers |
-| `state/share/` | `agt share`'s `state.json` (each item at the last sync), `attention.json` (what waits for you), `events.jsonl`, and `backups/<run>/` with each run's `manifest.json` |
+| `state/share/` | `agt share`'s `state.json` (each item at the last sync), `attention.json` (what waits for you), `events.jsonl`, `backups/<run>/` with each run's `manifest.json`, `backups/hooks/` (each `settings.json` or `hooks.json` before agt changed its entries), `heartbeat.json` (the watcher's last run), `launchd.log`, and `signature.json` (what the folders looked like at the last background sync) |
+| `bin/agt-run` | The launcher the watcher and the hook entries call: it records the Python and install agt runs from |
 | `state/log/` | The log, one file per month, and `seen.json` (what agt last saw of each settings file) |
 | `state/backups/settings/` | A settings file as it was before each `agt config set` or `unset` |
 
@@ -339,6 +349,7 @@ Job records and generated files contain your prompts, results and MCP server set
 | `AGT_HOME` | Use a different root folder (`agt --home <folder>` sets it for one command). Without `AGT_CONFIG_DIR`, your user settings move with it, to `<AGT_HOME>/settings.toml` |
 | `AGT_CONFIG_DIR` | The folder of your user `settings.toml` (default `~/.agt`) |
 | `AGT_DEPTH` | Set by Agents Router in workers; used to refuse nested delegation |
+| `AGT_LAUNCHCTL`, `AGT_OSASCRIPT` | A JSON list to run instead of `launchctl` or `osascript` (the tests use fakes). Without them, agt never uses the real ones for an agt home in a temp folder |
 | `CLAUDE_CONFIG_DIR` | Default for `[claude] primary` when the config doesn't set it |
 | `CODEX_HOME` | Default for `[codex] primary` when the config doesn't set it |
 

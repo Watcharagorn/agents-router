@@ -11,6 +11,10 @@ comes with sharing a repo's items.
     kinds = ["agents", "skills"]
     tool_widening = "allow-if-shell"
     auto_copy = true                      # or false, or a list of kinds
+    watcher = true                        # the background watcher (macOS); written only when it's off
+    push_on_save = true                   # a save in Claude Code spreads at once
+    notify = true                         # macOS notifications for conflicts and the like
+    codex_session = false                 # agt's session-start entry in Codex's hooks.json
 
     [[share.folders]]                     # the folders sharing, with their labels
     cli = "claude"
@@ -35,6 +39,8 @@ from agents_router import config, levels
 from agents_router.share import codex_toml, model, toolmap
 
 KINDS = ("agents", "skills")
+# On/off switches for the background side (see triggers.py), with their defaults. Saved only when they differ.
+SWITCHES = {"watcher": True, "push_on_save": True, "notify": True, "codex_session": False}
 
 
 class SettingsError(levels.SettingsError):
@@ -58,6 +64,10 @@ class Settings:
     off: set[str] = field(default_factory=set)  # "<kind>/<name>" items that aren't shared
     not_in: dict[str, list[str]] = field(default_factory=dict)  # "<kind>/<name>" -> labels you unticked
     only: dict[str, list[str]] = field(default_factory=dict)  # "<kind>/<name>" -> the only labels it goes to
+    watcher: bool = True
+    push_on_save: bool = True
+    notify: bool = True
+    codex_session: bool = False
 
 
 def path() -> Path:
@@ -110,7 +120,7 @@ def _labels(key: str, value: Any) -> list[str]:
 def _settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("must be a table")
-    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets"}
+    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", *SWITCHES}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown key {unknown[0]}")
@@ -129,8 +139,12 @@ def _settings(data: Any) -> Settings:
                 or not isinstance(entry.get("label"), str):
             raise ValueError("each [[share.folders]] needs cli, path and label")
         folders.append(Folder(entry["cli"], Path(entry["path"]), entry["label"]))
+    switches = {name: data.get(name, default) for name, default in SWITCHES.items()}
+    for name, value in switches.items():
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be true or false")
     result = Settings(enabled=enabled, kinds=tuple(kinds), tool_widening=widening,
-                      auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders)
+                      auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, **switches)
     targets = data.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be a table")
@@ -155,6 +169,8 @@ def render(settings: Settings) -> str:
     auto = True if settings.auto_copy == KINDS else False if not settings.auto_copy else list(settings.auto_copy)
     lines = ["[share]", f"enabled = {value(settings.enabled)}", f"kinds = {value(list(settings.kinds))}",
              f"tool_widening = {value(settings.tool_widening)}", f"auto_copy = {value(auto)}"]
+    lines += [f"{name} = {value(getattr(settings, name))}" for name, default in SWITCHES.items()
+              if getattr(settings, name) != default]
     for folder in settings.folders:
         lines += ["", "[[share.folders]]", f"cli = {value(folder.cli)}", f"label = {value(folder.label)}",
                   f"path = {value(str(folder.path))}"]

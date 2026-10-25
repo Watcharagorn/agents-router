@@ -598,13 +598,14 @@ def new_run_id() -> str:
 
 def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: str = "sync",
           run: str | None = None, prior: list[Outcome] | None = None, records: dict | None = None,
-          command: str | None = None, log: dict | None = None) -> Result:
+          command: str | None = None, log: dict | None = None, trigger: str = "command") -> Result:
     """Make the plan's changes and record them. Call it holding `lock()`, after `replay()`.
 
     `op` names the command for the manifest. `prior` holds writes the command already made in this
     run (undo's restores), so the manifest lists them too. `records` keeps state records the command
     drops (`rm`), so undo can bring them back. The run goes to agt's log as `command` (by default
-    `agt share <op>`), with `log`'s fields added.
+    `agt share <op>`), with `log`'s fields added. `trigger` says what started it: a command, the
+    watcher, a session start, a save in Claude Code or an MCP server start.
     """
 
     started = time.monotonic()
@@ -671,11 +672,14 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         result.excluded += gitexclude.update(removed + released, remove=True)
     write_manifest(result, op, records)
     journal_path().unlink(missing_ok=True)
-    _log(plan, result, command or f"agt share {op}", started, log)
+    _log(plan, result, command or f"agt share {op}", started, log, trigger)
     return result
 
 
-def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None) -> None:
+def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None,
+         trigger: str = "command") -> None:
+    if trigger != "command" and not result.outcomes and not result.replayed:
+        return  # a background run that changed nothing isn't a line (the watcher runs every minute)
     changes = [{"item": f"{o.kind}/{o.name}", "labels": o.labels, "action": o.action, "path": str(o.path), "ok": o.ok,
                 "backup": str(o.backup) if o.backup else None, **({"message": o.message} if not o.ok else {})}
                for o in result.outcomes]
@@ -683,7 +687,7 @@ def _log(plan: planner.Plan, result: Result, command: str, started: float, extra
     conflicts = sorted(item.key for item in plan.items if item.decision and item.decision.action == engine.CONFLICT)
     names = {o.name for o in result.outcomes} | {entry["item"].partition("/")[2] for entry in kept} | \
         {key.partition("/")[2] for key in conflicts}
-    synclog.append({"type": "sync", **synclog.where(None), "command": command, "trigger": "command", "run": result.run,
+    synclog.append({"type": "sync", **synclog.where(None), "command": command, "trigger": trigger, "run": result.run,
                     "items": sorted(names), "changes": changes, "kept": kept, "conflicts": conflicts,
                     "seconds": round(time.monotonic() - started, 3), **(extra or {})})
 

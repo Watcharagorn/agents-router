@@ -344,6 +344,19 @@ class UpdateTests(SetupBase):
         self.assertEqual(setup.detect_install("/usr", "/usr/lib/site", editable, None, "py"), ("editable", None))
         self.assertEqual(setup.detect_install("/usr", None, None, None, "py"), ("unknown", None))
 
+    def test_update_reinstalls_from_where_agt_came_from(self):
+        uv = "/home/u/.local/share/uv/tools/agents-router"
+        git = json.dumps({"url": "https://example.com/fork/agents-router", "vcs_info": {"vcs": "git", "commit_id": "abc"}})
+        self.assertEqual(setup.detect_install(uv, "/x", git, None, "py")[1][-1], "git+https://example.com/fork/agents-router")
+        branch = json.dumps({"url": "https://example.com/r", "vcs_info": {"vcs": "git", "commit_id": "abc",
+                                                                          "requested_revision": "dev"}})
+        self.assertEqual(setup.recorded_source(branch), "git+https://example.com/r@dev")
+        folder = json.dumps({"url": Path(self.root / "checkout").as_uri(), "dir_info": {}})
+        self.assertEqual(setup.detect_install(uv, "/x", folder, None, "py")[1][-1], str(self.root / "checkout"))
+        archive = json.dumps({"url": "https://example.com/main.zip", "archive_info": {"hash": "sha256=00"}})
+        self.assertEqual(setup.detect_install(uv, "/x", archive, None, "py")[1][-1], "https://example.com/main.zip")
+        self.assertIsNone(setup.recorded_source("not json"))
+
     def test_a_checkout_is_never_reinstalled(self):
         # The tests run from src/ in this repository, so this must say "checkout" and run nothing.
         self.assertEqual(setup._install_info(), ("checkout", None))

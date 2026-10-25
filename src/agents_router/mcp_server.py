@@ -32,6 +32,18 @@ WORKER_INSTRUCTIONS = (
 )
 
 
+def _share_summary() -> str:
+    """What agt share waits for, so a CLI without agt's session entry (Codex) hears it too."""
+
+    try:
+        from agents_router.share import watch
+
+        lines = watch.attention_lines(remember=False)
+    except Exception:
+        return ""
+    return ("\n\n" + "\n".join(lines) + " Tell the user, and offer the command.") if lines else ""
+
+
 class Server:
     def __init__(self, write: Callable[[dict[str, Any]], None], worker_job: str | None = None) -> None:
         self._write = write
@@ -67,7 +79,7 @@ class Server:
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "agents-router", "version": __version__},
-                "instructions": WORKER_INSTRUCTIONS if self._worker_job else INSTRUCTIONS,
+                "instructions": WORKER_INSTRUCTIONS if self._worker_job else INSTRUCTIONS + _share_summary(),
             }
         if method == "ping":
             return {}

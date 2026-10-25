@@ -17,6 +17,11 @@ keeps every copy; `disable --remove-copies` also removes agt's copies. Every cop
 replace or remove goes to the backups first. Nothing writes inside agt's own
 workers, and a command that needs a choice it wasn't given exits 3 with
 `needs_choice` instead of asking an agent.
+
+Turning sharing on also sets up what runs it without you (triggers.py): the
+background watcher, and agt's session-start and save entries in each Claude
+folder. `watch`, `session` and `saved` are what those run (watch.py), and
+`badge` prints a short marker for a status line.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
     apply, attention, engine, gitexclude, model, names, normalize, picker, plan as planner, providers, settings, state, toolmap,
+    triggers,
 )
 from agents_router.share.providers import _short as short
 
@@ -92,6 +98,17 @@ def add_parser(subparsers) -> None:
     sync.add_argument("--refill", action="append", default=[], metavar="LABEL",
                       help="A frozen folder: put back the copies that disappeared from it. This run only.")
     sync.add_argument("--json", action="store_true")
+    sync.add_argument("--if-stale", action="store_true", help="Only when something moved since the last sync.")
+    sync.add_argument("--quiet", action="store_true", help="Print nothing (a background run).")
+    sync.add_argument("--trigger", default="command", help=argparse.SUPPRESS)
+    watch = actions.add_parser("watch", help="One run of the background watcher (the LaunchAgent runs it every minute).")
+    watch.add_argument("--once", action="store_true", help="Run once and exit (the only mode).")
+    watch.add_argument("--quiet", action="store_true")
+    session = actions.add_parser("session", help="What a CLI's session-start entry runs: catch up, then say what waits.")
+    session.add_argument("--label", help="The folder whose session this is.")
+    session.add_argument("--event", default="SessionStart", help=argparse.SUPPRESS)
+    actions.add_parser("saved", help="What Claude Code's save entry runs: a save in a shared folder starts a sync.")
+    actions.add_parser("badge", help="Print share:N! when N things wait for you, else nothing (for a status line).")
     shown = actions.add_parser("settings", help="Every share setting, where it comes from and the command that changes it.")
     shown.add_argument("--json", action="store_true")
     status = actions.add_parser("status", help="What's in sync, what differs and what waits for you; writes nothing.")
@@ -250,15 +267,20 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
 
 def _folders(config: Any, explicit: list[tuple[str, Path]] | None, no_agy: bool,
              saved: settings.Settings | None) -> tuple[list[providers.Candidate], list[providers.Provider]]:
-    """The folder rows and the ones sharing: the flags, else the saved folders, else the suggested ones."""
+    """The folder rows and the ones sharing: the flags, else the saved folders, else the suggested ones.
 
-    if explicit is None and saved is not None and saved.folders:  # saved folders, even while sharing is off
+    A saved folder keeps sharing when its CLI's binary isn't found, so a run with a smaller PATH (the
+    watcher's) sees the same folders as yours. `agt share cli remove` stops one.
+    """
+
+    from_saved = explicit is None and saved is not None and bool(saved.folders)
+    if from_saved:  # saved folders, even while sharing is off
         explicit = [(folder.cli, folder.path) for folder in saved.folders]
     rows = providers.candidates(config, explicit, no_agy=no_agy)
     if explicit is None:
         return rows, [row.provider for row in rows if row.suggested]
     given = {(cli, str(folder.resolve())) for cli, folder in explicit}
-    included = [row.provider for row in rows if row.reason is None
+    included = [row.provider for row in rows if (row.reason is None or (from_saved and row.missing_binary))
                 and (row.provider.cli, str(row.provider.folder.resolve())) in given]
     if saved is not None:
         # The state is keyed by label, so the saved labels win over freshly worked-out ones.
@@ -488,7 +510,7 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
         _after_renames(argparse.Namespace(**{key: value for key, value in vars(args).items() if key != "kinds"}),
                        answers, current, result)
         _remember(plan, current, result)
-    _report(plan, result, saved_at, args.json)
+    _report(plan, result, saved_at, args.json, notes=_refresh_triggers(answers, plan.included))
     return 1 if result.failed else 0
 
 
@@ -603,7 +625,22 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
         return drop()
 
 
+def _refresh_triggers(saved: settings.Settings, included: list[providers.Provider] | None = None) -> list[str]:
+    """Bring the watcher and the hook entries in line with the settings; the lines say what runs sharing now."""
+
+    try:
+        if included is None and saved.enabled:
+            included = _folders(load_config(), None, False, saved)[1]
+        return triggers.refresh(saved, included or [])
+    except (OSError, triggers.TriggerError) as exc:
+        return [f"The background side couldn't be set up ({exc}); `agt doctor --fix` tries again."]
+
+
 def _sync(args: argparse.Namespace) -> int:
+    if args.if_stale or args.quiet or args.trigger != "command":
+        from agents_router.share import watch
+
+        return watch.sync_command(args)
     saved = settings.load()
     if not saved.enabled:
         _say_off(args)
@@ -636,6 +673,8 @@ def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, 
         result.replayed = replayed
         saved_at = _after_renames(args, saved, current, result) or saved_at
         _remember(plan, current, result)
+    if save:
+        notes = (notes or []) + _refresh_triggers(saved, plan.included)
     _report(plan, result, saved_at, args.json, title=command, notes=notes)
     return 1 if result.failed else 0
 
@@ -669,7 +708,7 @@ def _diff(item: planner.Item) -> list[str]:
 
 WHO = {"choice": "your choice", "action": "for you to do", "agent": "an agent can do it"}
 TITLES = {"conflict": "Conflict", "delete": "Waiting to be deleted", "unreadable": "Can't read", "new": "New",
-          "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed"}
+          "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed", "watcher": "Watcher stopped"}
 
 
 def _status(args: argparse.Namespace) -> int:
@@ -683,18 +722,26 @@ def _status(args: argparse.Namespace) -> int:
     in_sync = [item for item in plan.items if item.decision and item.decision.action == engine.NOTHING and item.decision.version]
     waiting = [item for item in plan.waiting if item.decision.reason == "saved less than 3 s ago"]
     needs = attention.entries(plan, current)
+    from agents_router.share import watch
+
+    health = watch.health()
+    if saved.watcher and health["stopped"]:
+        needs.append({"id": "watcher", "kind": "watcher", "item": attention.FOLDER, "who": "agent",
+                      "message": "the background watcher stopped", "fix": ["agt doctor --fix"]})
     code = 1 if plan.conflicts or pending or plan.frozen else 0
     if args.json:
         _print({"enabled": True, "folders": [{"label": p.label, "cli": p.cli, "path": str(p.folder)} for p in plan.included],
                 "in_sync": len(in_sync), "to_write": len(plan.changes), "conflicts": [i.name for i in plan.conflicts],
                 "waiting": [i.name for i in plan.waiting], "pending_delete": [i.name for i in pending],
                 "frozen": plan.frozen, "not_shared": len(plan.excluded), "notes": plan.notices, "attention": needs,
+                "watcher": health,
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
     lines = ["agt share is on for " + ", ".join(f"{p.label} ({short(p.folder)})" for p in plan.included) + ".",
              f"  {len(in_sync)} items in sync, {len(plan.changes)} changes for the next sync, "
              f"{len(plan.conflicts)} conflicts, {len(plan.waiting)} waiting, {len(pending)} waiting to be deleted, "
              f"{len(plan.excluded)} not shared."]
+    lines += [f"  {line}" for line in watch.health_lines(saved) if not (health["stopped"] and line.startswith("Watcher stopped"))]
     by_key = {item.key: item for item in plan.items}
     for entry in needs:
         fix = " or ".join(f"`{command}`" for command in entry["fix"])
@@ -1272,6 +1319,8 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
             for entry in left if entry.status != "agt" or choice == "keep"]
     notes = ([done(choice == "remove")] if not result.failed else
              [f"Nothing else changed: a removal failed, so {what} still shares. Run it again to finish."]) + kept
+    if not result.failed:
+        notes += _refresh_triggers(saved)
     _report(off, result, saved_at, args.json, title=retry.split(" --")[0], notes=notes)
     return 1 if result.failed else 0
 
@@ -1311,9 +1360,11 @@ def _disable(args: argparse.Namespace) -> int:
         attention.path().unlink(missing_ok=True)
         synclog.append({"type": "turn-off", **synclog.where(None), "what": "sharing", "answer": "keep", "by": "command",
                         "command": "agt share disable", "copies": synclog.share_copies()})
+        removed = triggers.remove_all()
         message = (f"agt share is off. Every copy stays as it is, and your answers stay in {short(at)}: "
                    "`agt share enable` turns it on again.")
-        _print({"enabled": False, "settings": str(at), "message": message} if args.json else message)
+        _print({"enabled": False, "settings": str(at), "message": message, "notes": removed} if args.json
+               else "\n".join([message, *removed]))
         return 0
     args.dry_run, args.keep_copies = False, False
     labels = {folder.label for folder in saved.folders}
@@ -1613,8 +1664,39 @@ def _version_at(kind: str, included: list[providers.Provider], label: str, path:
         return None
 
 
+def _background(args: argparse.Namespace) -> int:
+    """`watch`, `session`, `saved` and `badge`: what runs sharing without you. They never fail what started them."""
+
+    from agents_router.share import watch
+
+    action = args.share_command
+    if action == "watch":
+        return watch.run_once()
+    if action == "badge":
+        text = watch.badge()
+        if text:
+            print(text)
+        return 0
+    try:
+        stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
+    except (OSError, ValueError):
+        stdin = ""
+    try:
+        if action == "session":
+            line = watch.session(args.label, stdin, args.event)
+            if line:
+                print(line)
+        else:
+            watch.saved_hook(stdin)
+    except Exception as exc:  # a hook entry never fails the session that runs it
+        print(f"agt share {action}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return 0
+
+
 def command(args: argparse.Namespace) -> int:
     action = args.share_command
+    if action in ("watch", "session", "saved", "badge"):
+        return _background(args)
     try:
         if action == "enable":
             return _enable(args)

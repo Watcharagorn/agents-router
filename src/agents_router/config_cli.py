@@ -39,6 +39,8 @@ from agents_router.share import settings as share_settings
 
 JOB = "the next job start (running jobs keep theirs)"
 SYNC = "the next sync (agt share sync)"
+AT_ONCE = "once (agt updates the watcher and its hook entries now)"
+TRIGGER_KEYS = ("share.watcher", "share.push_on_save", "share.codex_session")
 NEEDS_WORDS = 3
 
 
@@ -127,6 +129,14 @@ KEYS: dict[str, Key] = {key.name: key for key in [
         user_only=True, applies=SYNC),
     Key("share.tool_widening", "choice", "What a copy's tools become where they can't be kept exactly.",
         toolmap.TOOL_WIDENING, user_only=True, applies=SYNC),
+    Key("share.watcher", "bool", "The background watcher (macOS): a sync every minute and when a shared folder changes.",
+        user_only=True, applies=AT_ONCE),
+    Key("share.push_on_save", "bool", "A save in Claude Code inside a shared folder spreads within seconds.",
+        user_only=True, applies=AT_ONCE),
+    Key("share.notify", "bool", "macOS notifications for conflicts and other urgent items, at most once an hour.",
+        user_only=True, applies="the watcher's next run"),
+    Key("share.codex_session", "bool", "agt's session-start entry in Codex's hooks.json (Codex asks you to trust it in /hooks).",
+        user_only=True, applies=AT_ONCE),
 ]}
 
 
@@ -405,9 +415,10 @@ def _change(args: argparse.Namespace, unset: bool) -> int:
     synclog.append({"type": "setting", **synclog.where(workspace), "file": str(location), "level": level,
                     "key": key.name, "old": _plain(level_old), "new": None if unset else _plain(levels.read_value(new_text, key.table, key.field)),
                     "command": command, **who})
+    triggers = _refresh_share(key)
     report = {"key": key.name, "old": old, "new": new, "file": str(location), "level": level, "applies": key.applies,
               "effective": new, "overridden_by": overridden, "still_limited_by": limited, "undo": undo,
-              "backup": str(backup) if backup else None, "excluded_in": excluded}
+              "backup": str(backup) if backup else None, "excluded_in": excluded, "triggers": triggers}
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
@@ -423,8 +434,21 @@ def _change(args: argparse.Namespace, unset: bool) -> int:
         print(f"Still limited by {line}.")
     if excluded:
         print(f"Kept out of git: {excluded}")
+    for line in triggers:
+        print(line)
     print(f"Undo: {undo}")
     return 0
+
+
+def _refresh_share(key: Key) -> list[str]:
+    """A switch for the background side changes the watcher and the hook entries at once, while sharing is on."""
+
+    if key.name not in TRIGGER_KEYS:
+        return []
+    from agents_router.share import commands as share_commands
+
+    saved = share_settings.load()
+    return share_commands._refresh_triggers(saved) if saved.enabled else []
 
 
 def _argument(key: Key, value: Any) -> str:
@@ -499,6 +523,7 @@ SHARE_COMMANDS = {
     "share.kinds": "agt share kinds add|remove <kind>",
     "share.auto_copy": "agt config set share.auto_copy on|off|<kinds>",
     "share.tool_widening": f"agt config set share.tool_widening {'|'.join(toolmap.TOOL_WIDENING)}",
+    **{f"share.{name}": f"agt config set share.{name} true|false" for name in share_settings.SWITCHES},
 }
 
 
@@ -509,7 +534,8 @@ def share_command(args: argparse.Namespace) -> int:
     layer = levels.read("user", user)
     share = share_settings.parse(layer.data.get("share", {}), user) if layer else share_settings.Settings()
     rows = []
-    for key in (KEYS[name] for name in ("share.enabled", "share.kinds", "share.auto_copy", "share.tool_widening")):
+    for key in (KEYS[name] for name in ("share.enabled", "share.kinds", "share.auto_copy", "share.tool_widening",
+                                         *(f"share.{name}" for name in share_settings.SWITCHES))):
         value = _value(key, config.defaults(), share)
         level, found = _source(key, [layer] if layer else [])
         command = SHARE_COMMANDS.get(key.name) or ("agt share disable" if share.enabled else "agt share enable")

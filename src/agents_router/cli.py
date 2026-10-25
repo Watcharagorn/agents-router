@@ -168,10 +168,24 @@ def _login(runtime_config, runtime, account: Account) -> int:
 # Setup -----------------------------------------------------------------------
 
 
+def _refresh_share_launcher(dry_run: bool) -> None:
+    """agt share's launcher follows agt when it moved (only once sharing set it up)."""
+
+    if dry_run:
+        return
+    try:
+        from agents_router.share import triggers
+
+        triggers.refresh_launcher()
+    except OSError:
+        pass
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     code, report = setup.run_setup(
         load_config(), args.host or ["auto"], args.account, dry_run=args.dry_run, claude_route=args.claude_route,
     )
+    _refresh_share_launcher(args.dry_run)
     print()
     print(setup.format_report(report))
     return code
@@ -179,12 +193,35 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_update(args: argparse.Namespace) -> int:
     code, report = setup.run_update(load_config(), args.host or ["auto"], dry_run=args.dry_run, package=not args.no_package)
+    _refresh_share_launcher(args.dry_run)
     print()
     print(setup.format_report(report, "update"))
     return code
 
 
 # Doctor ----------------------------------------------------------------------
+
+
+def _share_doctor(fix: bool) -> list[str]:
+    """agt share's line: on or off, the watcher, the launcher and the state; `--fix` repairs what it can."""
+
+    from agents_router.share import settings as share_settings, state as share_state, watch
+
+    try:
+        saved = share_settings.load()
+    except share_settings.SettingsError as exc:
+        return [f"agt share: {exc}"]
+    if not saved.enabled:
+        return ["agt share: off."]
+    lines = [f"agt share: on for {', '.join(folder.label for folder in saved.folders)}."]
+    if fix:
+        lines += [f"  Fixed: {line}" for line in watch.fix(saved)]
+    lines += [f"  {line}" for line in watch.health_lines(saved)]
+    try:
+        share_state.load()
+    except share_state.StateError as exc:
+        lines.append(f"  Problem: {exc}")
+    return lines
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -195,6 +232,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     _print(report)
     for note in config.notes:
         print(f"Note: {note}")
+    for line in _share_doctor(getattr(args, "fix", False)):
+        print(line)
     for found in setup.upstream_installs(config):
         print(f"Warning: {found}. Two installs both register an MCP server and hooks; remove the old one.")
     problems = 0
@@ -477,6 +516,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--live", action="store_true", help="Run one tiny job per account (uses a little quota).")
     doctor.add_argument("--model", help="Model for --live jobs (default: haiku for claude, the CLI's default otherwise).")
     doctor.add_argument("--cwd", default=os.getcwd())
+    doctor.add_argument("--fix", action="store_true",
+                        help="Repair agt share: its state from the last good copy, the launcher, the watcher and its entries.")
 
     for name, help_text in (("run", "Run a task and print the result."), ("start", "Start a task in the background.")):
         _job_arguments(sub.add_parser(name, help=help_text))

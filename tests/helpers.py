@@ -11,6 +11,16 @@ import unittest
 from unittest.mock import patch
 
 FAKE_CLAUDE = Path(__file__).with_name("fake_claude.py")
+FAKE_LAUNCHD = Path(__file__).with_name("fake_launchd.py")
+
+
+def fake_launchd(root: Path) -> dict[str, str]:
+    """launchctl, osascript and agt's background spawns, recorded under `root` instead of run for real."""
+
+    fake = lambda kind: json.dumps([sys.executable, str(FAKE_LAUNCHD), kind])
+    return {"AGT_LAUNCHCTL": fake("launchctl"), "AGT_OSASCRIPT": fake("osascript"),
+            "FAKE_LAUNCHCTL_STATE": str(root / "launchctl-state.json"), "FAKE_LAUNCHCTL_RECORD": str(root / "launchctl.jsonl"),
+            "FAKE_OSASCRIPT_RECORD": str(root / "osascript.jsonl"), "AGT_SPAWN_RECORD": str(root / "spawned.jsonl")}
 
 # Variables of the session that runs the tests (an agent CLI, an agt worker, a git hook).
 DROPPED_PREFIXES = ("CLAUDE", "CODEX_", "AGY_", "AGT_", "KIRO_", "ANTHROPIC_", "OPENAI_")
@@ -42,6 +52,8 @@ def isolate_process() -> Path:
         CLAUDE_CONFIG_DIR=str(home / ".claude"), CODEX_HOME=str(home / ".codex"),
         AGT_HOME=str(home / ".agents-router"),  # with no AGT_CONFIG_DIR, each test's AGT_HOME holds its settings
         GIT_CONFIG_GLOBAL=str(root / "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
+        # Never the real launchd, notifications or background runs.
+        **fake_launchd(root),
     )
     return root
 
@@ -102,6 +114,7 @@ class TempHome(unittest.TestCase):
                 "AGT_CLAUDE_COMMAND": json.dumps([sys.executable, str(FAKE_CLAUDE)]),
                 "FAKE_CLAUDE_RECORD": str(self.record),
                 "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+                **fake_launchd(self.root),
             },
         )
         self._env.start()
@@ -157,7 +170,7 @@ class ShareHome(unittest.TestCase):
             "AGT_HOME": str(self.agt_home), "AGT_CONFIG_DIR": str(self.user / ".agt"),
             "GIT_CONFIG_GLOBAL": str(self.root / "gitconfig"), "GIT_CONFIG_NOSYSTEM": "1",
             "AGT_CLAUDE_COMMAND": fake("claude"), "AGT_CODEX_COMMAND": fake("codex"), "AGT_KIRO_COMMAND": fake("kiro"),
-            "FAKE_HOST_LOG": str(self.root / "host-log.jsonl"),
+            "FAKE_HOST_LOG": str(self.root / "host-log.jsonl"), **fake_launchd(self.root),
         })
         self._env.start()
         # Nothing a test runs may wait for typing: a prompt it reaches gets end-of-input.

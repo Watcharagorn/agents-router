@@ -174,6 +174,12 @@ def startup() -> None:
         jobs.clean_old_jobs(load_config().job_retention_days)
     except Exception:
         pass
+    try:  # agt share catches up in the background when something moved (it never writes to stdout)
+        from agents_router.share import watch
+
+        watch.on_mcp_start()
+    except Exception:
+        pass
 
 
 def summarize(status: dict[str, Any]) -> dict[str, Any]:

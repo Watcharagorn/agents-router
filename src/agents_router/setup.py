@@ -592,12 +592,39 @@ MANUAL_PACKAGE = (
 )
 
 
+def recorded_source(direct_url: str | None) -> str | None:
+    """Where agt was installed from, as pip, pipx and uv take it: `git+<url>`, a folder, or an archive URL.
+
+    It comes from the install's `direct_url.json`; a git install is taken again from its branch, not the
+    commit it was at. None when the install didn't record one (a package index).
+    """
+
+    try:
+        info = json.loads(direct_url) if direct_url else {}
+    except ValueError:
+        return None
+    url = info.get("url") if isinstance(info, dict) else None
+    if not isinstance(url, str) or not url:
+        return None
+    vcs = info.get("vcs_info")
+    if isinstance(vcs, dict):
+        branch = vcs.get("requested_revision")
+        return f"{vcs.get('vcs') or 'git'}+{url}" + (f"@{branch}" if branch and branch != vcs.get("commit_id") else "")
+    if url.startswith("file://") and isinstance(info.get("dir_info"), dict):
+        from urllib.request import url2pathname
+
+        return url2pathname(url[len("file://"):])
+    return url
+
+
 def detect_install(prefix: str, location: str | None, direct_url: str | None, user_site: str | None,
                    executable: str) -> tuple[str, list[str] | None]:
-    """How this package was installed, and the command that reinstalls it from GitHub.
+    """How this package was installed, and the command that reinstalls it from where it came from.
 
     `prefix` is sys.prefix, `location` the folder that holds the installed package
-    (None when it isn't installed, e.g. run from a checkout via PYTHONPATH).
+    (None when it isn't installed, e.g. run from a checkout via PYTHONPATH). The
+    source is the one the install recorded (a git URL, a folder or an archive),
+    else this repository on GitHub.
     """
 
     if location is None:
@@ -608,14 +635,26 @@ def detect_install(prefix: str, location: str | None, direct_url: str | None, us
         info = {}
     if isinstance(info, dict) and (info.get("dir_info") or {}).get("editable"):
         return "editable", None
+    source = recorded_source(direct_url) or PACKAGE_SOURCE
     parts = [part.lower() for part in Path(prefix).parts]
     if "venvs" in parts and any("pipx" in part for part in parts):
-        return "pipx", [shutil.which("pipx") or "pipx", "install", "--force", PACKAGE_SOURCE]
+        return "pipx", [shutil.which("pipx") or "pipx", "install", "--force", source]
     if "uv" in parts and "tools" in parts:
-        return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", PACKAGE_SOURCE]
+        return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", source]
     if user_site and Path(location).resolve().is_relative_to(Path(user_site).resolve()):
-        return "pip-user", [executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-deps", PACKAGE_SOURCE]
-    return "pip", [executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", PACKAGE_SOURCE]
+        return "pip-user", [executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-deps", source]
+    return "pip", [executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", source]
+
+
+def install_source() -> str:
+    """The reinstall source of the running agt, for messages: what `agt update` would install from."""
+
+    import importlib.metadata
+
+    try:
+        return recorded_source(importlib.metadata.distribution("agents-router").read_text("direct_url.json")) or PACKAGE_SOURCE
+    except importlib.metadata.PackageNotFoundError:
+        return PACKAGE_SOURCE
 
 
 def _install_info() -> tuple[str, list[str] | None]:

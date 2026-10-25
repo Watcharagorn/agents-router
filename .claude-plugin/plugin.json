@@ -1,6 +1,6 @@
 {
   "name": "agents-router",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Start subagents in other installed agent CLIs (Claude Code first) under your own accounts, with one shared setup of MCP servers, plugins, skills and settings across all of them.",
   "author": { "name": "Watcharagorn", "url": "https://github.com/Watcharagorn" },
   "homepage": "https://github.com/Watcharagorn/agents-router",

@@ -1,6 +1,6 @@
 # Sharing agents and skills
 
-`agt share` keeps your agents and skills the same in every agent CLI you use. Write an agent in Claude Code and it appears in Codex, Kiro and your other Claude folders too, each in that CLI's own format. Edit it in any of them and the edit reaches the others.
+`agt share` keeps your agents and skills the same in every agent CLI you use. Write an agent in Claude Code and it appears in Codex, Kiro and your other Claude folders too, each in that CLI's own format. Edit it in any of them and the edit reaches the others on its own, within a minute (within seconds for a save in Claude Code).
 
 It covers your user folders today:
 
@@ -78,7 +78,7 @@ These are never shared, and `agt share status` counts them as "not shared": hidd
 
 ## Everyday use
 
-Edit an agent or skill in any CLI, then sync:
+Edit an agent or skill in any CLI. agt spreads the edit on its own ([below](#staying-in-sync-without-you)); `agt share sync` does it at once:
 
 ```text
 $ agt share status
@@ -119,6 +119,31 @@ agt share pick reviewer --only claude,codex  # these CLIs only
 
 `--not-in` and `--only` remove the copies agt made in the CLIs you leave out, with a backup; `--keep-copies` keeps them as your own files instead. Your originals are never removed, and a copy holding an edit the others don't have is always kept. Items are named bare (`reviewer`) when the name is unique, or as `agents/reviewer` and `skills/release-notes`.
 
+### Staying in sync without you
+
+Turning sharing on also sets up what runs it without you:
+
+| What | When it runs | Where |
+|---|---|---|
+| The background watcher | every minute, and when a shared agents or skills folder changes | macOS: a LaunchAgent, `~/Library/LaunchAgents/io.github.watcharagorn.agents-router.share.plist` |
+| A session-start entry | when a Claude Code session starts, resumes or compacts | each Claude folder's `settings.json` |
+| A save entry | when Claude Code writes or edits a file inside a shared folder, so the change spreads within seconds | each Claude folder's `settings.json` |
+| A catch-up | when agt's MCP server starts in any CLI | |
+
+Each of these syncs only when something moved since the last sync, never waits for another run, and never runs inside agt's workers. A run that changes nothing isn't logged. They all call `~/.agents-router/bin/agt-run`, a small launcher that records which Python and install agt runs from, so they don't depend on `PATH`. `agt setup`, `agt update` and an MCP server start rewrite it when agt moves.
+
+At a session start, Claude Code gets one line when there's something to say: what arrived in that folder since your last session there, and what waits for you (a conflict, say, with the command that fixes it). Nothing at all otherwise. A session that's already open doesn't load agents or skills that arrive later; that's how every CLI works. The watcher also posts a macOS notification for a new conflict, an item waiting to be deleted, a frozen folder or a write that keeps failing, at most once an hour.
+
+agt adds its entries after yours and never changes your own; it backs `settings.json` up to `~/.agents-router/state/share/backups/hooks/` first. A Codex session entry is off by default, because Codex asks you to trust each hook in `/hooks`: `agt config set share.codex_session true` adds one to `~/.codex/hooks.json`. Other switches: `agt config set share.push_on_save false` drops the save entry, `share.watcher false` removes the watcher, and `share.notify false` stops the notifications. Each takes effect at once. `agt share disable` removes all of it.
+
+`agt share status` shows the watcher's last run. When it stopped, the next session start restarts it, and `agt doctor --fix` reinstalls it along with the launcher and the entries. `agt share badge` prints `share:2!` while two things wait for you, and nothing otherwise, for your status line:
+
+```bash
+badge=$(agt share badge 2>/dev/null)   # in your statusline-command.sh
+```
+
+There's no watcher on Linux or Windows yet. On Linux, session starts, saves and MCP server starts catch up instead; on Windows, MCP server starts do. `agt share sync` works everywhere.
+
 ### Removing, renaming and undoing
 
 ```bash
@@ -137,7 +162,7 @@ agt share cli list                      # the folders sharing, and the others ag
 agt share cli add codex                 # share one more; it's filled at once
 agt share cli remove kiro --keep-copies
 agt share kinds remove skills --remove-copies
-agt share disable                       # stop sharing; every copy stays
+agt share disable                       # stop sharing; every copy stays, the watcher and entries go
 agt share disable --remove-copies       # also remove the copies agt made
 ```
 
@@ -153,6 +178,7 @@ A turn-off that arrives by editing the settings file has nobody to answer, so ag
 - **A mass delete freezes.** When more than 3 of the copies agt made in one folder disappear at once, and more than a quarter of them, agt deletes nothing there until you say: `agt share sync --allow-deletes <label>` (you meant it) or `agt share sync --refill <label>` (put them back). Either applies to that run only.
 - **Git repos.** When a CLI folder is a git repo (`~/.claude` often is), the copies agt makes there go in one marked block of that repo's `.git/info/exclude`, so they don't show in `git status`. Nothing is committed.
 - **Not in workers.** agt's own subagent workers never write share copies.
+- **Never in the way.** agt's session and save entries always exit 0, print nothing unless there's something to say, and do nothing once agt is gone. When the launcher's Python is gone, the session line says how to reinstall.
 
 Every run that writes is one line in agt's log, with each write and backup: see [the log](configuration.md#the-log).
 
@@ -169,6 +195,7 @@ Every run that writes is one line in agt's log, with each write and backup: see 
 | A rename that couldn't finish | you choose | `agt share mv <old> <new>` |
 | A file agt can't read | you fix it | |
 | A copy agt couldn't write in the last 3 runs | you fix it | |
+| The background watcher stopped | an agent can do it | `agt doctor --fix` |
 
 The same list is in `agt share status --json` (`attention`, each entry with `kind`, `item`, `who`, `message` and `fix`) and in `~/.agents-router/state/share/attention.json`, which each writing run updates.
 
@@ -195,6 +222,7 @@ enabled = true
 kinds = ["agents", "skills"]
 tool_widening = "allow-if-shell"
 auto_copy = true                      # or false, or a list of kinds
+codex_session = true                  # the switches are written only when they differ from the default
 
 [[share.folders]]
 cli = "claude"
@@ -207,4 +235,4 @@ path = "/Users/you/.claude-work"
 "skills/old-notes" = "off"            # not shared: every copy stays as it is
 ```
 
-`agt share settings` lists each setting, where it comes from and the command that changes it. Two are plain values: `agt config set share.auto_copy off` and `agt config set share.tool_widening skip`. The others change with the commands above, because changing them makes or removes copies. See [Configuration](configuration.md).
+`agt share settings` lists each setting, where it comes from and the command that changes it. Some are plain values: `agt config set share.auto_copy off`, `share.tool_widening skip`, and the switches `share.watcher`, `share.push_on_save`, `share.notify` and `share.codex_session` (true or false). The others change with the commands above, because changing them makes or removes copies. See [Configuration](configuration.md).

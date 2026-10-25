@@ -335,6 +335,10 @@ def _by(entry: dict[str, Any]) -> str:
         str(entry.get("by")), str(entry.get("by") or ""))
 
 
+TRIGGER_NAMES = {"watcher": "the background watcher", "session": "a session start", "save": "a save in Claude Code",
+                 "mcp-start": "an MCP server start"}
+
+
 def _run_line(entry: dict[str, Any]) -> str:
     changes = entry.get("changes") or []
     done = [change for change in changes if change.get("ok")]
@@ -349,7 +353,9 @@ def _run_line(entry: dict[str, Any]) -> str:
     if entry.get("turned_off"):
         extra.insert(0, f"turned off {entry['turned_off']}, {entry.get('answer')} the copies")
     extra = [part for part in extra if part]
-    return f"{entry.get('command') or 'agt share'}: {text}" + (f"; {'; '.join(extra)}" if extra else "")
+    by = TRIGGER_NAMES.get(str(entry.get("trigger")))
+    command = (entry.get("command") or "agt share") + (f" ({by})" if by else "")
+    return f"{command}: {text}" + (f"; {'; '.join(extra)}" if extra else "")
 
 
 def line(entry: dict[str, Any]) -> str:

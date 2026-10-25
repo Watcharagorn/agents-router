@@ -63,6 +63,7 @@ class Candidate:
     reason: str | None = None
     holds: dict[str, int] = field(default_factory=dict)  # shareable items per kind
     in_use: bool = False  # holds any agent or skill files, shareable or not
+    missing_binary: bool = False  # greyed only because the CLI's binary wasn't found
 
 
 def locations(cli: str, folder: Path, home: Path) -> dict[str, list[Location]]:
@@ -233,5 +234,6 @@ def candidates(config: Config, folders: list[tuple[str, Path]] | None = None, *,
         elif not provider.installed:
             reason = f"{BINARY[provider.cli]} isn't installed; run `agt setup` again after installing it"
         used = in_use(provider)
-        rows.append(Candidate(provider=provider, suggested=reason is None and used, reason=reason, holds=counts, in_use=used))
+        rows.append(Candidate(provider=provider, suggested=reason is None and used, reason=reason, holds=counts, in_use=used,
+                              missing_binary=reason is not None and not provider.installed and reason.startswith(BINARY[provider.cli])))
     return rows

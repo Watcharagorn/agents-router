@@ -48,7 +48,7 @@ python -m unittest discover -s tests -t tests
 
 When you change anything the plugin ships (agents, skills, commands, hooks, the MCP server or the `agt` code it calls), raise `version` in `.claude-plugin/plugin.json`, `pyproject.toml` and `src/agents_router/__init__.py` together. Claude Code only updates an installed plugin when that version changes.
 
-The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`, `fake_host.py`) and temporary folders. Keep it that way: tests must never call the real `claude`, `codex` or `agy`, or touch the real `~/.claude`, `~/.codex` or `~/.gemini`. Every test module imports `tests/helpers.py`, which points the whole test process at throwaway folders (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `AGT_HOME`), drops the variables of the agent session running the tests, and takes an installed `agt` off `PATH`. A new test module imports it too; a test that needs its own folders still sets them.
+The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`, `fake_host.py`) and temporary folders. Keep it that way: tests must never call the real `claude`, `codex` or `agy`, or touch the real `~/.claude`, `~/.codex` or `~/.gemini`. Every test module imports `tests/helpers.py`, which points the whole test process at throwaway folders (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `AGT_HOME`), drops the variables of the agent session running the tests, and takes an installed `agt` off `PATH`. It also swaps `launchctl` and `osascript` for `tests/fake_launchd.py` (`AGT_LAUNCHCTL`, `AGT_OSASCRIPT`) and records agt's background spawns instead of starting them (`AGT_SPAWN_RECORD`), so no test reaches the real launchd. A new test module imports it too; a test that needs its own folders still sets them.
 
 ## Layout
 
@@ -60,7 +60,7 @@ The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`,
 | `src/agents_router/accounts.py`, `config.py` | Account pool, cooldowns, the settings in effect |
 | `src/agents_router/levels.py` | The settings files: `~/.agt/settings.toml`, `<workspace>/.agt/settings.toml` and `settings.local.toml`, and finding the workspace |
 | `src/agents_router/config_cli.py`, `synclog.py` | `agt config show/set/unset`, and agt's log with `agt log` |
-| `src/agents_router/share/` | `agt share`: keeping agents and skills the same across the CLIs |
+| `src/agents_router/share/` | `agt share`: keeping agents and skills the same across the CLIs. `triggers.py` sets up what runs it without you (the launcher, the macOS LaunchAgent, agt's hook entries), and `watch.py` is what they run |
 | `src/agents_router/sync.py`, `fsutil.py` | Linking the shared setup into account folders |
 | `src/agents_router/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
 | `src/agents_router/runtimes/` | Claude Code, Codex and Antigravity adapters |

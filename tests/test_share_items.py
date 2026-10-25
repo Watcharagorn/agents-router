@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
@@ -42,9 +43,12 @@ class ItemBase(MacCopy):
         return sorted((self.agt_home / "state" / "share" / "backups").rglob(name))
 
     def folders(self):
-        """The CLI folders only: a pick saves your answer in ~/.agt/settings.toml on purpose."""
+        """The CLI folders' items only: a pick saves your answer in ~/.agt/settings.toml on purpose, and turning
+        sharing on or off adds or removes the watcher (~/Library) and agt's entries in the hooks files."""
 
-        return {path: value for path, value in self.snapshot().items() if not path.startswith(str(self.user / ".agt"))}
+        mine = (str(self.user / ".agt"), str(self.user / "Library"))
+        return {path: value for path, value in self.snapshot().items()
+                if not path.startswith(mine) and Path(path).name not in ("settings.json", "hooks.json")}
 
 
 class PickTests(ItemBase):
