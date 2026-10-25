@@ -29,6 +29,7 @@ class DryRunTests(ShareHome):
             self.agent(folder, "explorer", tools="Bash, Read, mcp__brave-search", body="Explore.")
             (folder / "skills" / "synced").mkdir(parents=True)
         (claude / "agents" / "templates").mkdir()
+        (claude / "skills" / ".trash").mkdir(parents=True)
         self.skill(claude, "ask-simply")
         os.symlink(claude / "skills" / "ask-simply", lab / "skills" / "ask-simply", target_is_directory=True)
         self.skill(claude, "gamma-apikey", body="Old steps.")
@@ -111,6 +112,7 @@ class DryRunTests(ShareHome):
         self.assertEqual(excluded[("skills", "ui-polish-kit")], "no SKILL.md")
         self.assertEqual(excluded[("skills", "haven-kit")], "disabled in Codex")
         self.assertNotIn(("agents", "templates"), excluded)
+        self.assertFalse([name for _, name in excluded if name.startswith(".")])
 
     def test_missing_servers_and_tools_are_notes(self):
         notes = [note for item in self.dry_run()["items"] for note in item["notes"]]
@@ -158,7 +160,8 @@ class DryRunTests(ShareHome):
         self.assertIn("gamma-apikey (skills):", text)
         self.assertIn("9 changes in 4 folders.", text)
         digest = self.dry_run()["plan"]
-        self.assertIn(f"agt share enable --yes --if-plan {digest} --claude-dir '~/.claude-lab'", text)
+        self.assertIn(f"Plan {digest}. Writing isn't in this build yet", text)
+        self.assertIn(f"  agt share enable --yes --if-plan {digest} --claude-dir '~/.claude-lab'", text)
 
     def test_the_plan_id_changes_when_an_item_changes(self):
         first = self.dry_run()["plan"]

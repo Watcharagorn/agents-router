@@ -183,6 +183,8 @@ def read_items(included: list[Provider], options: Options, now: float, disabled:
             entries = model.agent_files(cli, folder) if kind == "agents" else sorted(e for e in folder.iterdir() if e.is_dir())
             for entry in entries:
                 name = model.agent_name(cli, entry) if kind == "agents" else entry.name
+                if name.startswith("."):
+                    continue  # hidden entries (.trash, .system, .DS_Store) aren't items at all
                 reason = (exclude.agent(cli, name, entry, _kiro_data(entry) if cli == "kiro" else None) if kind == "agents"
                           else exclude.skill(name, entry, disabled))
                 if reason:
@@ -496,7 +498,8 @@ def render_text(plan: Plan, command: str) -> str:
     lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
                   f"{'s' if len(plan.folders_changed) != 1 else ''}."]
     if count or plan.conflicts:
-        lines.append(f"To apply it: {command}")
+        lines.append(f"Plan {plan.digest}. Writing isn't in this build yet; once it is, this applies the plan:")
+        lines.append(f"  {command}")
     return "\n".join(lines)
 
 
