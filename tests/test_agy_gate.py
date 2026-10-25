@@ -140,7 +140,7 @@ class GateJobTests(AgyHome):
         self.tools(
             {"name": "view_file", "args": {"AbsolutePath": str(instructions)}},
             {"name": "call_mcp_tool", "args": {"ServerName": "agt-parent", "ToolName": "message_parent", "Arguments": {"text": "hi"}}},
-            {"name": "view_file", "args": {"AbsolutePath": str(self.home / "config.toml")}},
+            {"name": "view_file", "args": {"AbsolutePath": str(self.home / "settings.toml")}},
         )
         with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(instructions.parent)}):
             status = jobs.create_job(runtime="antigravity", prompt="task", cwd=str(self.project), access="read", host="claude")

@@ -116,7 +116,7 @@ class CodexJobTests(TempHome):
         lines = ["[codex]", f"primary = {json.dumps(str(self.primary))}", 'failover = "on-limit"']
         for name in ("c1", "c2"):
             lines += ["[[codex.accounts]]", f'name = "{name}"', f"home = {json.dumps(str(self.root / 'codex' / name))}"]
-        (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.home / "settings.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def tearDown(self):
         os.environ.pop("AGT_CODEX_COMMAND", None)
@@ -146,7 +146,7 @@ class CodexJobTests(TempHome):
         self.assertIn("task", record["stdin"])
 
     def use_primary_only(self):
-        (self.home / "config.toml").write_text(f"[codex]\nprimary = {json.dumps(str(self.primary))}\n", encoding="utf-8")
+        (self.home / "settings.toml").write_text(f"[codex]\nprimary = {json.dumps(str(self.primary))}\n", encoding="utf-8")
 
     def test_primary_account_run_also_disables_the_own_server(self):
         self.use_primary_only()

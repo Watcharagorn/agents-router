@@ -70,8 +70,8 @@ class FolderListTests(ShareHome):
         account.mkdir(parents=True)
         agt_account = self.agt_home / "homes" / "claude" / "max-2"
         agt_account.mkdir(parents=True)
-        self.agt_home.mkdir(exist_ok=True)
-        (self.agt_home / "config.toml").write_text(
+        (self.user / ".agt").mkdir()
+        (self.user / ".agt" / "settings.toml").write_text(
             f"[claude]\nprimary = {json.dumps(str(claude))}\n[[claude.accounts]]\nname = \"claude-2\"\nhome = {json.dumps(str(account))}\n",
             encoding="utf-8")
         folders = [("claude", claude), ("claude", account), ("claude", agt_account), ("antigravity", gemini)]

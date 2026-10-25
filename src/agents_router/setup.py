@@ -22,7 +22,7 @@ import sysconfig
 import time
 from typing import Any
 
-from agents_router.config import NAME_RE, Account, Config, save_config
+from agents_router.config import NAME_RE, Account, Config, save_accounts
 from agents_router.fsutil import copy_exclusive, is_link, no_window_kwargs, same_path, write_json, write_private
 from agents_router.runtimes import get_runtime
 from agents_router.runtimes.base import JobSpec, clean_environment
@@ -466,7 +466,7 @@ def setup_accounts(config: Config, values: list[str], report: Report) -> None:
         else:
             report.unchanged.append(f"{runtime} account '{account.name}' ({folder}): already registered{alias}")
     if changed:
-        save_config(config)
+        save_accounts(config)
     for runtime, account in to_check:
         runtime_config = config.runtime(runtime)
         adapter = get_runtime(runtime)

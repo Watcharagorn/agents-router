@@ -131,7 +131,7 @@ class PluginInstallTests(SetupBase):
             self.assertIn(text, out)
         for folder in (self.claude_dir, self.codex_dir, self.agy_dir):
             self.assertFalse((folder / "fake_plugins.json").exists())
-        self.assertFalse((self.root / "agt" / "config.toml").exists())
+        self.assertFalse((self.root / "agt" / "settings.toml").exists())
         self.assertEqual(list((self.root / "acct").iterdir()), [])
 
     def test_failed_codex_install_is_reported_with_the_mcp_fallback(self):

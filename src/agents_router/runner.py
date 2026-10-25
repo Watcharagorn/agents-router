@@ -72,7 +72,7 @@ class Runner:
         self.job_id = job_id
         self.folder = job_dir(job_id)
         self.spec: JobSpec = read_spec(job_id)
-        self.config = load_config()
+        self.config = load_config(cwd=self.spec.cwd)  # the job's workspace, not the runner's folder
         self.runtime_config: RuntimeConfig = self.config.runtime(self.spec.runtime)
         self.runtime = get_runtime(self.spec.runtime)
         self.pool = quota.pool_for(self.runtime_config, self.spec.model)

@@ -90,7 +90,7 @@ def _create_job(
     start: bool = True,
 ) -> dict[str, Any]:
     limits.validate_override(override)
-    config = load_config()
+    config = load_config(cwd=cwd)
     runtime_config = config.runtime(runtime)
     depth = int(os.environ.get("AGT_DEPTH", "0") or 0)
     if depth >= config.max_depth:

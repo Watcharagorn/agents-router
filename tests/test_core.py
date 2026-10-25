@@ -392,7 +392,7 @@ class JobTests(TempHome):
         self.assertEqual(argv[argv.index("--resume") + 1], first["session_id"])
 
     def test_failover_is_on_by_default(self):
-        (self.home / "config.toml").write_text("", encoding="utf-8")
+        (self.home / "settings.toml").write_text("", encoding="utf-8")
         self.assertEqual(load_config().runtime("claude").failover, "on-limit")
         self.assertEqual(load_config().runtime("antigravity").failover, "on-limit")
 

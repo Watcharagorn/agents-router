@@ -1,9 +1,10 @@
 """agt share's saved answers: the `[share]` tables of your user settings file.
 
 The file is `$AGT_CONFIG_DIR/settings.toml`; with only `AGT_HOME` set it's
-`<AGT_HOME>/settings.toml`, and otherwise `~/.agt/settings.toml`. In this build
-only share code reads it (the rest of agt still reads `config.toml`). Saving
-rewrites the `[share]` tables and keeps every other line of the file.
+`<AGT_HOME>/settings.toml`, and otherwise `~/.agt/settings.toml` (see
+levels.py). The rest of agt reads the same file. Saving rewrites the `[share]`
+tables and keeps every other line of the file. A workspace's own `[share]`
+comes with sharing a repo's items.
 
     [share]
     enabled = true
@@ -26,21 +27,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import os
 from pathlib import Path
-import re
 import tomllib
 from typing import Any
 
-from agents_router import config, fsutil
+from agents_router import config, levels
 from agents_router.share import codex_toml, model, toolmap
 
 KINDS = ("agents", "skills")
-SHARE_HEADER_RE = re.compile(r"^\s*\[\[?\s*share\s*[\].]")
-HEADER_RE = re.compile(r"^\s*\[")
 
 
-class SettingsError(ValueError):
+class SettingsError(levels.SettingsError):
     """The `[share]` settings can't be used; the message names the file and what's wrong."""
 
 
@@ -64,12 +61,7 @@ class Settings:
 
 
 def path() -> Path:
-    configured = os.environ.get("AGT_CONFIG_DIR")
-    if configured:
-        return Path(configured).expanduser() / "settings.toml"
-    if os.environ.get("AGT_HOME"):
-        return config.home() / "settings.toml"
-    return Path.home() / ".agt" / "settings.toml"
+    return config.user_settings_path()
 
 
 def parse_auto_copy(value: Any) -> tuple[str, ...]:
@@ -176,24 +168,4 @@ def render(settings: Settings) -> str:
 def save(settings: Settings, location: Path | None = None) -> Path:
     """Replace the `[share]` tables in the settings file, keeping every other line."""
 
-    location = location or path()
-    try:
-        text = location.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        text = ""
-    kept: list[str] = []
-    inside = False
-    for line in text.splitlines():
-        if HEADER_RE.match(line):
-            inside = bool(SHARE_HEADER_RE.match(line))
-        if not inside:
-            kept.append(line)
-    while kept and not kept[-1].strip():
-        kept.pop()
-    if not kept:
-        kept = ["# agt settings. See docs/configuration.md."]
-    result = "\n".join(kept) + "\n\n" + render(settings)
-    tomllib.loads(result)  # never write a file agt can't read back
-    fsutil.make_private_dir(location.parent)
-    fsutil.write_text(location, result)
-    return location
+    return levels.replace_tables(location or path(), lambda header: header.split(".")[0] == "share", render(settings))

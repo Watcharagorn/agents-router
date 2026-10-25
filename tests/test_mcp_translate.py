@@ -142,7 +142,7 @@ class CodexWiringTests(TempHome):
         super().tearDown()
 
     def config(self, extra=""):
-        (self.home / "config.toml").write_text(
+        (self.home / "settings.toml").write_text(
             f"[claude]\nprimary = {json.dumps(str(self.claude_dir))}\n"
             f"[codex]\nprimary = {json.dumps(str(self.codex_dir))}\n{extra}\n",
             encoding="utf-8",

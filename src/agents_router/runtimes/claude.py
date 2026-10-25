@@ -523,7 +523,7 @@ class ClaudeRuntime:
     ) -> Launch:
         command = self.find_binary(config)
         if not command:
-            raise RuntimeError("claude binary not found; install Claude Code or set [claude] binary in config.toml")
+            raise RuntimeError("claude binary not found; install Claude Code or set [claude] binary in agt's settings.toml")
         mode = PERMISSION_MODES.get(spec.access, config.edit_permission_mode)
         argv = [*command, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode]
         model = spec.model or config.default_model
@@ -600,7 +600,7 @@ class ClaudeRuntime:
 
         command = self.find_binary(config)
         if not command:
-            raise RuntimeError("claude binary not found; install Claude Code or set [claude] binary in config.toml")
+            raise RuntimeError("claude binary not found; install Claude Code or set [claude] binary in agt's settings.toml")
         argv = [*command]
         if setup.get("settings_path"):
             argv += ["--settings", setup["settings_path"]]

@@ -403,7 +403,7 @@ class CodexConfigMergeTests(TempHome):
         (self.primary / "config.toml").write_text(self.PRIMARY, encoding="utf-8")
         self.account_home = self.root / "codex" / "c1"
         self.account_home.mkdir(parents=True)
-        (self.home / "config.toml").write_text(
+        (self.home / "settings.toml").write_text(
             f"[codex]\nprimary = {json.dumps(str(self.primary))}\n[[codex.accounts]]\nname = \"c1\"\n"
             f"home = {json.dumps(str(self.account_home))}\n",
             encoding="utf-8",

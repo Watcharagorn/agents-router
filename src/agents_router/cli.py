@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from agents_router import __version__, accounts, jobs, plans, rules, setup, sync, tools
-from agents_router.config import NAME_RE, Account, config_path, homes_dir, load_config, save_config
+from agents_router.config import NAME_RE, Account, homes_dir, load_config, save_accounts, user_settings_path
 from agents_router.fsutil import make_private_dir
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from agents_router.runtimes.base import ACCESS_LEVELS, JobSpec
@@ -104,7 +104,7 @@ def cmd_accounts(args: argparse.Namespace) -> int:
             print(f"That folder already belongs to {args.runtime} account '{account.name}'.")
             return 1
         make_private_dir(home)
-        save_config(config)
+        save_accounts(config)
         print(f"Added {args.runtime} account '{args.name}' with folder {home}")
         if getattr(runtime, "add_note", None):
             print(runtime.add_note)
@@ -127,12 +127,12 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 0
     if action == "remove":
         runtime_config.accounts = [item for item in runtime_config.accounts if item.name != args.name]
-        save_config(config)
+        save_accounts(config)
         print(f"Removed '{args.name}' from the config. Its folder was left as is: {account.home}")
         return 0
     if action in ("enable", "disable"):
         account.enabled = action == "enable"
-        save_config(config)
+        save_accounts(config)
         print(f"{args.name}: {'enabled' if account.enabled else 'disabled'}")
         return 0
     print(f"Unknown action: {action}")
@@ -203,6 +203,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     runtime = get_runtime(args.runtime)
     report = tools.account_report(args.runtime)
     _print(report)
+    for note in config.notes:
+        print(f"Note: {note}")
     for found in setup.upstream_installs(config):
         print(f"Warning: {found}. Two installs both register an MCP server and hooks; remove the old one.")
     problems = 0
@@ -237,9 +239,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"    {pool['state']}")
     if args.runtime == "antigravity" and _no_parent_channel(runtime_config):
         print(f"Note: Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under [antigravity] "
-              f"in {config_path()} to get it.")
+              f"in {user_settings_path()} to get it.")
     if not report["binary"]:
-        print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in the config.")
+        print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in {user_settings_path()}.")
         return 1
     for entry in report["accounts"]:
         auth = entry.get("auth") or {}

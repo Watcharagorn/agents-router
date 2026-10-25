@@ -324,7 +324,7 @@ def admit(
         if config.max_jobs and counts.total >= config.max_jobs:
             raise _refusal(config, 
                 f"agt is at its global limit: {counts.total} of {config.max_jobs} subagents running "
-                f"(max_jobs in config.toml). {_tail([], WAIT)}"
+                f"(max_jobs in agt's settings). {_tail([], WAIT)}"
             )
         running = counts.by_runtime.get(runtime_name, 0)
         if runtime.max_jobs and running >= runtime.max_jobs:

@@ -167,7 +167,7 @@ class LeaseByFolderTests(TempHome):
             'name = "a2"',
             f"home = {json.dumps(str(home_a2))}",
         ]
-        (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.home / "settings.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
         config = load_config().runtime("claude")
         return config, config.find("a1"), config.find("a2")
 

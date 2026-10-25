@@ -57,7 +57,7 @@ class QuotaTests(TempHome):
                           QuotaPool("flash", ["gemini-3.8-flash-*"], total=6)]
         save_config(config)
         if extra:
-            with (self.home / "config.toml").open("a", encoding="utf-8") as handle:
+            with (self.home / "settings.toml").open("a", encoding="utf-8") as handle:
                 handle.write(extra)
         return load_config()
 
@@ -110,7 +110,7 @@ class QuotaTests(TempHome):
                       [[50, -1], [0, 0]], [[50, 1.5], [0, 0]], [[50, True], [0, 0]],
                       [[50, 1], [0, 2]], [[50, 2], [50, 1], [0, 0]], "bad"):
             with self.subTest(value=value):
-                (self.home / "config.toml").write_text('[codex]\nmax_jobs_by_room = ' + json.dumps(value), encoding="utf-8")
+                (self.home / "settings.toml").write_text('[codex]\nmax_jobs_by_room = ' + json.dumps(value), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "max_jobs_by_room"):
                     load_config()
 
@@ -121,16 +121,16 @@ class QuotaTests(TempHome):
                        'name = "p"\nmodels = ["*"]\nper_account = true',
                        'name = "p"\nmodels = ["*"]\n[[codex.pools]]\nname = "p"\nmodels = ["*"]'):
             with self.subTest(fields=fields):
-                (self.home / "config.toml").write_text('[[codex.pools]]\n' + fields, encoding="utf-8")
+                (self.home / "settings.toml").write_text('[[codex.pools]]\n' + fields, encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "pool"):
                     load_config()
 
     def test_web_search_validation(self):
         for value in ("disabled", "cached", "indexed", "live"):
-            (self.home / "config.toml").write_text('[codex]\nweb_search = ' + json.dumps(value), encoding="utf-8")
+            (self.home / "settings.toml").write_text('[codex]\nweb_search = ' + json.dumps(value), encoding="utf-8")
             self.assertEqual(load_config().runtime("codex").web_search, value)
         for text in ('[codex]\nweb_search = "auto"', '[codex]\nweb_search = true', '[claude]\nweb_search = "live"'):
-            (self.home / "config.toml").write_text(text, encoding="utf-8")
+            (self.home / "settings.toml").write_text(text, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "web_search"):
                 load_config()
 

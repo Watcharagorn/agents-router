@@ -642,7 +642,7 @@ class CodexRuntime:
     ) -> Launch:
         command = self.find_binary(config)
         if not command:
-            raise RuntimeError("codex binary not found; install Codex or set [codex] binary in config.toml")
+            raise RuntimeError("codex binary not found; install Codex or set [codex] binary in agt's settings.toml")
         files = config_files(account.home, spec.cwd)
         no_nesting = self_server_overrides(files)
         self._attempt_account, self._attempt_home = account.name, account.home

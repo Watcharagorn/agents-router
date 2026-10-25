@@ -206,6 +206,6 @@ class CapacityRunnerTests(TempHome):
                             ("capacity_retry_seconds", (0, -1, False, 0.5, "30"))):
             for value in values:
                 with self.subTest(key=key, value=value):
-                    (self.home / "config.toml").write_text("[codex]\n" + key + " = " + json.dumps(value) + "\n")
+                    (self.home / "settings.toml").write_text("[codex]\n" + key + " = " + json.dumps(value) + "\n")
                     with self.assertRaisesRegex(ValueError, key):
                         load_config()

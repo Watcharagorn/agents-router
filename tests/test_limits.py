@@ -16,7 +16,7 @@ from agents_router.config import dump_config, load_config, save_config
 
 class LimitTests(TempHome):
     def write(self, text: str) -> None:
-        (self.home / "config.toml").write_text(text, encoding="utf-8")
+        (self.home / "settings.toml").write_text(text, encoding="utf-8")
 
     def codex_config(self, primary="", accounts_text="", top="", claude=""):
         self.write(
@@ -248,7 +248,7 @@ class UsageViewTests(TempHome):
 
     def test_codex_usage_is_read_from_the_newest_rollout_and_shown_in_one_line(self):
         codex_home = self.root / "codex"
-        (self.home / "config.toml").write_text(f'[codex]\nprimary = {json.dumps(str(codex_home))}\n', encoding="utf-8")
+        (self.home / "settings.toml").write_text(f'[codex]\nprimary = {json.dumps(str(codex_home))}\n', encoding="utf-8")
         self.rollout(codex_home, 20.0, day="15")
         self.rollout(codex_home, 92.0, day="16")
         config = load_config()
@@ -260,7 +260,7 @@ class UsageViewTests(TempHome):
 
     def test_accounts_list_shows_when_each_window_resets(self):
         codex_home = self.root / "codex"
-        (self.home / "config.toml").write_text(f'[codex]\nprimary = {json.dumps(str(codex_home))}\n', encoding="utf-8")
+        (self.home / "settings.toml").write_text(f'[codex]\nprimary = {json.dumps(str(codex_home))}\n', encoding="utf-8")
         self.rollout(codex_home, 85.0)
         with patch.dict(os.environ, {"AGT_CODEX_COMMAND": json.dumps([sys.executable, "-c", "pass"])}):
             entry = tools.account_report("codex")["accounts"][0]
@@ -275,7 +275,7 @@ class UsageViewTests(TempHome):
         self.assertIn("passed", usage_view.reset_text(now - 60, now))
 
     def test_stale_data_shows_its_age_and_unknown_accounts_are_left_out(self):
-        (self.home / "config.toml").write_text(
+        (self.home / "settings.toml").write_text(
             f'[claude]\nprimary = {json.dumps(str(self.primary))}\n[[claude.accounts]]\nname = "a2"\nhome = {json.dumps(str(self.root / "a2"))}\n'
             f'[[claude.accounts]]\nname = "spare"\nhome = {json.dumps(str(self.root / "spare"))}\nfallback = true\n',
             encoding="utf-8",
@@ -291,11 +291,11 @@ class UsageViewTests(TempHome):
         self.assertNotIn("primary", line)
 
     def test_runtime_without_usage_says_so(self):
-        (self.home / "config.toml").write_text(f'[claude]\nprimary = {json.dumps(str(self.primary))}\n', encoding="utf-8")
+        (self.home / "settings.toml").write_text(f'[claude]\nprimary = {json.dumps(str(self.primary))}\n', encoding="utf-8")
         self.assertEqual(usage_view.room_line(load_config(), ["claude"]), "Room: Claude 1 account (no usage data)")
 
     def test_start_result_carries_the_room_line(self):
-        (self.home / "config.toml").write_text(f'[claude]\nprimary = {json.dumps(str(self.primary))}\n', encoding="utf-8")
+        (self.home / "settings.toml").write_text(f'[claude]\nprimary = {json.dumps(str(self.primary))}\n', encoding="utf-8")
         result = tools.call("subagent_start", {"runtime": "claude", "prompt": "x", "cwd": str(self.project)})
         self.assertIn("Room: Claude", result["room"])
         jobs.wait_for(result["job_id"], 60)

@@ -40,7 +40,7 @@ def isolate_process() -> Path:
     os.environ.update(
         HOME=str(home), USERPROFILE=str(home), PATH=os.pathsep.join(kept),
         CLAUDE_CONFIG_DIR=str(home / ".claude"), CODEX_HOME=str(home / ".codex"),
-        AGT_HOME=str(home / ".agents-router"), AGT_CONFIG_DIR=str(home / ".agt"),
+        AGT_HOME=str(home / ".agents-router"),  # with no AGT_CONFIG_DIR, each test's AGT_HOME holds its settings
         GIT_CONFIG_GLOBAL=str(root / "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
     )
     return root
@@ -122,7 +122,7 @@ class TempHome(unittest.TestCase):
         ]
         for name in accounts:
             lines += ["[[claude.accounts]]", f'name = "{name}"', f"home = {json.dumps(str(self.root / 'homes' / name))}"]
-        (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.home / "settings.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def records(self):
         if not self.record.exists():

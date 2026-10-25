@@ -201,7 +201,7 @@ class AntigravityTests(TempHome):
 
     def test_quota_on_the_single_account_sets_no_cooldown(self):
         # With failover turned off; it's on by default, like for the other runtimes.
-        (Path(os.environ["AGT_HOME"]) / "config.toml").write_text('[antigravity]\nfailover = "off"\n', encoding="utf-8")
+        (Path(os.environ["AGT_HOME"]) / "settings.toml").write_text('[antigravity]\nfailover = "off"\n', encoding="utf-8")
         os.environ["FAKE_AGY_SCENARIO"] = "quota"
         status = jobs.wait_for(jobs.create_job(runtime="antigravity", prompt="t", cwd=str(self.project))["job_id"], 60)
         self.assertEqual(status["outcome"], "usage_limit", status)
@@ -440,6 +440,6 @@ class HomeOptionTests(unittest.TestCase):
             env = {"AGT_HOME": str(root / "agt"), "CLAUDE_CONFIG_DIR": str(root / "main")}
             with patch.dict(os.environ, env):
                 self.assertEqual(cli.main(["accounts", "add", "x", "--home", str(root / "acct"), "--no-login"]), 0)
-                self.assertTrue((root / "agt" / "config.toml").exists())
-                self.assertFalse((root / "acct" / "config.toml").exists())
+                self.assertTrue((root / "agt" / "settings.toml").exists())
+                self.assertFalse((root / "acct" / "settings.toml").exists())
                 self.assertEqual([a.name for a in load_config().runtime("claude").accounts], ["x"])

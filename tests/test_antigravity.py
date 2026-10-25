@@ -80,7 +80,7 @@ class AgyHome(TempHome):
         ]
         for name in accounts:
             lines += ["[[antigravity.accounts]]", f'name = "{name}"', f"home = {json.dumps(str(self.homes / name))}"]
-        (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.home / "settings.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def log_in(self, name):
         token = self.homes / name / TOKEN
@@ -100,7 +100,7 @@ class ConfigAndEnvTests(AgyHome):
         lines = ["[antigravity]", f"primary = {json.dumps(str(self.gemini / 'antigravity-cli'))}"]
         for name in ("a1", "a2"):
             lines += ["[[antigravity.accounts]]", f'name = "{name}"', f"home = {json.dumps(str(self.homes / name))}"]
-        (self.home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.home / "settings.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
         config = self.runtime_config()
         self.assertEqual((config.failover, config.include_primary), ("on-limit", True))
         self.assertEqual([account.name for account in config.worker_accounts()], ["primary", "a1", "a2"])
@@ -375,8 +375,8 @@ class AccountCommandTests(AgyHome):
     def test_account_report_lists_every_account(self):
         self.write_agy_config(accounts=("a1", "a2"))
         self.log_in("a1")
-        (self.home / "config.toml").write_text(
-            (self.home / "config.toml").read_text(encoding="utf-8") + "enabled = false\n", encoding="utf-8"
+        (self.home / "settings.toml").write_text(
+            (self.home / "settings.toml").read_text(encoding="utf-8") + "enabled = false\n", encoding="utf-8"
         )
         report = tools.account_report("antigravity")
         entries = {entry["name"]: entry for entry in report["accounts"]}

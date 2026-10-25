@@ -530,7 +530,7 @@ class Follower:
         model = spec.model
         if not model:
             try:
-                model = load_config().runtime(spec.runtime).default_model
+                model = load_config(cwd=spec.cwd).runtime(spec.runtime).default_model
             except Exception:  # the header never fails over a config problem
                 model = None
         parts = ["Agents Router", RUNTIME_LABELS.get(spec.runtime, spec.runtime), f"model {model or 'default'}"]
@@ -544,7 +544,7 @@ class Follower:
             self.announced = account
         self.control(" · ".join(parts))
         try:
-            config = load_config()
+            config = load_config(cwd=spec.cwd)
             if any(runtime.max_jobs_by_room or runtime.pools for runtime in config.runtimes.values()):
                 from agents_router.tools import room_note
 

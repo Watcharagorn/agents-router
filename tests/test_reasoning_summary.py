@@ -15,7 +15,7 @@ class ReasoningSummaryTests(TempHome):
         text = f"[codex]\nprimary = {json.dumps(str(self.primary))}\n"
         if setting is not None:
             text += f"reasoning_summary = {json.dumps(setting)}\n"
-        (self.home / "config.toml").write_text(text, encoding="utf-8")
+        (self.home / "settings.toml").write_text(text, encoding="utf-8")
         (self.primary / "config.toml").write_text(codex_config, encoding="utf-8")
         config = load_config().runtime("codex")
         spec = JobSpec(job_id="t", runtime="codex", prompt="p", cwd=str(self.project), resume_session=resume)
@@ -64,6 +64,6 @@ class ReasoningSummaryTests(TempHome):
     def test_invalid_values_and_other_runtimes_are_refused(self):
         for text in ('[codex]\nreasoning_summary="verbose"\n',
                      '[claude]\nreasoning_summary="detailed"\n'):
-            (self.home / "config.toml").write_text(text, encoding="utf-8")
+            (self.home / "settings.toml").write_text(text, encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_config()

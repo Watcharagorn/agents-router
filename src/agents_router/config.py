@@ -1,4 +1,4 @@
-"""User configuration (`~/.agents-router/config.toml`) and state locations."""
+"""agt's settings (one `settings.toml` per level, see levels.py) and state locations."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import json
 import os
 from pathlib import Path
 import re
-import tomllib
+import sys
 from typing import Any
 
-from agents_router.fsutil import write_text
+from agents_router import levels
 
 RUNTIMES = ("claude", "codex", "antigravity")
 # Runtimes whose extra accounts are "use at your own risk" (Antigravity: Google's FAQ says
@@ -33,7 +33,20 @@ def home() -> Path:
     return Path(override).expanduser() if override else Path.home() / ".agents-router"
 
 
-def config_path() -> Path:
+def user_settings_path() -> Path:
+    """`$AGT_CONFIG_DIR/settings.toml`; with only `AGT_HOME` set, `<AGT_HOME>/settings.toml`; else `~/.agt/settings.toml`."""
+
+    configured = os.environ.get("AGT_CONFIG_DIR")
+    if configured:
+        return Path(configured).expanduser() / "settings.toml"
+    if os.environ.get("AGT_HOME"):
+        return home() / "settings.toml"
+    return Path.home() / ".agt" / "settings.toml"
+
+
+def legacy_config_path() -> Path:
+    """Where agt 0.3.0 kept its settings. agt no longer reads it."""
+
     return home() / "config.toml"
 
 
@@ -124,6 +137,7 @@ class RuntimeConfig:
     web_search: str | None = None  # [codex] only; unset preserves Codex's default
     network_access: bool = True  # [codex] only: network inside the sandbox for edit jobs (local test sockets too)
     accounts: list[Account] = field(default_factory=list)
+    picked: list[str] | None = None  # a workspace's `accounts = [...]`: the only accounts its unpinned jobs use
 
     def primary_account(self) -> Account:
         return Account(
@@ -136,6 +150,11 @@ class RuntimeConfig:
 
         if self.runtime in OPT_IN_FAILOVER and self.failover == "off":
             return [self.primary_account()]
+        if self.picked:
+            chosen = [account for account in (self.primary_account(), *self.accounts)
+                      if account.name in self.picked and account.enabled]
+            if chosen:
+                return chosen
         accounts = [account for account in self.accounts if account.enabled]
         if self.include_primary or not accounts:
             accounts.insert(0, self.primary_account())
@@ -167,6 +186,7 @@ class Config:
     job_retention_days: int = 7
     max_depth: int = 1
     max_jobs: int | None = None  # cap on running jobs across all runtimes
+    notes: list[str] = field(default_factory=list)  # settings agt ignored, each with its file and line
 
     def runtime(self, name: str) -> RuntimeConfig:
         if name not in self.runtimes:
@@ -335,19 +355,119 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     )
 
 
-def load_config(path: Path | None = None) -> Config:
-    path = path or config_path()
-    data: dict[str, Any] = {}
-    if path.exists():
-        with path.open("rb") as handle:
-            data = tomllib.load(handle)
-    runtimes = {name: _runtime_from(name, data.get(name, {}) or {}) for name in RUNTIMES}
-    return Config(
-        runtimes=runtimes,
-        job_retention_days=max(1, int(data.get("job_retention_days", 7))),
-        max_depth=max(0, int(data.get("max_depth", 1))),
-        max_jobs=_opt_int(data.get("max_jobs")),
-    )
+TOP_KEYS = ("job_retention_days", "max_depth", "max_jobs")
+USER_ONLY = ("primary", "binary", "accounts")  # machine-wide: a workspace file can't set them
+_legacy_noted = False
+
+
+def _top_from(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_retention_days": max(1, int(data.get("job_retention_days", 7))),
+        "max_depth": max(0, int(data.get("max_depth", 1))),
+        "max_jobs": _opt_int(data.get("max_jobs")),
+    }
+
+
+def _fails(check) -> bool:
+    try:
+        check()
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
+def _checked(layer: levels.Layer, data: dict[str, Any]) -> None:
+    """Refuse a file with a bad value, naming the file and the value's line."""
+
+    for name in RUNTIMES:
+        table = data.get(name, {})
+        if not isinstance(table, dict):
+            raise levels.SettingsError(f"{levels.where(layer, None, name)}: {name} must be a [{name}] table")
+        try:
+            _runtime_from(name, table)
+        except (TypeError, ValueError) as exc:
+            culprit = next((key for key in table if _fails(lambda key=key: _runtime_from(name, {key: table[key]}))), None)
+            raise levels.SettingsError(f"{levels.where(layer, name, culprit)}: {exc}") from None
+    top = {key: data[key] for key in TOP_KEYS if key in data}
+    try:
+        _top_from(top)
+    except (TypeError, ValueError) as exc:
+        culprit = next((key for key in top if _fails(lambda key=key: _top_from({key: top[key]}))), None)
+        raise levels.SettingsError(f"{levels.where(layer, None, culprit)}: {culprit}: {exc}") from None
+
+
+def _note_legacy(notes: list[str]) -> None:
+    legacy = legacy_config_path()
+    if not legacy.exists():
+        return
+    note = f"{legacy} is no longer read; move its lines into {user_settings_path()}"
+    notes.append(note)
+    global _legacy_noted
+    if not _legacy_noted:  # once per process, so an upgrade that dropped your accounts doesn't go unseen
+        _legacy_noted = True
+        print(f"agt: {note}", file=sys.stderr)
+
+
+def load_config(path: Path | None = None, cwd: Path | str | None = None) -> Config:
+    """The settings in effect in `cwd`'s workspace (the current folder by default).
+
+    The user, workspace and local files are merged key by key, later levels
+    winning. A workspace file can't set `primary`, `binary` or account
+    tables; it can pick accounts by name (`accounts = ["max-2"]`). With
+    `path`, only that file is read, as the user level.
+    """
+
+    notes: list[str] = []
+    _note_legacy(notes)
+    if path is not None:
+        found = [layer for layer in [levels.read("user", path)] if layer]
+    else:
+        found = levels.layers(user_settings_path(), levels.find_workspace(cwd))
+    top: dict[str, Any] = {}
+    tables: dict[str, dict[str, Any]] = {name: {} for name in RUNTIMES}
+    picks: dict[str, tuple[levels.Layer, list[str]]] = {}
+    for layer in found:
+        data = dict(layer.data)
+        for name in RUNTIMES if layer.level != "user" else ():
+            if not isinstance(data.get(name), dict):
+                continue
+            table = data[name] = dict(data[name])
+            for key in [key for key in USER_ONLY if key in table]:
+                value = table.pop(key)
+                if key == "accounts" and isinstance(value, list) and all(isinstance(item, str) for item in value):
+                    picks[name] = (layer, value)
+                else:
+                    notes.append(f"{levels.where(layer, name, key)}: [{name}] {key} is set in your user settings "
+                                 f"only ({user_settings_path()}); ignored here")
+        _checked(layer, data)
+        top.update({key: data[key] for key in TOP_KEYS if key in data})
+        for name in RUNTIMES:
+            tables[name].update(data.get(name) or {})
+    runtimes = {name: _runtime_from(name, tables[name]) for name in RUNTIMES}
+    for name, (layer, chosen) in picks.items():
+        known = {"primary", *(account.name for account in runtimes[name].accounts)}
+        for unknown in [item for item in chosen if item not in known]:
+            notes.append(f"{levels.where(layer, name, 'accounts')}: [{name}] accounts names '{unknown}', "
+                         f"which isn't one of your {name} accounts; ignored")
+        runtimes[name].picked = [item for item in chosen if item in known] or None
+    return Config(runtimes=runtimes, notes=notes, **_top_from(top))
+
+
+def _account_lines(runtime: str, account: Account) -> list[str]:
+    lines = [
+        f"[[{runtime}.accounts]]",
+        f"name = {_toml_value(account.name)}",
+        f"home = {_toml_value(str(account.home))}",
+        f"enabled = {_toml_value(account.enabled)}",
+    ]
+    if account.fallback:
+        lines.append("fallback = true")
+    for key, value in (("plan", account.plan), ("max_jobs", account.max_jobs), ("max_effort", account.max_effort)):
+        if value is not None:
+            lines.append(f"{key} = {_toml_value(value)}")
+    if account.models:
+        lines.append(f"models = {json.dumps(account.models)}")
+    return lines
 
 
 def _toml_value(value: Any) -> str:
@@ -426,22 +546,30 @@ def dump_config(config: Config) -> str:
                 if value is not None:
                     lines.append(f"{key} = {value}")
         for account in runtime.accounts:
-            lines += [
-                "",
-                f"[[{name}.accounts]]",
-                f"name = {_toml_value(account.name)}",
-                f"home = {_toml_value(str(account.home))}",
-                f"enabled = {_toml_value(account.enabled)}",
-            ]
-            if account.fallback:
-                lines.append("fallback = true")
-            for key, value in (("plan", account.plan), ("max_jobs", account.max_jobs), ("max_effort", account.max_effort)):
-                if value is not None:
-                    lines.append(f"{key} = {_toml_value(value)}")
-            if account.models:
-                lines.append(f"models = {json.dumps(account.models)}")
+            lines += ["", *_account_lines(name, account)]
     return "\n".join(lines) + "\n"
 
 
-def save_config(config: Config, path: Path | None = None) -> None:
-    write_text(path or config_path(), dump_config(config))
+def save_accounts(config: Config, path: Path | None = None) -> Path:
+    """Write every runtime's `[[<runtime>.accounts]]` tables to the user settings, keeping every other line."""
+
+    tables = {f"{name}.accounts" for name in RUNTIMES}
+    blocks = ["\n".join(_account_lines(name, account)) for name in RUNTIMES for account in config.runtimes[name].accounts]
+    rendered = "\n\n".join(blocks) + "\n" if blocks else ""
+    return levels.replace_tables(path or user_settings_path(), lambda header: header in tables, rendered)
+
+
+def save_config(config: Config, path: Path | None = None) -> Path:
+    """Write every key agt knows as the user settings, keeping the file's `[share]` tables.
+
+    It writes `primary` and the defaults too, so agt's own commands don't use
+    it: they change one key, or the account tables (`save_accounts`).
+    """
+
+    location = path or user_settings_path()
+    try:
+        text = location.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    share = levels.split(text, lambda header: header.split(".")[0] == "share")[1]
+    return levels.write(location, dump_config(config) + ("\n" + "\n".join(share) + "\n" if share else ""))
