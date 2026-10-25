@@ -29,7 +29,9 @@ FRESH_SECONDS = 3
 # explorer.toml and awaiter.toml and a "Default agent"; worker is in its multi-agent docs.
 CODEX_BUILTIN_AGENTS = {"default", "explorer", "worker", "awaiter"}
 HAS, COPY, UPDATE, SKIPPED, BLOCKED, CONFLICTED, WAITING = "has", "copy", "update", "skipped", "blocked", "conflict", "wait"
+REMOVE, RELEASED = "remove", "released"
 NOT_SHARED = "you chose not to share it; every copy stays as it is"
+NEW_WAITING = "new, waiting for you to pick its targets"
 
 
 @dataclass
@@ -41,6 +43,7 @@ class Options:
     resolve: dict[str, str] = field(default_factory=dict)  # item name -> label whose version wins
     off: set[str] = field(default_factory=set)  # items that aren't shared, by name or <kind>/<name>
     auto_copy: tuple[str, ...] = KINDS  # kinds whose new items go to every target
+    keep_copies: bool = False  # a copy left out by a pick stays as your own file instead of being removed
 
     def names(self, item: "Item") -> tuple[str, str]:
         return item.name, f"{item.kind}/{item.name}"
@@ -58,6 +61,7 @@ class Physical:
     fresh: bool = False
     obj: Any = None
     mtime: float = 0.0
+    entries: dict[str, Path] = field(default_factory=dict)  # label -> its own entry (a skill can have a link and a folder)
 
 
 @dataclass
@@ -74,6 +78,8 @@ class Item:
     cells: dict[str, Cell] = field(default_factory=dict)
     decision: engine.Decision | None = None
     notes: list[str] = field(default_factory=list)
+    drops: dict[str, str] = field(default_factory=dict)  # label -> "remove" or "release": copies in folders you left out
+    ignored: set[str] = field(default_factory=set)  # labels holding a copy the engine didn't weigh (frozen, left out)
 
     @property
     def key(self) -> str:
@@ -85,7 +91,7 @@ class Change:
     kind: str
     name: str
     labels: list[str]
-    action: str  # "copy", "update", "link" or "relink"
+    action: str  # "copy", "update", "link", "relink" or "remove"
     path: Path
     source: Path
     version: str
@@ -135,6 +141,14 @@ class Plan:
                     found.append(label)
         return found
 
+    def restricted(self, keys: set[str]) -> "Plan":
+        """The same plan for some items only (`<kind>/<identity>` keys), for commands that name an item."""
+
+        changes = [change for change in self.changes if f"{change.kind}/{names.identity(change.name)}" in keys]
+        return Plan(self.included, self.rows, [item for item in self.items if item.key in keys], changes,
+                    [entry for entry in self.excluded if f"{entry.kind}/{names.identity(entry.name)}" in keys],
+                    self.options, list(self.notices))
+
     @property
     def digest(self) -> str:
         """The plan's id for `--if-plan`: it changes whenever any write or conflict would change."""
@@ -181,7 +195,8 @@ def _kiro_data(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def read_items(included: list[Provider], options: Options, now: float, disabled: set[str]) -> tuple[list[Item], list[Excluded]]:
+def read_items(included: list[Provider], options: Options, now: float, disabled: set[str],
+               own: frozenset[str] = frozenset()) -> tuple[list[Item], list[Excluded]]:
     items: dict[str, Item] = {}
     excluded: list[Excluded] = []
     for kind in options.kinds:
@@ -198,12 +213,13 @@ def read_items(included: list[Provider], options: Options, now: float, disabled:
                 if reason:
                     excluded.append(Excluded(kind, name, labels, reason))
                     continue
-                physical = _read(kind, cli, entry, labels, now)
+                physical = _read(kind, cli, entry, labels, now, own)
                 key = f"{kind}/{names.identity(name)}"
                 item = items.setdefault(key, Item(kind, name))
                 same = next((copy for copy in item.copies if copy.real == physical.real), None)
                 if same:
                     same.labels += [label for label in labels if label not in same.labels]
+                    same.entries.update({label: entry for label in labels if label not in same.entries})
                 else:
                     item.copies.append(physical)
                     if entry_name(item, physical) != item.name:
@@ -223,15 +239,16 @@ def entry_name(item: Item, physical: Physical) -> str:
         physical.path.stem if item.kind == "agents" else physical.path.name)
 
 
-def _read(kind: str, cli: str, entry: Path, labels: list[str], now: float) -> Physical:
+def _read(kind: str, cli: str, entry: Path, labels: list[str], now: float, own: frozenset[str] = frozenset()) -> Physical:
     mtime = _mtime(entry)
-    fresh = now - mtime < FRESH_SECONDS
+    fresh = now - mtime < FRESH_SECONDS and _real(entry) not in own  # agt's own restore is no edit in progress
+    entries = {label: entry for label in labels}
     try:
         obj = model.read_agent(cli, entry) if kind == "agents" else model.read_skill(entry)
     except model.ItemError as exc:
-        return Physical(entry, _real(entry), list(labels), None, problem=str(exc), fresh=fresh, mtime=mtime)
+        return Physical(entry, _real(entry), list(labels), None, problem=str(exc), fresh=fresh, mtime=mtime, entries=entries)
     real = str(obj.real) if kind == "skills" else _real(entry)
-    return Physical(entry, real, list(labels), obj.digest, fresh=fresh, obj=obj, mtime=mtime)
+    return Physical(entry, real, list(labels), obj.digest, fresh=fresh, obj=obj, mtime=mtime, entries=entries)
 
 
 def _real(path: Path) -> str:
@@ -314,41 +331,80 @@ def absent_labels(items: list[Item], included: list[Provider], options: Options,
     return absent, notices
 
 
+def _drop(label: str, copy: Physical, wanted: set[str], last: engine.Last | None, made: set[str],
+          options: Options) -> tuple[str | None, Cell]:
+    """What happens to a copy in a folder you left out: removed with a backup, or kept as your own file."""
+
+    entry = copy.entries.get(label, copy.path)
+    sharing = sorted(other for other, path in copy.entries.items() if other != label and other in wanted and path == entry)
+    if sharing:
+        return None, Cell(HAS, f"{label} reads {sharing[0]}'s folder, so it keeps seeing it")
+    if copy.version is None:
+        return None, Cell(WAITING, copy.problem or "can't be read now")
+    if copy.fresh and (last is None or last.copies.get(label) != copy.version):  # agt's own write is no edit
+        return None, Cell(WAITING, "saved less than 3 s ago")
+    if label not in made:
+        if options.keep_copies:
+            return "release", Cell(RELEASED, "your original stays as your own file (--keep-copies); agt stops updating it")
+        return None, Cell(HAS, "your original: agt never removes it, so it stays shared")
+    if last is None or last.copies.get(label) != copy.version:
+        return "release", Cell(RELEASED, "it has an edit the other copies don't have, so it stays as your own file")
+    if options.keep_copies:
+        return "release", Cell(RELEASED, "kept as your own file (--keep-copies); agt stops updating it")
+    return "remove", Cell(REMOVE, "removed, with a backup")
+
+
 def decide_items(items: list[Item], included: list[Provider], options: Options, state: State) -> list[str]:
     by_label = {provider.label: provider for provider in included}
     absent, notices = absent_labels(items, included, options, state)
     for item in items:
         last = state.last(item.kind, names.identity(item.name))
+        made = set((state.items.get(item.key) or {}).get("made") or [])
         holders = {label: copy for copy in item.copies for label in copy.labels}
         source = next((copy for copy in item.copies if copy.version), None)
         allowed = next((options.only[name] for name in options.names(item) if name in options.only), None)
         unticked = {label for name, label in options.skip if name in options.names(item)}
-        held_new = last is None and not state.first_run and item.kind not in options.auto_copy
+        unwanted = {label for label in by_label if label in unticked or (allowed is not None and label not in allowed)}
+        released = last.released if last else set()
+        picked = allowed is not None or bool(unticked)
+        held_new = last is None and not state.first_run and item.kind not in options.auto_copy and not picked
+        wanted = set(by_label) - unwanted - released
         targets = set()
         for label, provider in by_label.items():
             if label in holders:
-                item.cells[label] = Cell(HAS)
+                if label in released:
+                    item.cells[label] = Cell(RELEASED, "your own file; agt doesn't update it")
+                elif label in unwanted:
+                    how, item.cells[label] = _drop(label, holders[label], wanted, last, made, options)
+                    if how:
+                        item.drops[label] = how
+                else:
+                    item.cells[label] = Cell(HAS)
                 continue
             reason = _blocked(item, provider, options, source)
             if reason:
                 item.cells[label] = Cell(BLOCKED, reason)
-            elif label in unticked or (allowed is not None and label not in allowed):
+            elif label in unwanted:
                 item.cells[label] = Cell(SKIPPED, "you unticked it" if label in unticked else "--only")
             elif held_new:
-                item.cells[label] = Cell(WAITING, "new, waiting for you to pick its targets (auto copy is off)")
+                item.cells[label] = Cell(WAITING, NEW_WAITING + " (auto copy is off)")
             elif label in absent.get(item.kind, set()):
                 item.cells[label] = Cell(WAITING, "its folder is missing or frozen this run")
             else:
                 item.cells[label] = Cell(COPY)
                 targets.add(label)
-        copies = [engine.Copy(label, copy.version, copy.fresh, copy.problem) for label, copy in holders.items()]
         if held_new:
-            item.decision = engine.Decision(engine.NOTHING, reason="new, waiting for you to pick its targets")
+            item.decision = engine.Decision(engine.NOTHING, reason=NEW_WAITING)
             continue
-        decision = engine.decide(copies, targets | set(holders), last, absent.get(item.kind))
+        # Copies in folders you left out aren't part of the item any more, whether they go now or wait.
+        left_out = {label for label in holders if label in unwanted and item.cells[label].state != HAS}
+        copies = [engine.Copy(label, copy.version, copy.fresh, copy.problem) for label, copy in holders.items()]
+        ignore = absent.get(item.kind, set()) | left_out
+        item.ignored = ignore & set(holders)
+        decision = engine.decide(copies, targets | (set(holders) - left_out), last, ignore)
         choice = options.resolve.get(item.name) or options.resolve.get(f"{item.kind}/{item.name}")
         if decision.action == engine.CONFLICT and choice:
-            decision = _resolved(item, decision, choice, holders, targets)
+            decision = _resolved(item, decision, choice, holders, targets, left_out | released)
         item.decision = decision
         if decision.action != engine.WRITE:
             # Nothing is copied this run: a conflict, a wait, a stop or a pending delete holds the item.
@@ -362,11 +418,11 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
 
 
 def _resolved(item: Item, decision: engine.Decision, choice: str, holders: dict[str, Physical],
-              targets: set[str]) -> engine.Decision:
-    if choice not in holders or holders[choice].version is None:
+              targets: set[str], left_out: set[str] = frozenset()) -> engine.Decision:
+    if choice not in holders or choice in left_out or holders[choice].version is None:
         return decision
     version = holders[choice].version
-    updates = sorted(label for label, copy in holders.items() if copy.version != version)
+    updates = sorted(label for label, copy in holders.items() if copy.version != version and label not in left_out)
     return engine.Decision(engine.WRITE, version=version, source=choice, updates=updates, fills=sorted(targets),
                            reason=f"resolved: {choice}'s version")
 
@@ -374,12 +430,29 @@ def _resolved(item: Item, decision: engine.Decision, choice: str, holders: dict[
 # Changes -------------------------------------------------------------------
 
 
+def _entry_key(path: Path) -> str:
+    """One entry in one real folder, however many labels see it."""
+
+    return os.path.join(_real(path.parent), path.name)
+
+
 def changes_for(item: Item, included: list[Provider]) -> list[Change]:
+    holders = {label: copy for copy in item.copies for label in copy.labels}
+    removals: dict[str, Change] = {}
+    for label, how in sorted(item.drops.items()):
+        if how != "remove":
+            continue
+        copy = holders[label]
+        entry = copy.entries.get(label, copy.path)
+        found = removals.get(_entry_key(entry))
+        if found:
+            found.labels.append(label)
+        else:
+            removals[_entry_key(entry)] = Change(item.kind, item.name, [label], "remove", entry, entry, copy.version or "")
     decision = item.decision
     if not decision or decision.action != engine.WRITE:
-        return []
+        return list(removals.values())
     by_label = {provider.label: provider for provider in included}
-    holders = {label: copy for copy in item.copies for label in copy.labels}
     source = holders.get(decision.source) or next(copy for copy in item.copies if copy.version == decision.version)
     # A skill is linked to its real folder, never to another link.
     source_path = Path(source.real) if item.kind == "skills" else source.path
@@ -395,14 +468,44 @@ def changes_for(item: Item, included: list[Provider]) -> list[Change]:
         new_folder = None if folder.is_dir() else folder
         action = "copy" if item.kind == "agents" else "link"
         planned[real_folder] = Change(item.kind, item.name, [label], action, target, source_path, decision.version, new_folder)
+    relinks: list[Change] = []
     for label in decision.updates:
         copy = holders[label]
-        if copy.real in planned:
-            planned[copy.real].labels.append(label)
+        # Each label's own entry: a skill seen through a link and through its folder has two to relink.
+        path = copy.entries.get(label, copy.path) if item.kind == "skills" else copy.path
+        key = _entry_key(path) if item.kind == "skills" else copy.real
+        if key in planned:
+            planned[key].labels.append(label)
             continue
         action = "update" if item.kind == "agents" else "relink"
-        planned[copy.real] = Change(item.kind, item.name, [label], action, copy.path, source_path, decision.version)
-    return list(planned.values())
+        planned[key] = Change(item.kind, item.name, [label], action, path, source_path, decision.version)
+        relinks.append(planned[key])
+    # Links first: a link through a folder that's relinked first would already lead to the new version.
+    order = {id(change): (change.action == "relink" and not os.path.islink(change.path)) for change in relinks}
+    changes = sorted(planned.values(), key=lambda change: order.get(id(change), False))
+    return changes + list(removals.values())
+
+
+def newest(item: Item) -> Physical:
+    """The copy saved last among those the conflict is about (agt's own copies don't count as edits)."""
+
+    involved = set(item.decision.labels) if item.decision else set()
+    candidates = [copy for copy in item.copies if involved & set(copy.labels)] or item.copies
+    return max(candidates, key=lambda copy: copy.mtime)
+
+
+def removal_changes(item: Item) -> list[Change]:
+    """`agt share rm`: one removal per entry of the item, links before the folders they lead to."""
+
+    found: dict[str, Change] = {}
+    for copy in item.copies:
+        for label, entry in copy.entries.items():
+            key = _entry_key(entry)
+            if key in found:
+                found[key].labels.append(label)
+            else:
+                found[key] = Change(item.kind, item.name, [label], "remove", entry, entry, copy.version or "")
+    return sorted(found.values(), key=lambda change: not os.path.islink(change.path))
 
 
 # Notes ---------------------------------------------------------------------
@@ -471,12 +574,14 @@ def add_notes(items: list[Item], included: list[Provider], home: Path) -> None:
 
 
 def build(config: Any, rows: list[providers.Candidate], included: list[Provider], options: Options, state: State,
-          now: float | None = None, home: Path | None = None) -> Plan:
+          now: float | None = None, home: Path | None = None, own: frozenset[str] = frozenset()) -> Plan:
+    """The plan. `own` holds the real paths agt itself just wrote, which don't count as edits in progress."""
+
     now = time.time() if now is None else now
     home = home or Path.home()
     codex = next((provider.folder for provider in included if provider.cli == "codex"), None)
     disabled = exclude.codex_disabled_skills(codex) if codex else set()
-    items, excluded = read_items(included, options, now, disabled)
+    items, excluded = read_items(included, options, now, disabled, own)
     notices = decide_items(items, included, options, state)
     changes = [change for item in items for change in changes_for(item, included)]
     add_notes(items, included, home)
@@ -486,7 +591,9 @@ def build(config: Any, rows: list[providers.Candidate], included: list[Provider]
 
 # Showing it --------------------------------------------------------------------
 
-MARKS = {HAS: "·", COPY: "+", UPDATE: "~", SKIPPED: "x", BLOCKED: "-", CONFLICTED: "!", WAITING: "…"}
+MARKS = {HAS: "·", COPY: "+", UPDATE: "~", SKIPPED: "x", BLOCKED: "-", CONFLICTED: "!", WAITING: "…", REMOVE: "rm",
+         RELEASED: "k"}
+LEGEND = "  + copy  ~ update  · has it  x you unticked it  - can't go there  ! conflict  … waiting"
 
 
 def _group_excluded(excluded: list[Excluded]) -> list[str]:
@@ -511,17 +618,13 @@ def would_save(plan: Plan) -> list[str]:
     return lines
 
 
-def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, nothing was written.") -> str:
-    lines = [header, "", "Folders:"]
-    used = {provider.label for provider in plan.included}
-    for row in plan.rows:
-        provider = row.provider
-        mark = "[x]" if provider.label in used else "[-]" if row.reason else "[ ]"
-        detail = row.reason or f"{row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
-        lines.append(f"  {mark} {provider.label:<16} {short(provider.folder):<22} {detail}")
+def table(plan: Plan, shown: list[Item]) -> list[str]:
+    """The item × folder table for these items, with its legend and footnotes."""
+
     labels = [provider.label for provider in plan.included]
-    shown = [item for item in plan.items if any(cell.state != HAS for cell in item.cells.values())]
+    lines: list[str] = []
     footnotes: list[str] = []
+    used: set[str] = set()
     width = max([len(item.name) for item in shown] + [10]) + 4
     for kind in plan.options.kinds:
         rows = [item for item in shown if item.kind == kind]
@@ -533,19 +636,34 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
             for label in labels:
                 cell = item.cells.get(label, Cell(BLOCKED))
                 mark = MARKS[cell.state]
-                if cell.state == BLOCKED:
+                used.add(cell.state)
+                if cell.state in (BLOCKED, RELEASED) or (cell.state == HAS and cell.note):
                     footnotes.append(f"{item.name} in {label}: {cell.note}")
                     mark += str(len(footnotes))
                 cells.append(f"{mark:<12}")
             lines.append(f"  {item.name:<{width - 2}}" + "".join(cells))
     if shown:
-        lines += ["", "  + copy  ~ update  · has it  x you unticked it  - can't go there  ! conflict  … waiting"]
+        extra = "".join(text for state, text in ((REMOVE, "  rm removed, with a backup"), (RELEASED, "  k kept as your own file"))
+                        if state in used)
+        lines += ["", LEGEND + extra]
         lines += [f"  {index}. {note}" for index, note in enumerate(footnotes, 1)]
+    return lines
+
+
+def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, nothing was written.") -> str:
+    lines = [header, "", "Folders:"]
+    used = {provider.label for provider in plan.included}
+    for row in plan.rows:
+        provider = row.provider
+        mark = "[x]" if provider.label in used else "[-]" if row.reason else "[ ]"
+        detail = row.reason or f"{row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
+        lines.append(f"  {mark} {provider.label:<16} {short(provider.folder):<22} {detail}")
+    lines += table(plan, [item for item in plan.items if any(cell.state != HAS for cell in item.cells.values())])
     if plan.conflicts:
         lines += ["", "Conflicts (nothing is written for these until you pick a version):"]
         for item in plan.conflicts:
-            newest = max(item.copies, key=lambda copy: copy.mtime)
-            versions = ", ".join(f"{'/'.join(copy.labels)} {short(copy.path)}" + (" (newer)" if copy is newest else "")
+            latest = newest(item)
+            versions = ", ".join(f"{'/'.join(copy.labels)} {short(copy.path)}" + (" (newer)" if copy is latest else "")
                                  for copy in item.copies)
             lines.append(f"  {item.name} ({item.kind}): {versions}")
             lines.append(f"    pick one with --resolve {item.name}=<label>, or --resolve {item.name}=skip to leave every copy as it is")
@@ -575,8 +693,8 @@ def proposal(plan: Plan, command: str) -> dict[str, Any]:
 
     needs = []
     for item in plan.conflicts:
-        newest = max(item.copies, key=lambda copy: copy.mtime)
-        choices = [{"value": copy.labels[0], "path": str(copy.path), "newer": copy is newest} for copy in item.copies]
+        latest = newest(item)
+        choices = [{"value": copy.labels[0], "path": str(copy.path), "newer": copy is latest} for copy in item.copies]
         needs.append({
             "id": f"resolve:{item.name}", "ask": f"{item.name} differs between {', '.join(c['value'] for c in choices)}. Which version should every CLI get?",
             "choices": choices + [{"value": "skip", "path": None, "newer": False, "means": "don't share it; every copy stays as it is"}],

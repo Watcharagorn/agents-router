@@ -317,9 +317,17 @@ class SyncTests(MacCopy):
         self.enable()
         for index in range(4):
             (self.user / ".kiro" / "skills" / f"extra-{index}").unlink()
+        # An edit in the frozen folder isn't recorded as synced, so it's never overwritten later.
+        ask = self.user / ".kiro" / "skills" / "ask-simply"
+        before = self.record("skills/ask-simply")["copies"]["kiro"]
+        ask.unlink()
+        self.skill(self.user / ".kiro", "ask-simply", body="Ask, from a frozen Kiro.")
+        age(ask, *ask.rglob("*"))
         out = self.sync()
         self.assertIn("disappeared from kiro at once", out)
         self.assertNotIn("stopped", self.record("skills/extra-0"))
+        self.assertEqual(self.record("skills/ask-simply")["copies"]["kiro"], before)
+        self.assertNotIn("frozen Kiro", (self.claude / "skills" / "ask-simply" / "SKILL.md").read_text(encoding="utf-8"))
 
 
 class SettingsFileTests(MacCopy):

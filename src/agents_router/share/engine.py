@@ -9,9 +9,10 @@ like edits. Each copy keeps its own last-synced version.
 | A copy can't be parsed, or one was edited less than 3 s ago | wait: nothing is written for the item |
 | First sight, all copies agree | fill the targets that don't have it |
 | First sight, copies differ | conflict |
-| No copy changed since the last sync | fill missing targets |
+| No copy changed since the last sync | fill missing targets, and bring a copy that's behind up to date |
 | The changed copies agree | write that version to every other copy and fill missing targets |
 | The changed copies disagree | conflict |
+| A copy agt sees for the first time differs (a folder that joined, a copy you kept and picked back) | conflict, unless it holds the edit that's spreading |
 | A copy was deleted and another edited | conflict that keeps the edit |
 | An agt-made copy was deleted | stop sharing the item to that CLI |
 | A copy you made (an original) was deleted | pending delete: it waits for `agt share rm` |
@@ -96,9 +97,16 @@ def decide(copies: list[Copy], targets: set[str], last: Last | None = None, abse
     edited = {label: present[label].version for label, version in known.items() if label in present and present[label].version != version}
     new = {label: copy.version for label, copy in present.items() if label not in known}
     deleted = sorted(label for label in known if label not in present)
+    # A copy agt hasn't seen before is no edit: if it differs, it's a conflict. One that holds the edit
+    # being spread is the same edit (a write that landed before a run stopped).
+    strangers = sorted(label for label, version in new.items() if version != last.version and version not in edited.values())
     changed = {**edited, **{label: version for label, version in new.items() if version != last.version}}
     versions = set(changed.values())
 
+    if strangers:
+        return Decision(CONFLICT, labels=sorted(present),
+                        reason=f"{', '.join(strangers)} already had a different version when agt first saw "
+                               f"{'it' if len(strangers) == 1 else 'them'}")
     if deleted and changed:
         return Decision(CONFLICT, labels=sorted({*deleted, *changed}), reason="deleted in one place and edited in another")
     if len(versions) > 1:
@@ -114,8 +122,16 @@ def decide(copies: list[Copy], targets: set[str], last: Last | None = None, abse
         version = versions.pop()
         source = next(label for label, value in changed.items() if value == version)
         updates = sorted(label for label, copy in present.items() if copy.version != version)
+        if not updates and not missing:
+            return Decision(NOTHING, version=version, source=source)  # every copy already has the edit
         return Decision(WRITE, version=version, source=source, updates=updates, fills=missing,
                         reason=f"edited in {', '.join(sorted(changed))}")
+    # No edit, but a copy agt knows at an older version (one undo put back) catches up.
+    behind = sorted(label for label, copy in present.items() if copy.version != last.version)
+    source = next((label for label, copy in sorted(present.items()) if copy.version == last.version), None)
+    if behind and source:
+        return Decision(WRITE, version=last.version, source=source, updates=behind, fills=missing,
+                        reason=f"{', '.join(behind)} fell behind")
     return _fill(last.version, present, missing)
 
 

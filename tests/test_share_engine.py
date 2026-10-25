@@ -86,8 +86,29 @@ class KnownItemTests(unittest.TestCase):
         del last.copies["kiro"]
         decision = decide(copies(claude="v1", claude_lab="v1", codex="v1", kiro="v1"), TARGETS, last)
         self.assertEqual(decision.action, NOTHING)
+
+    def test_a_copy_agt_knows_at_an_older_version_catches_up(self):
+        last = synced("v2")
+        last.copies["kiro"] = "v1"  # put back by undo, at the version it had
+        decision = decide(copies(claude="v2", claude_lab="v2", codex="v2", kiro="v1"), TARGETS, last)
+        self.assertEqual((decision.action, decision.version, decision.updates), (WRITE, "v2", ["kiro"]))
+
+    def test_the_same_edit_in_every_copy_is_recorded_with_nothing_to_write(self):
+        decision = decide(copies(claude="v2", claude_lab="v2", codex="v2", kiro="v2"), TARGETS, synced())
+        self.assertEqual((decision.action, decision.version, decision.writes), (NOTHING, "v2", []))
+
+    def test_a_new_copy_that_differs_is_a_conflict(self):
+        last = synced()
+        del last.copies["kiro"]
         decision = decide(copies(claude="v1", claude_lab="v1", codex="v1", kiro="v9"), TARGETS, last)
-        self.assertEqual((decision.action, decision.version, decision.source), (WRITE, "v9", "kiro"))
+        self.assertEqual((decision.action, decision.writes), (CONFLICT, []))
+        self.assertEqual(decision.reason, "kiro already had a different version when agt first saw it")
+
+    def test_a_new_copy_holding_the_spreading_edit_is_the_same_edit(self):
+        last = synced()
+        del last.copies["kiro"]  # written by a run that stopped before recording it
+        decision = decide(copies(claude="v2", claude_lab="v1", codex="v1", kiro="v2"), TARGETS, last)
+        self.assertEqual((decision.action, decision.version, sorted(decision.updates)), (WRITE, "v2", ["claude-lab", "codex"]))
 
     def test_released_copies_are_not_part_of_the_item(self):
         last = synced(released={"kiro"})

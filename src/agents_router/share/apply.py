@@ -7,9 +7,14 @@ For each change:
 3. fsync a journal entry: the path, what's there now, and what agt will write.
 4. Write: a new agent file is linked into place (it never replaces one that
    appeared meanwhile); an update keeps the file's mode and hard links; a
-   skill is a link to its real folder.
+   skill is a link to its real folder. A removal moves the entry into the
+   backups (a link moves as a link), so nothing is ever deleted outright.
 5. Read it back. Only a copy whose digest is the item's version counts as
    done; anything else is put back from the backup and reported.
+
+Each run that wrote something leaves `backups/<run>/manifest.json`: the
+command that ran (`op`), and each change with its backup. `agt share undo`
+reads them.
 
 An item's state record changes only when all of its writes worked. When some
 didn't, the copies that were written look like the same edit next run, so
@@ -138,9 +143,18 @@ def replay(current: State) -> list[str]:
         path = Path(entry["path"])
         now = fingerprint(path, entry["kind"])
         if now == entry.get("new"):
+            record = current.items.setdefault(entry["key"], {})
             if entry.get("action") in ("copy", "link"):
-                record = current.items.setdefault(entry["key"], {})
                 record["made"] = sorted(set(record.get("made") or []) | set(entry["labels"]))
+            elif entry.get("action") == "remove" and entry.get("op") == "rm":
+                # The record stays: the copies still there wait to be deleted, and `rm` again finishes it.
+                found.append(f"an interrupted `agt share rm` moved {path} to the backups; "
+                             f"`agt share rm {entry['key'].partition('/')[2]}` finishes it")
+                continue
+            elif entry.get("action") == "remove":
+                gone = set(entry["labels"])
+                record["made"] = sorted(set(record.get("made") or []) - gone)
+                record["copies"] = {label: version for label, version in (record.get("copies") or {}).items() if label not in gone}
             found.append(f"finished an interrupted write: {path}")
         elif now != entry.get("old"):
             found.append(f"{path} changed after an interrupted write; agt treats it as your edit")
@@ -265,11 +279,100 @@ def _write_skill(change: planner.Change, item: planner.Item, decision: engine.De
     return Outcome(item.kind, item.name, change.labels, change.action, change.path, True, backup=backup)
 
 
+def _remove(change: planner.Change, item: planner.Item, cli: str, holders: dict[str, planner.Physical],
+            run: str, op: str) -> Outcome:
+    """Move one entry into this run's backups, after checking it's still what the plan read."""
+
+    path = change.path
+    copy = holders[change.labels[0]]
+    if not os.path.lexists(path):
+        raise _Skip(f"{path} is already gone")
+    if copy.version is not None:
+        try:
+            now = model.read_agent(cli, path).digest if item.kind == "agents" else model.read_skill(path).digest
+        except model.ItemError as exc:
+            raise _Skip(f"{path} can't be read now ({exc})") from None
+        if now != copy.version:
+            raise _Skip(f"{path} changed while agt was working")
+    backup = _backup_folder(run, change.labels[0]) / path.name
+    if os.path.lexists(backup):
+        raise _Skip(f"{backup} is already there")
+    _journal({"run": run, "op": op, "step": "write", "key": item.key, "kind": item.kind, "labels": change.labels,
+              "action": "remove", "path": str(path), "old": fingerprint(path, item.kind), "new": None, "backup": str(backup)})
+    shutil.move(str(path), str(backup))  # a link moves as a link, a folder as a whole
+    if os.path.lexists(path):
+        return Outcome(item.kind, item.name, change.labels, "remove", path, False, "it's still there after the move")
+    return Outcome(item.kind, item.name, change.labels, "remove", path, True, backup=backup)
+
+
+def _put(backup: Path, path: Path) -> None:
+    """Copy a backup into place as it was: a link as a link (same text), a folder as a folder, a file with its mode."""
+
+    if os.path.islink(backup):
+        os.symlink(os.readlink(backup), path, target_is_directory=backup.is_dir())
+    elif backup.is_dir():
+        shutil.copytree(backup, path, symlinks=True)
+    else:
+        fsutil.write_preserving(path, backup.read_bytes(), new=True)
+        shutil.copystat(backup, path)
+
+
+def _same(backup: Path, path: Path) -> bool:
+    if os.path.islink(backup) or os.path.islink(path):
+        return os.path.islink(path) and os.path.islink(backup) and os.readlink(path) == os.readlink(backup)
+    if backup.is_dir():
+        return path.is_dir() and fsutil.tree_signature(path) == fsutil.tree_signature(backup)
+    return path.is_file() and fsutil.sha256_file(path) == fsutil.sha256_file(backup)
+
+
+def restore(entry: dict, run: str) -> Outcome:
+    """Put one manifest entry's backup back where it came from (for `agt share undo`).
+
+    What's there now goes into this run's backups first, so the undo can be undone. A removed copy
+    comes back only where nothing has appeared since. The backup itself is kept.
+    """
+
+    kind, name = entry["key"].partition("/")[0], entry.get("name") or entry["key"].partition("/")[2]
+    path, backup, labels = Path(entry["path"]), Path(entry["backup"]), list(entry["labels"])
+    fail = lambda message: Outcome(kind, name, labels, entry["action"], path, False, message)
+    if not os.path.lexists(backup):
+        return fail(f"its backup {backup} is gone")
+    removed = entry["action"] == "remove"
+    if removed and os.path.lexists(path):
+        return fail("something is there again, so agt left it as it is")
+    if not removed and not os.path.lexists(path):
+        return fail("it's gone; `agt share undo <item> --in <label>` brings back a removed copy")
+    saved = None
+    if not removed:
+        saved = _backup_folder(run, labels[0]) / path.name
+        if os.path.lexists(saved):
+            return fail(f"{saved} is already there")
+    _journal({"run": run, "op": "undo", "step": "write", "key": entry["key"], "kind": kind, "labels": labels,
+              "action": "restore", "path": str(path), "old": fingerprint(path, kind), "new": fingerprint(backup, kind),
+              "backup": str(saved) if saved else None})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if saved is None:
+        _put(backup, path)
+        action = "copy" if kind == "agents" else "link" if os.path.islink(path) else "copy"
+    elif kind == "agents" and not os.path.islink(path) and not os.path.islink(backup):
+        shutil.copy2(os.path.realpath(path), saved)
+        fsutil.write_preserving(path, backup.read_bytes())  # keeps the file's mode and hard links
+        action = "update"
+    else:
+        shutil.move(str(path), str(saved))  # a link moves as a link
+        _put(backup, path)
+        action = "update" if kind == "agents" else "relink"
+    if not _same(backup, path):
+        return Outcome(kind, name, labels, action, path, False, "it didn't come back the same; the backup is still there")
+    _journal({"run": run, "step": "done", "path": str(path)})
+    return Outcome(kind, name, labels, action, path, True, "put back", backup=saved)
+
+
 # Recording ------------------------------------------------------------------------
 
 
-def _copies_now(item: planner.Item) -> dict[str, str]:
-    return {label: copy.version for copy in item.copies for label in copy.labels if copy.version}
+def _copies_now(item: planner.Item, skip: set[str]) -> dict[str, str]:
+    return {label: copy.version for copy in item.copies for label in copy.labels if copy.version and label not in skip}
 
 
 def _record(current: State, item: planner.Item, decision: engine.Decision, outcomes: list[Outcome]) -> bool:
@@ -278,26 +381,39 @@ def _record(current: State, item: planner.Item, decision: engine.Decision, outco
     key = item.key
     record = dict(current.items.get(key) or {})
     before = json.dumps(record, sort_keys=True)
+    # Copies that left the item this run: removed into the backups, or kept as your own files.
+    released = {label for label, how in item.drops.items() if how == "release"}
+    gone = released | {label for outcome in outcomes if outcome.ok and outcome.action == "remove" for label in outcome.labels}
+    # Only copies the engine weighed are recorded at their version now; a frozen folder keeps its old entry.
+    skip = gone | set(record.get("released") or []) | item.ignored
+    kept = {label: version for label, version in (record.get("copies") or {}).items() if label in item.ignored - gone}
+    writes = [outcome for outcome in outcomes if outcome.action != "remove"]
     if decision.action == engine.WRITE:
-        written = {label for outcome in outcomes if outcome.ok for label in outcome.labels}
+        written = {label for outcome in writes if outcome.ok for label in outcome.labels}
         record["made"] = sorted(set(record.get("made") or []) | (set(decision.fills) & written))
-        if all(outcome.ok for outcome in outcomes) and outcomes:
-            copies = _copies_now(item)
+        if writes and all(outcome.ok for outcome in writes):
+            copies = {**kept, **_copies_now(item, skip)}
             copies.update({label: decision.version for label in written})
             record.update(version=decision.version, copies=copies)
     elif decision.action == engine.NOTHING and decision.version:
-        record.update(version=decision.version, copies=_copies_now(item))
+        record.update(version=decision.version, copies={**kept, **_copies_now(item, skip)})
     elif decision.action == engine.STOP:
         stopped = set(decision.stopped)
         record["stopped"] = sorted(set(record.get("stopped") or []) | stopped)
         record["made"] = sorted(set(record.get("made") or []) - stopped)
         record["copies"] = {label: version for label, version in (record.get("copies") or {}).items() if label not in stopped}
-    else:
-        return False
+    if gone:
+        record["made"] = sorted(set(record.get("made") or []) - gone)
+        record["copies"] = {label: version for label, version in (record.get("copies") or {}).items() if label not in gone}
+    if released:
+        record["released"] = sorted(set(record.get("released") or []) | released)
     record = {name: value for name, value in record.items() if value not in ([], {}, None)}
     if json.dumps(record, sort_keys=True) == before:
         return False
-    current.items[key] = record
+    if record:
+        current.items[key] = record
+    else:
+        current.items.pop(key, None)
     return True
 
 
@@ -308,17 +424,24 @@ def new_run_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
 
 
-def apply(plan: planner.Plan, current: State, *, home: Path | None = None) -> Result:
-    """Make the plan's changes and record them. Call it holding `lock()`, after `replay()`."""
+def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: str = "sync",
+          run: str | None = None, prior: list[Outcome] | None = None, records: dict | None = None) -> Result:
+    """Make the plan's changes and record them. Call it holding `lock()`, after `replay()`.
+
+    `op` names the command for the manifest. `prior` holds writes the command already made in this
+    run (undo's restores), so the manifest lists them too. `records` keeps state records the command
+    drops (`rm`), so undo can bring them back.
+    """
 
     home = home or Path.home()
-    result = Result(run=new_run_id())
+    result = Result(run=run or new_run_id(), outcomes=list(prior or []))
     by_label = {provider.label: provider for provider in plan.included}
     servers: dict[str, set[str]] = {}
     grouped: dict[str, list[planner.Change]] = {}
     for change in plan.changes:
         grouped.setdefault(f"{change.kind}/{names.identity(change.name)}", []).append(change)
     made: list[Path] = []
+    removed: list[Path] = []
     rotate = True
     for item in plan.items:
         decision = item.decision
@@ -326,10 +449,12 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None) -> Re
             continue
         holders = {label: copy for copy in item.copies for label in copy.labels}
         outcomes: list[Outcome] = []
-        for change in grouped.get(item.key, []) if decision.action == engine.WRITE else []:
+        for change in grouped.get(item.key, []):
             target = by_label[change.labels[0]].cli
             try:
-                if item.kind == "agents":
+                if change.action == "remove":
+                    outcome = _remove(change, item, target, holders, result.run, op)
+                elif item.kind == "agents":
                     if target == "kiro" and change.labels[0] not in servers:
                         servers[change.labels[0]] = planner.mcp_server_names(by_label[change.labels[0]], home)
                     outcome = _write_agent(change, item, decision, target, holders, servers.get(change.labels[0], set()),
@@ -346,6 +471,8 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None) -> Re
                 _journal({"run": result.run, "step": "done", "path": str(change.path)})
                 if change.action in ("copy", "link"):
                     made.append(change.path)
+                elif change.action == "remove":
+                    removed.append(change.path)
             outcomes.append(outcome)
         result.outcomes += outcomes
         if _record(current, item, decision, outcomes):
@@ -355,11 +482,31 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None) -> Re
         save_state(current)  # a first run with nothing to write still starts the state
     if made:
         result.excluded = gitexclude.update(made)
-    manifest = [{"key": f"{o.kind}/{o.name}", "labels": o.labels, "action": o.action, "path": str(o.path),
-                 "backup": str(o.backup) if o.backup else None} for o in result.written]
+    if removed:
+        result.excluded += gitexclude.update(removed, remove=True)
+    write_manifest(result, op, records)
+    journal_path().unlink(missing_ok=True)
+    return result
+
+
+def write_manifest(result: Result, op: str, records: dict | None = None) -> None:
+    manifest = [{"key": f"{o.kind}/{names.identity(o.name)}", "name": o.name, "labels": o.labels, "action": o.action,
+                 "path": str(o.path), "backup": str(o.backup) if o.backup else None} for o in result.written]
     if manifest:
         folder = share_dir() / "backups" / result.run
         fsutil.make_private_dir(folder)
-        fsutil.write_json(folder / "manifest.json", {"run": result.run, "changes": manifest})
-    journal_path().unlink(missing_ok=True)
-    return result
+        data = {"run": result.run, "op": op, "time": time.time_ns(), "changes": manifest}
+        if records:
+            data["records"] = records
+        fsutil.write_json(folder / "manifest.json", data)
+
+
+def manifests() -> list[dict]:
+    """Every run's manifest, newest first."""
+
+    found = []
+    for path in (share_dir() / "backups").glob("*/manifest.json"):
+        data = fsutil.read_json(path, {})
+        if isinstance(data, dict) and isinstance(data.get("changes"), list):
+            found.append(data)
+    return sorted(found, key=lambda data: (data.get("time") or 0, str(data.get("run"))), reverse=True)
