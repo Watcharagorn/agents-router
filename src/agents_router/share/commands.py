@@ -42,6 +42,14 @@ SUPPORTED_KINDS = settings.KINDS
 LATER_KINDS = ("instructions", "mcp", "commands", "hooks", "plugins")
 IN_WORKER = "agt share doesn't write inside agt's workers; run it from your own terminal or session."
 NOT_ENABLED = "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."
+TURNED_OFF = "agt share is off. `agt share enable` turns it on again, with your saved answers."
+
+
+def _say_off(args: argparse.Namespace) -> None:
+    """Sharing isn't on: never set up, or turned off with `disable` (your answers are still saved)."""
+
+    message = TURNED_OFF if settings.load().folders else NOT_ENABLED
+    _print({"enabled": False, "message": message} if getattr(args, "json", False) else message)
 
 
 def _folder_flags(parser: argparse.ArgumentParser) -> None:
@@ -475,7 +483,7 @@ def _enable(args: argparse.Namespace) -> int:
 def _sync(args: argparse.Namespace) -> int:
     saved = settings.load()
     if not saved.enabled:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     return _run_sync(args, saved, "agt share sync")
 
@@ -544,7 +552,7 @@ TITLES = {"conflict": "Conflict", "delete": "Waiting to be deleted", "unreadable
 def _status(args: argparse.Namespace) -> int:
     saved = settings.load()
     if not saved.enabled:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     current = state.load()
     plan = _plan(args, current, saved)
@@ -671,7 +679,7 @@ def _show_picks(plan: planner.Plan, key: str | None, as_json: bool) -> int:
 def _pick(args: argparse.Namespace) -> int:
     saved = _enabled()
     if saved is None:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     plan = _plan(args, state.load(), saved)
     labels = {provider.label for provider in plan.included}
@@ -794,7 +802,7 @@ def _resolve_needs_choice(items: list[planner.Item], as_json: bool) -> int:
 def _resolve(args: argparse.Namespace) -> int:
     saved = _enabled()
     if saved is None:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     plan = _plan(args, state.load(), saved)
     if args.all == bool(args.item):
@@ -862,7 +870,7 @@ def _resolve(args: argparse.Namespace) -> int:
 def _rm(args: argparse.Namespace) -> int:
     saved = _enabled()
     if saved is None:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     plan = _plan(args, state.load(), saved)
     key = _existing(plan, args.item)
@@ -922,7 +930,7 @@ def _not_movable(item: planner.Item, record: dict) -> str | None:
 def _mv(args: argparse.Namespace) -> int:
     saved = _enabled()
     if saved is None:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     new = args.new_name
     problem = names.problem(new)
@@ -990,7 +998,7 @@ def _left_lines(left: list[planner.Left]) -> list[str]:
 
 
 def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str], labels: set[str], op: str,
-              what: str, retry: str, change, done: str) -> int:
+              what: str, retry: str, change, done) -> int:
     """Turn off some kinds in some CLIs. `change(saved, current)` makes the settings and state change afterwards.
 
     The copies agt made there, unchanged since the last sync, stay as your own files or go to the backups:
@@ -1065,7 +1073,7 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
     kept = [f"{entry.item.name} in {', '.join(entry.labels)}: "
             + ("kept as your own file; agt no longer updates it" if entry.status == "agt" else entry.note)
             for entry in left if entry.status != "agt" or choice == "keep"]
-    notes = ([done] if not result.failed else
+    notes = ([done(choice == "remove")] if not result.failed else
              [f"Nothing else changed: a removal failed, so {what} still shares. Run it again to finish."]) + kept
     _report(off, result, saved_at, args.json, title=retry.split(" --")[0], notes=notes)
     return 1 if result.failed else 0
@@ -1116,7 +1124,7 @@ def _disable(args: argparse.Namespace) -> int:
         _put_back_replaced(current)
 
     return _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
-                     "agt share is off; `agt share enable` turns it on again and fills the copies again.")
+                     lambda removed: "agt share is off; `agt share enable` turns it on again and fills the copies again.")
 
 
 def _put_back_replaced(current: state.State) -> None:
@@ -1156,17 +1164,19 @@ def _cli(args: argparse.Namespace) -> int:
         listed = []
         for row in rows:
             label = sharing.get((row.provider.cli, str(row.provider.folder.resolve())))
-            status = "sharing" if label else row.reason or "not sharing; `agt share cli add` adds it"
+            status = "sharing" if label else row.reason or (
+                "not sharing; `agt share cli add` adds it" if saved.enabled else "not sharing")
             listed.append({"label": label or row.provider.label, "cli": row.provider.cli, "path": str(row.provider.folder),
                            "sharing": bool(label), "status": status})
         if args.json:
             _print({"enabled": saved.enabled, "folders": listed})
         else:
-            print("\n".join([f"  {'[x]' if entry['sharing'] else '[ ]'} {entry['label']:<16} {short(Path(entry['path'])):<22} "
+            print("\n".join(([] if saved.enabled else [TURNED_OFF if saved.folders else NOT_ENABLED]) +
+                            [f"  {'[x]' if entry['sharing'] else '[ ]'} {entry['label']:<16} {short(Path(entry['path'])):<22} "
                              f"{entry['status']}" for entry in listed] or ["agt found no CLI folders."]))
         return 0
     if not saved.enabled:
-        print(NOT_ENABLED)
+        _say_off(args)
         return 0
     if args.cli_command == "remove":
         labels = {folder.label for folder in saved.folders}
@@ -1176,8 +1186,9 @@ def _cli(args: argparse.Namespace) -> int:
         folder = next(entry for entry in saved.folders if entry.label == args.label)
         return _turn_off(args, saved, set(saved.kinds), {args.label}, "cli-remove", args.label,
                          f"agt share cli remove {args.label}", lambda saved, current: _drop_label(saved, current, args.label),
-                         f"{args.label} doesn't share any more; `agt share cli add {folder.cli} {short(folder.path)}` "
-                         "shares it again and fills it.")
+                         lambda removed: f"{args.label} doesn't share any more; `agt share cli add {folder.cli} "
+                         f"{short(folder.path)}` shares it again" + (" and fills it." if removed else
+                                                                     ", and the copies you kept stay your own files."))
     cli = "antigravity" if args.cli == "agy" else args.cli
     if args.path:
         folder = Path(args.path).expanduser().absolute()
@@ -1208,13 +1219,23 @@ def _cli(args: argparse.Namespace) -> int:
             saved.not_in[key].append(label)
     notes = [f"auto copy is off, so these don't go to {label} until you pick them "
              f"(`agt share pick <item> --in {label}`): {', '.join(name.partition('/')[2] for name in held)}"] if held else []
+    notes += _kept_there(current, saved.kinds, {label})
     return _run_sync(args, saved, "agt share cli add", save=True, notes=notes)
+
+
+def _kept_there(current: state.State, kinds: tuple[str, ...], labels: set[str]) -> list[str]:
+    """Copies you kept as your own files when this CLI or kind stopped sharing: they stay yours until you pick them."""
+
+    found = sorted((key.partition("/")[2], label) for key, record in current.items.items()
+                   if key.partition("/")[0] in kinds for label in record.get("released") or [] if label in labels)
+    return [f"{name} in {label} is your own file (you kept it); `agt share pick {name} --in {label}` takes it back"
+            for name, label in found]
 
 
 def _kinds_command(args: argparse.Namespace) -> int:
     saved = settings.load()
     if not saved.enabled:
-        print(NOT_ENABLED)
+        _say_off(args)
         return 0
     kind = args.kind
     if kind in LATER_KINDS:
@@ -1226,7 +1247,8 @@ def _kinds_command(args: argparse.Namespace) -> int:
             print(f"agt share: {kind} already share.")
             return 0
         saved.kinds = tuple(entry for entry in SUPPORTED_KINDS if entry in saved.kinds or entry == kind)
-        return _run_sync(args, saved, "agt share kinds add", save=True)
+        return _run_sync(args, saved, "agt share kinds add", save=True,
+                         notes=_kept_there(state.load(), (kind,), {folder.label for folder in saved.folders}))
     if kind not in saved.kinds:
         print(f"agt share: {kind} don't share now.")
         return 0
@@ -1238,7 +1260,8 @@ def _kinds_command(args: argparse.Namespace) -> int:
 
     labels = {folder.label for folder in saved.folders}
     return _turn_off(args, saved, {kind}, labels, "kinds-remove", kind, f"agt share kinds remove {kind}", change,
-                     f"{kind} don't share any more; `agt share kinds add {kind}` shares them again.")
+                     lambda removed: f"{kind} don't share any more; `agt share kinds add {kind}` shares them again"
+                     + (" and fills the copies." if removed else ", and the copies you kept stay your own files."))
 
 
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:
@@ -1280,7 +1303,7 @@ def _left_out_in(saved: settings.Settings, key: str, labels: set[str]) -> set[st
 def _undo(args: argparse.Namespace) -> int:
     saved = _enabled()
     if saved is None:
-        _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
+        _say_off(args)
         return 0
     plan = _plan(args, state.load(), saved)
     labels = {provider.label for provider in plan.included}

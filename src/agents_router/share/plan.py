@@ -86,6 +86,7 @@ class Item:
     drops: dict[str, str] = field(default_factory=dict)  # label -> "remove" or "release": copies in folders you left out
     ignored: set[str] = field(default_factory=set)  # labels holding a copy the engine didn't weigh (frozen, left out)
     renamed_from: str | None = None  # the `<kind>/<identity>` key this item had before a rename
+    unreleased: set[str] = field(default_factory=set)  # kept copies that are gone now: those CLIs get the item again
 
     @property
     def key(self) -> str:
@@ -400,6 +401,12 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
             # `sync --refill`: the copies that disappeared from a frozen folder are filled again, not deleted.
             last = engine.Last(last.version, {label: v for label, v in last.copies.items() if label not in back},
                                last.made, last.stopped, last.released)
+        if last is not None:
+            # A copy kept as your own file that you deleted since: that CLI gets the item again (unless you left it out).
+            item.unreleased = {label for label in last.released
+                               if label in by_label and label not in holding and label not in absent.get(item.kind, set())}
+            if item.unreleased:
+                last = engine.Last(last.version, last.copies, last.made, last.stopped, last.released - item.unreleased)
         made = set((state.items.get(item.key) or {}).get("made") or [])
         holders = {label: copy for copy in item.copies for label in copy.labels}
         source = next((copy for copy in item.copies if copy.version), None)

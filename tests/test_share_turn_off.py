@@ -60,17 +60,22 @@ class CliRemoveTests(TurnOffBase):
 
     def test_keep_copies_leaves_them_as_your_own_files(self):
         self.enable()
-        self.share("cli", "remove", "kiro", "--keep-copies")
+        out = self.share("cli", "remove", "kiro", "--keep-copies")
+        self.assertIn("shares it again, and the copies you kept stay your own files.", out)
         self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").is_file())
         self.assertEqual(self.record("agents/dana")["released"], ["kiro"])
         self.agent(self.claude, "dana", body="Dana, edited.", tools="Bash, Read")
         age(self.claude / "agents" / "dana.md")
         self.share("sync")
         self.assertEqual(self.kiro("dana")["prompt"], "Dana's long instructions.")
-        # Back again: your kept files aren't taken for agt's copies.
-        self.share("cli", "add", "kiro")
+        # Back again: your kept files aren't taken for agt's copies, and the one you deleted comes back.
+        (self.user / ".kiro" / "agents" / "day-plan.json").unlink()
+        out = self.share("cli", "add", "kiro")
+        self.assertIn("dana in kiro is your own file (you kept it); `agt share pick dana --in kiro` takes it back", out)
         self.assertEqual(self.kiro("dana")["prompt"], "Dana's long instructions.")
         self.assertEqual(self.record("agents/dana")["released"], ["kiro"])
+        self.assertTrue((self.user / ".kiro" / "agents" / "day-plan.json").is_file())
+        self.assertNotIn("released", self.record("agents/day-plan"))
 
     def test_without_an_answer_it_asks_or_exits_3(self):
         self.enable()
@@ -180,7 +185,7 @@ class DisableTests(TurnOffBase):
         out = self.share("disable")
         self.assertIn("agt share is off. Every copy stays as it is", out)
         self.assertEqual(self.folders(), before)
-        self.assertIn("isn't enabled yet", self.share("sync"))
+        self.assertIn("agt share is off. `agt share enable` turns it on again", self.share("sync"))
         proposal = json.loads(self.share("enable", "--dry-run", "--json"))
         self.assertEqual([folder["label"] for folder in proposal["folders"] if folder["used"]],
                          ["claude-lab", "claude", "codex", "kiro"])
@@ -200,7 +205,7 @@ class DisableTests(TurnOffBase):
         self.assertTrue((self.claude / "agents" / "dana.md").exists())
         self.assertTrue((self.lab / "agents" / "day-plan.md").exists())  # your own copy there
         self.assertFalse(settings.load().enabled)
-        self.assertIn("isn't enabled yet", self.share("undo", "dana"))
+        self.assertIn("agt share is off", self.share("undo", "dana"))
         self.share("enable", *FLAGS, "--resolve", "gamma-apikey=skip", "--yes")
         self.assertIn("dana's last backup is from turning sharing off, which undo doesn't reverse", self.share("undo", "dana"))
 

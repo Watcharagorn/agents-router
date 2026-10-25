@@ -566,14 +566,14 @@ def _record(current: State, item: planner.Item, decision: engine.Decision, outco
     if gone:
         record["made"] = sorted(set(record.get("made") or []) - gone)
         record["copies"] = {label: version for label, version in (record.get("copies") or {}).items() if label not in gone}
-    if released:
-        record["released"] = sorted(set(record.get("released") or []) | released)
+    if released or item.unreleased:
+        record["released"] = sorted((set(record.get("released") or []) | released) - item.unreleased)
     # Runs in a row where a write failed (not one skipped because a copy changed meanwhile): 3 make an attention entry.
     failures = [outcome for outcome in outcomes if not outcome.ok and not outcome.message.startswith(SKIPPED)]
     if failures:
         record["failing"] = {"runs": int((record.get("failing") or {}).get("runs", 0)) + 1, "message": failures[0].message}
-    elif outcomes and all(outcome.ok for outcome in outcomes):
-        record.pop("failing", None)
+    elif (outcomes and all(outcome.ok for outcome in outcomes)) or (decision.action == engine.NOTHING and decision.version):
+        record.pop("failing", None)  # a run that wrote it, or found nothing to write
     if record.get("version"):
         # The name-free shape of the recorded version, so a rename can be spotted later.
         shape = next((copy.shape for copy in item.copies if copy.version == record["version"] and copy.shape), None)

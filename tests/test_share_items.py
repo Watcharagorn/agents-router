@@ -89,6 +89,13 @@ class PickTests(ItemBase):
         self.assertEqual(self.kiro("day-plan")["prompt"], "Wrap the day.")
         self.assertNotIn("released", self.record("agents/day-plan"))
 
+    def test_a_kept_copy_you_delete_stays_out_while_the_pick_says_so(self):
+        self.enable()
+        self.share("pick", "day-plan", "--not-in", "kiro", "--keep-copies")
+        (self.user / ".kiro" / "agents" / "day-plan.json").unlink()
+        self.share("sync")
+        self.assertFalse((self.user / ".kiro" / "agents" / "day-plan.json").exists())
+
     def test_a_copy_with_an_edit_the_others_dont_have_is_kept(self):
         self.enable()
         self.write_kiro("explorer", prompt="Explore my way.")
