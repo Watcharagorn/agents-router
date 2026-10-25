@@ -313,10 +313,11 @@ The alternative names depend on which other installed runtimes have room. `agt a
 
 The `[share]` tables of your user file hold `agt share`'s answers: what shares, between which folders, and your picks per item. See [Sharing agents and skills](share.md#settings). `agt share settings` lists them with the command that changes each.
 
-Four switches set what runs sharing without you (see [Staying in sync without you](share.md#staying-in-sync-without-you)). Each takes effect at once:
+These keys take effect at once; the switches set what runs sharing without you (see [Staying in sync without you](share.md#staying-in-sync-without-you)):
 
 | Key | Default | Meaning |
 |---|---|---|
+| `share.instructions` | `off` | Share each CLI's instruction file: `block` (agt's marked block of it) or `whole`; see [Sharing instructions](share.md#sharing-instructions) |
 | `share.watcher` | `true` | The background watcher (macOS): a sync every minute and when a shared folder changes |
 | `share.push_on_save` | `true` | Claude Code's save entry: a save inside a shared folder spreads within seconds |
 | `share.notify` | `true` | macOS notifications for conflicts and other urgent items, at most once an hour |

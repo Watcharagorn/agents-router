@@ -32,3 +32,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "agents_router" = ["templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
 "agents_router.agy_review" = ["policy.md"]
+
+[tool.uv]
+# A folder install (`uv tool install <checkout>`) rebuilds when the code changes, not only pyproject.toml.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }, { file = "src/**/*.md" }, { file = "src/**/*.toml" }, { file = "src/**/*.json" }]

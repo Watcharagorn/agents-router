@@ -15,6 +15,7 @@ comes with sharing a repo's items.
     push_on_save = true                   # a save in Claude Code spreads at once
     notify = true                         # macOS notifications for conflicts and the like
     codex_session = false                 # agt's session-start entry in Codex's hooks.json
+    instructions = "block"                # share agt's block of each CLI's instruction file ("off" by default)
 
     [[share.folders]]                     # the folders sharing, with their labels
     cli = "claude"
@@ -41,6 +42,7 @@ from agents_router.share import codex_toml, model, toolmap
 KINDS = ("agents", "skills")
 # On/off switches for the background side (see triggers.py), with their defaults. Saved only when they differ.
 SWITCHES = {"watcher": True, "push_on_save": True, "notify": True, "codex_session": False}
+INSTRUCTIONS = ("off", "block", "whole")  # see instructions.py
 
 
 class SettingsError(levels.SettingsError):
@@ -68,6 +70,7 @@ class Settings:
     push_on_save: bool = True
     notify: bool = True
     codex_session: bool = False
+    instructions: str = "off"
 
 
 def path() -> Path:
@@ -120,7 +123,7 @@ def _labels(key: str, value: Any) -> list[str]:
 def _settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("must be a table")
-    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", *SWITCHES}
+    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", *SWITCHES}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown key {unknown[0]}")
@@ -143,8 +146,11 @@ def _settings(data: Any) -> Settings:
     for name, value in switches.items():
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be true or false")
+    mode = data.get("instructions", "off")
+    if mode not in INSTRUCTIONS:
+        raise ValueError(f"instructions must be {', '.join(INSTRUCTIONS)}")
     result = Settings(enabled=enabled, kinds=tuple(kinds), tool_widening=widening,
-                      auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, **switches)
+                      auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, instructions=mode, **switches)
     targets = data.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be a table")
@@ -171,6 +177,8 @@ def render(settings: Settings) -> str:
              f"tool_widening = {value(settings.tool_widening)}", f"auto_copy = {value(auto)}"]
     lines += [f"{name} = {value(getattr(settings, name))}" for name, default in SWITCHES.items()
               if getattr(settings, name) != default]
+    if settings.instructions != "off":
+        lines.append(f"instructions = {value(settings.instructions)}")
     for folder in settings.folders:
         lines += ["", "[[share.folders]]", f"cli = {value(folder.cli)}", f"label = {value(folder.label)}",
                   f"path = {value(str(folder.path))}"]

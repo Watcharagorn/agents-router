@@ -664,6 +664,10 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         if _record(current, item, decision, outcomes):
             save_state(current, rotate=rotate)
             rotate = False
+    if plan.instructions is not None:
+        result.outcomes += _apply_instructions(plan, current, result.run)
+        save_state(current, rotate=rotate)
+        rotate = False
     if rotate:
         save_state(current)  # a first run with nothing to write still starts the state
     if made:
@@ -674,6 +678,16 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
     journal_path().unlink(missing_ok=True)
     _log(plan, result, command or f"agt share {op}", started, log, trigger)
     return result
+
+
+def _apply_instructions(plan: planner.Plan, current: State, run: str) -> list[Outcome]:
+    """The instruction files' writes, as outcomes of this run (they share agt's backups and log)."""
+
+    from agents_router.share import instructions
+
+    return [Outcome("instructions", "instructions", [written.label], "update", written.path, written.ok,
+                    "" if written.ok else written.message, written.backup, plan.instructions.decision.version)
+            for written in instructions.apply(plan.instructions, current, run)]
 
 
 def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None,

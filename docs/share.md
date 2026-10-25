@@ -11,7 +11,7 @@ It covers your user folders today:
 | Antigravity | `~/.gemini` | `config/agents/<name>.md` | `antigravity-cli/skills/<name>/` |
 | Kiro | `~/.kiro` | `agents/<name>.json` | `skills/<name>/` |
 
-MCP servers, hooks, plugins, commands, instruction files and a repo's own `.claude/agents` come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
+It can share [your instruction files](#sharing-instructions) too, when you turn that on. MCP servers, hooks, plugins, commands and a repo's own `.claude/agents` come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
 
 ## Turning it on
 
@@ -65,6 +65,31 @@ The options:
 | `--accept-suggested` | Take the suggested answer for every open choice. |
 
 `agt share scan` lists every choice setup would offer and writes nothing.
+
+## Sharing instructions
+
+Instruction files are off unless you turn them on: `agt share kinds add instructions`, or `--instructions block` with `enable`. Each CLI folder has one user-level file:
+
+| CLI | File |
+|---|---|
+| Claude Code | `CLAUDE.md` in each Claude folder |
+| Codex | `~/.codex/AGENTS.md` |
+| Antigravity | `~/.gemini/GEMINI.md` |
+| Kiro | `~/.kiro/steering/AGENTS.md` (Kiro's user steering; not yet checked with the CLI) |
+
+Only one marked block of each file is shared, so the rest stays that CLI's own:
+
+```markdown
+<!-- agents-router:share:start -->
+Answer briefly. Use tabs in Go.
+<!-- agents-router:share:end -->
+```
+
+A file takes part once it has the markers. `agt share adopt codex kiro` adds an empty block at the end of those folders' files (all folders without a label), and the next sync fills it. `agt share adopt claude --wrap` puts that file's own text inside the block instead, to start from what you have. `agt share status` lists the files without a block.
+
+An edit to the block in any file reaches the others; different edits are a conflict, and `agt share resolve instructions --prefer <label>` picks the version that wins. Claude's `@path` imports stay in their Claude file and never go to the other CLIs, and agt's own [delegation rules](delegation.md) block is never copied. Every write backs the file up first and keeps its mode and hard links.
+
+`--instructions whole` (or `agt config set share.instructions whole`) shares whole files instead, and makes a missing one. `agt share kinds remove instructions` stops sharing them; every file keeps its text.
 
 ## What a copy holds
 
@@ -195,6 +220,7 @@ Every run that writes is one line in agt's log, with each write and backup: see 
 | A rename that couldn't finish | you choose | `agt share mv <old> <new>` |
 | A file agt can't read | you fix it | |
 | A copy agt couldn't write in the last 3 runs | you fix it | |
+| An instruction file without agt's block, while instructions share | you choose | `agt share adopt <label>` |
 | The background watcher stopped | an agent can do it | `agt doctor --fix` |
 
 The same list is in `agt share status --json` (`attention`, each entry with `kind`, `item`, `who`, `message` and `fix`) and in `~/.agents-router/state/share/attention.json`, which each writing run updates.

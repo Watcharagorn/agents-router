@@ -84,6 +84,10 @@ def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
     for skipped in plan.unrenamed:
         found.append(_entry("rename", f"{skipped['kind']}/{skipped['old']}", "choice", skipped["message"],
                             [f"agt share mv {skipped['old']} {skipped['new']}"] if skipped.get("new") else []))
+    if plan.instructions is not None:
+        from agents_router.share import instructions
+
+        found += instructions.attention(plan.instructions)
     return found
 
 

@@ -134,6 +134,15 @@ class SetUpTests(WatchBase):
         self.config("unset", "share.codex_session")
         self.assertFalse((self.user / ".codex" / "hooks.json").exists())  # agt made it for its entry alone
 
+    def test_enable_again_keeps_the_switches_you_set(self):
+        self.enable()
+        self.config("set", "share.push_on_save", "false")
+        self.config("set", "share.notify", "false")
+        self.enable()
+        saved = settings.load()
+        self.assertEqual((saved.push_on_save, saved.notify), (False, False))
+        self.assertNotIn("PostToolUse", self.commands(self.claude))
+
     def test_removing_a_claude_folder_takes_its_entries_out(self):
         self.enable()
         self.share("cli", "remove", "claude-lab", "--keep-copies")

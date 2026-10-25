@@ -146,9 +146,17 @@ def included_folders(saved: settings.Settings) -> list[providers.Provider]:
     return commands._folders(load_config(), None, False, saved)[1]
 
 
+def watched_files(saved: settings.Settings, included: list[providers.Provider]) -> list[Path]:
+    """Files whose change starts a run besides the folders: your settings, and the instruction files when they share."""
+
+    from agents_router.share import instructions
+
+    return [settings.path(), *(instructions.signature_files(included) if saved.instructions != "off" else [])]
+
+
 def stale(saved: settings.Settings, included: list[providers.Provider] | None = None) -> bool:
     included = included_folders(saved) if included is None else included
-    return signature(included, [settings.path()]) != saved_signature()
+    return signature(included, watched_files(saved, included)) != saved_signature()
 
 
 # One background run ------------------------------------------------------------------
@@ -169,7 +177,7 @@ def background_sync(trigger: str, *, if_stale: bool = True) -> tuple[str, list[s
     included = included_folders(saved)
     if not included:
         return "no folder shares", []
-    extra = [settings.path()]
+    extra = watched_files(saved, included)
     if if_stale and signature(included, extra) == saved_signature():
         return "nothing moved", []
     args = argparse.Namespace(json=False, dry_run=False)

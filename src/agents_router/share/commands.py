@@ -39,13 +39,13 @@ from typing import Any
 from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, model, names, normalize, picker, plan as planner, providers, settings, state, toolmap,
-    triggers,
+    apply, attention, engine, gitexclude, instructions, model, names, normalize, picker, plan as planner, providers, settings,
+    state, toolmap, triggers,
 )
 from agents_router.share.providers import _short as short
 
 SUPPORTED_KINDS = settings.KINDS
-LATER_KINDS = ("instructions", "mcp", "commands", "hooks", "plugins")
+LATER_KINDS = ("mcp", "commands", "hooks", "plugins")
 IN_WORKER = "agt share doesn't write inside agt's workers; run it from your own terminal or session."
 NOT_ENABLED = "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."
 TURNED_OFF = "agt share is off. `agt share enable` turns it on again, with your saved answers."
@@ -82,6 +82,8 @@ def add_parser(subparsers) -> None:
     enable.add_argument("--resolve", action="append", default=[], metavar="ITEM=LABEL|skip",
                         help="Which version wins for an item that differs between folders; skip doesn't share it.")
     enable.add_argument("--auto-copy", help="New items go to every target: on (the default), off or a list of kinds.")
+    enable.add_argument("--instructions", choices=settings.INSTRUCTIONS,
+                        help="Share each CLI's instruction file too: block (agt's marked block of it) or whole; off by default.")
     enable.add_argument("--tool-widening", choices=toolmap.TOOL_WIDENING,
                         help="Codex agents can't limit tools: allow-if-shell (the default) copies agents that have a shell, "
                              "skip copies none with a tool list.")
@@ -163,6 +165,11 @@ def add_parser(subparsers) -> None:
         choice.add_argument("--remove-copies", action="store_true", help="The copies agt made go to the backups.")
         parser.add_argument("--dry-run", action="store_true", help="Show what it would leave behind; change nothing.")
         parser.add_argument("--json", action="store_true")
+    adopt = actions.add_parser("adopt", help="Add agt's instructions block to CLIs' instruction files, so they share it.")
+    adopt.add_argument("labels", nargs="*", metavar="LABEL", help="The folders (default: every folder sharing).")
+    adopt.add_argument("--wrap", action="store_true", help="Put the file's own text inside the block, instead of an empty block.")
+    adopt.add_argument("--dry-run", action="store_true")
+    adopt.add_argument("--json", action="store_true")
     move = actions.add_parser("mv", help="Rename an item in every CLI, keeping each copy's own fields.")
     move.add_argument("item")
     move.add_argument("new_name", metavar="NEW-NAME")
@@ -175,6 +182,8 @@ def add_parser(subparsers) -> None:
 
 def _kinds(value: str) -> tuple[str, ...]:
     kinds = tuple(dict.fromkeys(kind.strip() for kind in value.split(",") if kind.strip()))
+    if "instructions" in kinds:
+        raise ValueError("instructions aren't a kind of item: use --instructions block|whole, or `agt share kinds add instructions`")
     later = [kind for kind in kinds if kind in LATER_KINDS]
     if later:
         raise ValueError(f"sharing {', '.join(later)} comes in a later phase; this build shares agents and skills")
@@ -238,6 +247,9 @@ def _options(args: argparse.Namespace, labels: set[str], saved: settings.Setting
             options.off.add(item)
             continue
         _check_label(label, labels, "--resolve")
+        if item == "instructions":
+            options.instructions_from = label
+            continue
         options.resolve[item] = label
         options.off -= {item, *(f"{kind}/{item}" for kind in SUPPORTED_KINDS)}
     options.resolve.update(resolve or {})
@@ -259,7 +271,8 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
             parts += [flag, value]
     if args.no_agy:
         parts.append("--no-agy")
-    for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy)):
+    for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy),
+                        ("--instructions", getattr(args, "instructions", None))):
         if value is not None:
             parts += [flag, value]
     return " ".join(shlex.quote(part) for part in parts)
@@ -297,7 +310,12 @@ def _plan(args: argparse.Namespace, current: state.State, saved: settings.Settin
     explicit = _explicit_folders(args) if hasattr(args, "claude_dir") else None
     rows, included = _folders(config, explicit, getattr(args, "no_agy", False), saved)
     options = _options(args, {provider.label for provider in included}, saved, resolve, keep_copies)
-    return planner.build(config, rows, included, options, current, own=own)
+    plan = planner.build(config, rows, included, options, current, own=own)
+    mode = getattr(args, "instructions", None) or (saved.instructions if saved is not None else "off")
+    if mode != "off":
+        plan.instructions = instructions.build(included, mode, current,
+                                               prefer=getattr(options, "instructions_from", None))
+    return plan
 
 
 def _print(value: Any) -> None:
@@ -334,11 +352,16 @@ def _find(plan: planner.Plan, key: str) -> planner.Item | None:
     return next((item for item in plan.items if item.key == _identity(key)), None)
 
 
-def _saved_answers(plan: planner.Plan, args: argparse.Namespace) -> settings.Settings:
+def _saved_answers(plan: planner.Plan, args: argparse.Namespace, saved: settings.Settings | None = None) -> settings.Settings:
+    """Your answers from this plan; the switches and settings no flag sets stay as you saved them."""
+
     options = plan.options
+    switches = {name: getattr(saved, name) for name in settings.SWITCHES} if saved is not None else {}
     result = settings.Settings(enabled=True, kinds=options.kinds, tool_widening=options.tool_widening,
                                auto_copy=options.auto_copy,
-                               folders=[settings.Folder(p.cli, p.folder, p.label) for p in plan.included])
+                               folders=[settings.Folder(p.cli, p.folder, p.label) for p in plan.included],
+                               instructions=getattr(args, "instructions", None) or (saved.instructions if saved else "off"),
+                               **switches)
     result.off = {_item_key(plan, name) for name in options.off}
     for name, label in options.skip:
         result.not_in.setdefault(_item_key(plan, name), []).append(label)
@@ -366,7 +389,8 @@ def _needs_choice(plan: planner.Plan, command: str, as_json: bool) -> int:
 def _outcome_line(outcome: apply.Outcome) -> str:
     mark = {"copy": "+", "link": "+", "update": "~", "relink": "~", "remove": "-", "rename": ">", "rename-folder": ">",
             "rename-link": ">"}.get(outcome.action, "?")
-    line = f"  {mark} {outcome.kind}/{outcome.name} in {', '.join(outcome.labels)}: {short(outcome.path)}"
+    what = "instructions" if outcome.kind == "instructions" else f"{outcome.kind}/{outcome.name}"
+    line = f"  {mark} {what} in {', '.join(outcome.labels)}: {short(outcome.path)}"
     return f"{line} ({outcome.message})" if outcome.message else line
 
 
@@ -473,6 +497,8 @@ def _enable(args: argparse.Namespace) -> int:
     if args.dry_run or not args.yes:
         plan = _plan(args, state.load(), saved)
         for name in [*args.resolve, *args.skip, *args.only]:
+            if name.partition("=")[0] == "instructions":
+                continue
             _item_key(plan, name.partition("=")[0].rpartition("@")[0] or name.partition("=")[0])
         line = _command_line(args, plan.digest)
         _print(planner.proposal(plan, line) if args.json else planner.render_text(plan, line))
@@ -503,7 +529,7 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
             return 1
         if plan.conflicts and not (args.if_plan or args.accept_suggested):
             return _needs_choice(plan, line, args.json)
-        answers = _saved_answers(plan, args)
+        answers = _saved_answers(plan, args, saved)
         saved_at = settings.save(answers)
         result = apply.apply(plan, current, command="agt share enable")
         result.replayed = replayed
@@ -728,13 +754,14 @@ def _status(args: argparse.Namespace) -> int:
     if saved.watcher and health["stopped"]:
         needs.append({"id": "watcher", "kind": "watcher", "item": attention.FOLDER, "who": "agent",
                       "message": "the background watcher stopped", "fix": ["agt doctor --fix"]})
-    code = 1 if plan.conflicts or pending or plan.frozen else 0
+    shared = plan.instructions
+    code = 1 if plan.conflicts or pending or plan.frozen or (shared is not None and shared.conflict) else 0
     if args.json:
         _print({"enabled": True, "folders": [{"label": p.label, "cli": p.cli, "path": str(p.folder)} for p in plan.included],
                 "in_sync": len(in_sync), "to_write": len(plan.changes), "conflicts": [i.name for i in plan.conflicts],
                 "waiting": [i.name for i in plan.waiting], "pending_delete": [i.name for i in pending],
                 "frozen": plan.frozen, "not_shared": len(plan.excluded), "notes": plan.notices, "attention": needs,
-                "watcher": health,
+                "watcher": health, "instructions": shared.summary() if shared is not None else None,
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
     lines = ["agt share is on for " + ", ".join(f"{p.label} ({short(p.folder)})" for p in plan.included) + ".",
@@ -742,6 +769,8 @@ def _status(args: argparse.Namespace) -> int:
              f"{len(plan.conflicts)} conflicts, {len(plan.waiting)} waiting, {len(pending)} waiting to be deleted, "
              f"{len(plan.excluded)} not shared."]
     lines += [f"  {line}" for line in watch.health_lines(saved) if not (health["stopped"] and line.startswith("Watcher stopped"))]
+    if shared is not None:
+        lines.append(f"  {shared.summary()}")
     by_key = {item.key: item for item in plan.items}
     for entry in needs:
         fix = " or ".join(f"`{command}`" for command in entry["fix"])
@@ -754,7 +783,7 @@ def _status(args: argparse.Namespace) -> int:
     shown = {entry["message"] for entry in needs}
     lines += [f"  Note: {note}" for note in plan.notices if not any(note.startswith(message) for message in shown)
               and "disappeared from" not in note]
-    if plan.changes:
+    if plan.changes or (shared is not None and shared.writes):
         lines.append("  `agt share sync` writes the changes.")
     print("\n".join(lines))
     return code
@@ -996,23 +1025,36 @@ def _pick(args: argparse.Namespace) -> int:
                         only={key: only} if only is not None else None)
 
 
+SHORT_DIFF = 20  # longer differences show as a summary, and `d` shows them
+
+
 def _ask_version(item: planner.Item) -> str | None:
-    """In a terminal: show the difference and ask which copy wins. None means quit."""
+    """In a terminal: show the difference (or its summary when it's long) and ask which copy wins. None means quit."""
 
     latest = planner.newest(item)
     print(f"{item.name} ({item.kind}) differs between its copies:")
     for number, copy in enumerate(item.copies, 1):
         print(f"  {number}  {'/'.join(copy.labels):<20} {short(copy.path)}{' (newer)' if copy is latest else ''}")
-    for line in _diff(item):
-        print(f"    {line}")
+    diff = _diff(item)
+    changed = [line for line in diff if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+    if len(diff) <= SHORT_DIFF:
+        for line in diff:
+            print(f"    {line}")
+    else:
+        print(f"    {len(changed)} lines differ; d shows them.")
     numbers = " / ".join(str(number) for number in range(1, len(item.copies) + 1))
     while True:
         try:
-            answer = input(f"Which version should every copy get? {numbers}, s to stop sharing it, q to quit: ").strip().lower()
+            answer = input(f"Which version should every copy get? {numbers}, s to stop sharing it, "
+                           f"{'d to see the difference, ' if len(diff) > SHORT_DIFF else ''}q to quit: ").strip().lower()
         except EOFError:
             return None
         if answer == "q":
             return None
+        if answer == "d":
+            for line in diff:
+                print(f"    {line}")
+            continue
         if answer == "s":
             return "skip"
         if answer.isdigit() and 1 <= int(answer) <= len(item.copies):
@@ -1040,11 +1082,86 @@ def _resolve_needs_choice(items: list[planner.Item], as_json: bool) -> int:
     return 3
 
 
+def _resolve_instructions(args: argparse.Namespace, saved: settings.Settings) -> int:
+    """`resolve instructions --prefer <label>`: that file's shared text goes to every other one."""
+
+    if saved.instructions == "off":
+        raise ValueError("instructions don't share; `agt share kinds add instructions` turns them on")
+    plan = _plan(args, state.load(), saved)
+    shared = plan.instructions
+    if not shared.conflict and not args.prefer:
+        print("agt share resolve: the instructions have no conflict; they agree.")
+        return 0
+    if not args.prefer:
+        labels = shared.decision.labels
+        if args.json or not _interactive():
+            _print({"error": "needs_choice", "ask": f"The instructions differ between {', '.join(labels)}. Which version "
+                    "should every CLI get?", "choices": labels, "retry": "agt share resolve instructions --prefer <label>"}
+                   if args.json else f"The instructions differ between {', '.join(labels)}. Answer with "
+                   "`agt share resolve instructions --prefer <label>`.")
+            return 3
+        answer = input(f"Which version should every CLI get? {' / '.join(labels)}, q to quit: ").strip()
+        if answer not in labels:
+            print("Nothing was changed.")
+            return 0
+        args.prefer = answer
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    included = _folders(load_config(), None, False, saved)[1]
+    with apply.lock([provider.folder for provider in included]):
+        current = state.load()
+        apply.replay(current)
+        plan = _plan(args, current, saved)
+        plan.instructions = instructions.build(plan.included, saved.instructions, current, prefer=args.prefer)
+        locked = plan.restricted(set())
+        locked.instructions = plan.instructions
+        result = apply.apply(locked, current, op="resolve")
+        _remember(plan, current, result)
+    _report(locked, result, None, args.json, title="agt share resolve")
+    return 1 if result.failed else 0
+
+
+def _adopt(args: argparse.Namespace) -> int:
+    """`adopt`: agt's block in these folders' instruction files, then a sync that fills it."""
+
+    saved = _enabled()
+    if saved is None:
+        _say_off(args)
+        return 0
+    included = _folders(load_config(), None, False, saved)[1]
+    labels = {provider.label: provider for provider in included}
+    for label in args.labels:
+        _check_label(label, set(labels), "adopt")
+    chosen = [labels[label] for label in args.labels] if args.labels else included
+    if args.dry_run:
+        found = [{"label": provider.label, "file": str(instructions.file_for(provider))} for provider in chosen
+                 if instructions.file_for(provider)]
+        _print({"dry_run": True, "adopt": found} if args.json else
+               "\n".join(["agt share adopt: dry run, nothing was written. It would add agt's block to:"]
+                          + [f"  {entry['label']}: {short(Path(entry['file']))}" for entry in found]))
+        return 0
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    notes = []
+    with apply.lock([provider.folder for provider in included]):
+        for provider in chosen:
+            path, what = instructions.adopt(provider, wrap=args.wrap)
+            notes.append(f"{provider.label}: {what} ({short(path)})")
+    if saved.instructions == "off":
+        saved.instructions = "block"
+        notes.append("Instructions share now (`instructions = \"block\"`).")
+    return _run_sync(argparse.Namespace(json=args.json, dry_run=False), saved, "agt share adopt", save=True, notes=notes)
+
+
 def _resolve(args: argparse.Namespace) -> int:
     saved = _enabled()
     if saved is None:
         _say_off(args)
         return 0
+    if args.item == "instructions":
+        return _resolve_instructions(args, saved)
     plan = _plan(args, state.load(), saved)
     if args.all == bool(args.item):
         raise ValueError("name one item to resolve, or --all")
@@ -1488,6 +1605,19 @@ def _kinds_command(args: argparse.Namespace) -> int:
         _say_off(args)
         return 0
     kind = args.kind
+    if kind == "instructions":
+        if args.kinds_command == "add":
+            if saved.instructions != "off":
+                print(f"agt share: instructions already share ({saved.instructions}).")
+                return 0
+            saved.instructions = "block"
+            return _run_sync(args, saved, "agt share kinds add", save=True, notes=[
+                "Instructions share agt's block of each CLI's instruction file; `agt share adopt` adds the block to a file."])
+        saved.instructions = "off"
+        at = settings.save(saved)
+        _print({"instructions": "off", "settings": str(at)} if args.json else
+               "agt share: instructions don't share any more; every instruction file keeps its text.")
+        return 0
     if kind in LATER_KINDS:
         raise ValueError(f"sharing {kind} comes in a later phase; this build shares agents and skills")
     if kind not in SUPPORTED_KINDS:
@@ -1708,9 +1838,9 @@ def command(args: argparse.Namespace) -> int:
             from agents_router import config_cli
 
             return config_cli.share_command(args)
-        if action in ("pick", "resolve", "rm", "mv", "undo", "disable", "cli", "kinds"):
+        if action in ("pick", "resolve", "rm", "mv", "undo", "disable", "cli", "kinds", "adopt"):
             return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo, "disable": _disable,
-                    "cli": _cli, "kinds": _kinds_command}[action](args)
+                    "cli": _cli, "kinds": _kinds_command, "adopt": _adopt}[action](args)
     except (settings.SettingsError, state.StateError, apply.Busy) as exc:
         print(f"agt share: {exc}", file=sys.stderr)
         return 1

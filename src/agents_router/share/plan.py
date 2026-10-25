@@ -43,6 +43,7 @@ class Options:
     resolve: dict[str, str] = field(default_factory=dict)  # item name -> label whose version wins
     off: set[str] = field(default_factory=set)  # items that aren't shared, by name or <kind>/<name>
     auto_copy: tuple[str, ...] = KINDS  # kinds whose new items go to every target
+    instructions_from: str | None = None  # `--resolve instructions=<label>`: the instruction file that wins
     keep_copies: bool = False  # a copy left out by a pick stays as your own file instead of being removed
     deletes: dict[str, str] = field(default_factory=dict)  # frozen label -> "apply" or "refill", for this run only
 
@@ -127,6 +128,7 @@ class Plan:
     notices: list[str] = field(default_factory=list)
     frozen: list[dict[str, Any]] = field(default_factory=list)  # folders whose deletes wait for you: label, kind, gone, known
     unrenamed: list[dict[str, Any]] = field(default_factory=list)  # renames agt left alone: kind, old, new, message
+    instructions: Any = None  # the instruction files' plan (instructions.Plan) when they share
 
     @property
     def conflicts(self) -> list[Item]:
@@ -170,6 +172,10 @@ class Plan:
             "changes": sorted([c.kind, c.name, c.action, str(c.path), c.version] for c in self.changes),
             "conflicts": sorted([i.kind, i.name, sorted(p.version or "" for p in i.copies)] for i in self.conflicts),
         }
+        if self.instructions is not None and self.instructions.decision is not None:
+            decision = self.instructions.decision
+            content["instructions"] = [decision.action, decision.version, sorted(c.label for c in self.instructions.writes),
+                                       sorted(decision.labels)]
         return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -970,10 +976,13 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
         lines += ["", "Would save in your user settings:"] + [f"  {line}" for line in saving]
     if plan.new_folders:
         lines += ["", "New folders: " + ", ".join(short(folder) for folder in plan.new_folders)]
+    if plan.instructions is not None:
+        lines += ["", plan.instructions.summary()]
     count = len(plan.changes)
     lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
                   f"{'s' if len(plan.folders_changed) != 1 else ''}."]
-    if (count or plan.conflicts or saving) and command:
+    extra = plan.instructions is not None and (plan.instructions.writes or plan.instructions.conflict)
+    if (count or plan.conflicts or saving or extra) and command:
         lines.append(f"Plan {plan.digest}. To apply it:")
         lines.append(f"  {command}")
     return "\n".join(lines)
@@ -991,9 +1000,19 @@ def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:
             "choices": choices + [{"value": "skip", "path": None, "newer": False, "means": "don't share it; every copy stays as it is"}],
             "flag": f"--resolve {item.name}=<choice>",
         })
+    shared = plan.instructions
+    if shared is not None and shared.conflict:
+        needs.append({"id": "resolve:instructions", "ask": f"The instructions differ between {', '.join(shared.decision.labels)}. "
+                      "Which version should every CLI get?",
+                      "choices": [{"value": label, "path": next((str(c.path) for c in shared.copies if c.label == label), None),
+                                   "newer": False} for label in shared.decision.labels],
+                      "flag": "--resolve instructions=<choice>"})
     return {
         "dry_run": True,
         "plan": plan.digest,
+        "instructions": None if shared is None else {
+            "mode": shared.mode, "summary": shared.summary(), "writes": [copy.label for copy in shared.writes],
+            "conflict": shared.conflict, "unadopted": [copy.label for copy in shared.unadopted]},
         "folders": [{"label": row.provider.label, "cli": row.provider.cli, "path": str(row.provider.folder),
                      "used": row.provider.label in {p.label for p in plan.included}, "suggested": row.suggested,
                      "reason": row.reason, "holds": row.holds} for row in plan.rows],

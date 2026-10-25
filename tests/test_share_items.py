@@ -272,6 +272,17 @@ class ResolveTests(ItemBase):
         with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", lambda prompt: "q"):
             self.assertIn("no conflict", self.share("resolve", "gamma-apikey"))
 
+    def test_a_long_difference_is_a_summary_until_you_ask(self):
+        self.skill(self.lab, "gamma-apikey", body="\n".join(f"Step {n}." for n in range(30)))
+        age(self.lab / "skills" / "gamma-apikey" / "SKILL.md")
+        answers = iter(["d", "q"])
+        with patch.object(commands, "_interactive", lambda: True), \
+                patch.object(builtins, "input", lambda prompt: next(answers)):
+            out = self.share("resolve", "gamma-apikey")
+        summary, _, shown = out.partition("lines differ; d shows them.")
+        self.assertNotIn("+Step 7.", summary)
+        self.assertIn("Step 7.", shown)
+
     def test_quit_changes_nothing(self):
         before = self.snapshot()
         with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", lambda prompt: "q"):
