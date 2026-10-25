@@ -177,6 +177,8 @@ class RealTerminalTests(unittest.TestCase):
         env = {"PATH": os.environ.get("PATH", ""), "TERM": "xterm", "COLUMNS": "60", "LINES": "12", "HOME": "/nonexistent"}
         pid, fd = pty.fork()
         if pid == 0:
+            # A shell starts a background job with Ctrl-C ignored, and that survives exec: give the child a terminal's default.
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
             os.execve(sys.executable, [sys.executable, "-I", "-c", CHILD.format(src=SRC)], env)
         output = b""
         deadline = time.time() + 15
