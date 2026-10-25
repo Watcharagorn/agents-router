@@ -549,7 +549,11 @@ class Runner:
 
     def _handle_line(self, raw: bytes, parser: Any, account: Account) -> None:
         try:
-            event = json.loads(raw.decode("utf-8", errors="replace"))
+            text = raw.decode("utf-8", errors="replace")
+            if getattr(parser, "plain_text", False):
+                event = {"type": "text", "text": text.rstrip("\r\n")}  # a CLI that answers in plain text (Kiro)
+            else:
+                event = json.loads(text)
             if not isinstance(event, dict):
                 return
             usage = parser.feed(event)

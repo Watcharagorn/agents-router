@@ -5,7 +5,7 @@ from __future__ import annotations
 from agents_router.runtimes.base import Runtime
 
 # Runtimes with a working adapter. Others are accepted in the config but not yet runnable.
-AVAILABLE = ("claude", "codex", "antigravity")
+AVAILABLE = ("claude", "codex", "antigravity", "kiro")
 
 
 def get_runtime(name: str) -> Runtime:
@@ -23,4 +23,8 @@ def get_runtime(name: str) -> Runtime:
         from agents_router.runtimes.antigravity import AntigravityRuntime
 
         return AntigravityRuntime()
+    if name == "kiro":
+        from agents_router.runtimes.kiro import KiroRuntime
+
+        return KiroRuntime()
     raise ValueError(f"unknown runtime '{name}'")

@@ -183,7 +183,7 @@ class SetTests(ConfigBase):
                               (("codex.failover", "sometimes"), "codex.failover takes off, on-limit"),
                               (("max_job", "2"), "agt has no setting max_job; did you mean"),
                               (("cooldown_minutes", "2"), "did you mean claude.cooldown_minutes or "
-                                                          "codex.cooldown_minutes or antigravity.cooldown_minutes?"),
+                                                          "codex.cooldown_minutes or antigravity.cooldown_minutes or kiro.cooldown_minutes?"),
                               (("codex.max_jobs", "2"), "max_jobs spans more than one line; change it there by hand")):
             code, out, err = self.agt("config", "set", *argv)
             self.assertEqual(code, 2, argv)

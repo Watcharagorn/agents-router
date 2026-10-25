@@ -10,7 +10,7 @@ Agents Router keeps its jobs, state and account folders under `~/.agents-router/
 | Workspace | `<workspace>/.agt/settings.toml` | yes, shared with your team | the team's settings for this repo |
 | Local | `<workspace>/.agt/settings.local.toml` | never: agt keeps it out of git | your own settings for this repo |
 
-Each file holds the same keys: the top-level ones, `[claude]`, `[codex]`, `[antigravity]` and `[share]`. Later levels win, key by key: a job started in a repo uses its local file, then the repo's file, then yours, then agt's defaults. `$AGT_CONFIG_DIR` moves the user file; with only `AGT_HOME` set, it's `<AGT_HOME>/settings.toml`, so `agt --home` keeps settings apart too.
+Each file holds the same keys: the top-level ones, `[claude]`, `[codex]`, `[antigravity]`, `[kiro]` and `[share]`. Later levels win, key by key: a job started in a repo uses its local file, then the repo's file, then yours, then agt's defaults. `$AGT_CONFIG_DIR` moves the user file; with only `AGT_HOME` set, it's `<AGT_HOME>/settings.toml`, so `agt --home` keeps settings apart too.
 
 Which workspace you're in:
 
@@ -150,6 +150,8 @@ sandbox = true              # run edit jobs with agy --sandbox
 ```
 
 With `reviewer = "off"` only the fixed rules decide, and everything they would hand to the reviewer is denied. See [Safety](gemini.md#safety) for what the gate does.
+
+`[kiro]` takes `binary` (default `kiro-cli`), `default_model` and the limit keys. `agt accounts add --runtime kiro` is refused: Kiro keeps one login on a machine, so its jobs run on that login. See [Kiro](kiro.md).
 
 Extra Antigravity accounts are at your own risk (Google's FAQ says consumer plans don't support automated account switching; see [Gemini](gemini.md#more-than-one-google-account)). As for the other runtimes, `failover` is `"on-limit"` by default: jobs rotate through the primary and the enabled extra accounts (`include_primary` is `true` by default here). Set `failover = "off"` under `[antigravity]` to keep jobs without `account` on the primary account; an extra account is then used only when a job pins it. An Antigravity account folder stands in for a home folder: it gets its own `.gemini`.
 

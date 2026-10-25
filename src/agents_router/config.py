@@ -12,7 +12,7 @@ from typing import Any
 
 from agents_router import levels
 
-RUNTIMES = ("claude", "codex", "antigravity")
+RUNTIMES = ("claude", "codex", "antigravity", "kiro")
 # Runtimes whose extra accounts are "use at your own risk" (Antigravity: Google's FAQ says
 # consumer plans don't support automated account rotation). Failover is on by default, as for
 # the others; with failover = "off", unpinned jobs run on the primary account only.
@@ -75,6 +75,8 @@ def default_primary(runtime: str) -> Path:
         return Path(configured).expanduser() if configured else Path.home() / ".codex"
     if runtime == "antigravity":
         return Path.home() / ".gemini" / "antigravity-cli"
+    if runtime == "kiro":
+        return Path.home() / ".kiro"
     raise ValueError(f"unknown runtime: {runtime}")
 
 

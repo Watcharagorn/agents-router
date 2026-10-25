@@ -187,6 +187,10 @@ class RealTerminalTests(unittest.TestCase):
             for data in writes:
                 if isinstance(data, float):
                     time.sleep(data)
+                elif isinstance(data, tuple):  # ("wait", marker): until the screen shows it, however busy the machine is
+                    while data[1] not in output and time.time() < deadline:
+                        if select.select([fd], [], [], 0.1)[0]:
+                            output += os.read(fd, 4096)
                 else:
                     os.write(fd, data)
             while b"RESULT" not in output and time.time() < deadline:
@@ -213,7 +217,8 @@ class RealTerminalTests(unittest.TestCase):
         self.assertEqual(self.run_keys(b" ", b"\x1b", 0.3), ["quit", "a", "True"])
 
     def test_ctrl_c_quits_and_the_terminal_is_put_back(self):
-        self.assertEqual(self.run_keys(b" ", 0.3, b"\x03"), ["quit", "a", "True"])  # Ctrl-C drops unread keys, so wait
+        # Ctrl-C drops unread keys, so wait until the tick is drawn.
+        self.assertEqual(self.run_keys(b" ", ("wait", b"1 of 2"), b"\x03"), ["quit", "a", "True"])
 
 
 class PickGridTests(ItemBase):

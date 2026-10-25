@@ -63,7 +63,7 @@ The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`,
 | `src/agents_router/share/` | `agt share`: keeping agents and skills the same across the CLIs. `triggers.py` sets up what runs it without you (the launcher, the macOS LaunchAgent, agt's hook entries), and `watch.py` is what they run, `instructions.py` shares the instruction files, `scope.py` a repo's own folders, `mcp.py` the user MCP servers (Claude's only through `claude mcp`, never by editing `.claude.json`), `plugins.py` the plugins another CLI could install (only `agt share plugins apply` installs them), and `hooks.py` the hooks you approve per CLI, which `hook_run.py` runs and translates (standard library only: the launcher runs it with `python -I`) |
 | `src/agents_router/sync.py`, `fsutil.py` | Linking the shared setup into account folders |
 | `src/agents_router/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
-| `src/agents_router/runtimes/` | Claude Code, Codex and Antigravity adapters |
+| `src/agents_router/runtimes/` | Claude Code, Codex, Antigravity and Kiro adapters (Kiro's is built from its docs and `tests/fake_kiro.py`; never run `kiro-cli login`, `logout` or `chat` in tests) |
 | `src/agents_router/agy_review/` | The review gate for Antigravity workers (PreToolUse hook, fixed rules, reviewer, policy). Self-contained: no imports from the rest of the package |
 | `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity |
 | `agents/` | Claude Code relay agents (`agents-router:agt-claude` and so on) that run `agt run --follow` |

@@ -152,6 +152,7 @@ Never read or copy credential files, and never edit files inside `~/.agents-rout
 | Claude Code (`claude -p`) | Works | [Claude Code](docs/claude-code.md) |
 | Codex (`codex exec`) | Works | [Codex](docs/codex.md) |
 | Antigravity (`agy`, Gemini) | Works; extra accounts at your own risk | [Gemini](docs/gemini.md) |
+| Kiro (`kiro-cli chat --no-interactive`) | New: built from Kiro's docs, not yet run live; one account | [Kiro](docs/kiro.md) |
 | Cursor, Gemini CLI, Copilot, OpenCode, others | Researched | [CLI comparison](docs/research/cli-permissions-and-headless.md) |
 
 Tested live on Windows with Claude Code 2.1.299, Codex 0.162.1 and Antigravity 1.4.0; the test suite also runs on macOS and Linux in CI.

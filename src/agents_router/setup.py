@@ -383,6 +383,9 @@ def register_account(config: Config, runtime: str, name: str, home: Path) -> tup
 
     if not NAME_RE.match(name) or name == "primary":
         raise ValueError("Give the account a short name: letters, digits, dot, dash or underscore ('primary' is reserved).")
+    if runtime == "kiro":
+        raise ValueError("Kiro keeps one login on this machine (outside ~/.kiro), so agt can't keep a second one apart. "
+                         "Kiro jobs run on your login; see docs/kiro.md.")
     runtime_config = config.runtime(runtime)
     if same_path(home, runtime_config.primary.expanduser().resolve()):
         raise ValueError(f"{home} is the primary {runtime} setup. Extra accounts need their own folder.")
