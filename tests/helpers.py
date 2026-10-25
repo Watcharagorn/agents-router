@@ -127,3 +127,73 @@ class TempHome(unittest.TestCase):
         if not self.record.exists():
             return []
         return [json.loads(line) for line in self.record.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+FAKE_HOST = Path(__file__).with_name("fake_host.py")
+AGENT = "---\nname: {name}\ndescription: {description}\n{extra}---\n\n{body}\n"
+SKILL = "---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
+
+
+class ShareHome(unittest.TestCase):
+    """A throwaway machine for agt share: a home folder with CLI folders, an agt home and fake CLIs.
+
+    Every location a test touches must stay inside `self.root` (`assert_inside`).
+    """
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.root = Path(self._temp.name).resolve()
+        self.user = self.root / "home"
+        self.user.mkdir()
+        self.agt_home = self.root / "agents-router"
+        fake = lambda kind: json.dumps([sys.executable, str(FAKE_HOST), kind])
+        vendor = ("claude", "codex", "agy", "kiro-cli")
+        path = [folder for folder in os.environ.get("PATH", "").split(os.pathsep)
+                if not any((Path(folder) / name).exists() or (Path(folder) / f"{name}.exe").exists() for name in vendor)]
+        self._env = patch.dict(os.environ, {
+            "PATH": os.pathsep.join(path), "HOME": str(self.user), "USERPROFILE": str(self.user),
+            "CLAUDE_CONFIG_DIR": str(self.user / ".claude"), "CODEX_HOME": str(self.user / ".codex"),
+            "AGT_HOME": str(self.agt_home), "AGT_CONFIG_DIR": str(self.user / ".agt"),
+            "GIT_CONFIG_GLOBAL": str(self.root / "gitconfig"), "GIT_CONFIG_NOSYSTEM": "1",
+            "AGT_CLAUDE_COMMAND": fake("claude"), "AGT_CODEX_COMMAND": fake("codex"), "AGT_KIRO_COMMAND": fake("kiro"),
+            "FAKE_HOST_LOG": str(self.root / "host-log.jsonl"),
+        })
+        self._env.start()
+        for key in list(os.environ):
+            if key in ("AGY_CMD", "CLAUDE_CODE_EXECPATH", "AGT_DEPTH", "AGT_JOB_ID", "AGT_AGY_COMMAND",
+                       "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE") or key.startswith("AGY_REVIEW_"):
+                os.environ.pop(key)
+
+    def tearDown(self):
+        self._env.stop()
+        self._temp.cleanup()
+
+    def assert_inside(self, *paths):
+        for path in paths:
+            self.assertTrue(Path(path).resolve().is_relative_to(self.root), f"{path} is outside the test folder")
+
+    def folder(self, name: str) -> Path:
+        path = self.user / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def agent(self, folder: Path, name: str, description: str = "Does things.", body: str = "Do the thing.",
+              tools: str | None = None) -> Path:
+        path = folder / "agents" / f"{name}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        extra = f"tools: {tools}\n" if tools else ""
+        path.write_text(AGENT.format(name=name, description=description, extra=extra, body=body), encoding="utf-8")
+        return path
+
+    def skill(self, folder: Path, name: str, description: str = "A skill.", body: str = "Steps.") -> Path:
+        path = folder / "skills" / name
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "SKILL.md").write_text(SKILL.format(name=name, description=description, body=body), encoding="utf-8")
+        return path
+
+    def kiro_agent(self, name: str, prompt: str = "Do the thing.", **fields) -> Path:
+        path = self.folder(".kiro") / "agents" / f"{name}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"name": name, "description": "Does things.", "prompt": prompt, **fields}, indent=2) + "\n",
+                        encoding="utf-8")
+        return path
