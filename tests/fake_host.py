@@ -19,8 +19,10 @@ PLUGIN_ID = "agents-router@agents-router"
 
 def main():
     kind, argv = sys.argv[1], sys.argv[2:]
-    folder = Path({"claude": os.environ.get("CLAUDE_CONFIG_DIR", ""), "codex": os.environ.get("CODEX_HOME", ""),
-                   "agy": os.environ.get("FAKE_AGY_HOME", "")}[kind] or "unset-home")
+    # Unset, each CLI's own default under HOME (a throwaway folder in the tests), never the working directory.
+    folder = Path({"claude": os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude",
+                   "codex": os.environ.get("CODEX_HOME") or Path.home() / ".codex",
+                   "agy": os.environ.get("FAKE_AGY_HOME") or Path.home() / ".gemini"}[kind])
     log = os.environ.get("FAKE_HOST_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as handle:

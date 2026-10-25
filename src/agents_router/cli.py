@@ -182,10 +182,17 @@ def _refresh_share_launcher(dry_run: bool) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    from agents_router import setup_screen
+
+    code = setup_screen.run(args)  # the one screen, the agent's proposal, or --yes
+    if code != -1:
+        _refresh_share_launcher(args.dry_run)
+        return code
     code, report = setup.run_setup(
-        load_config(), args.host or ["auto"], args.account, dry_run=args.dry_run, claude_route=args.claude_route,
+        load_config(), args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
     )
-    _refresh_share_launcher(args.dry_run)
+    _refresh_share_launcher(False)
+    report.notes.append(setup_screen.scopes_note())
     print()
     print(setup.format_report(report))
     return code
@@ -495,6 +502,9 @@ def build_parser() -> argparse.ArgumentParser:
         "codex:plus-2=~/.codex-2 (the runtime is guessed from the folder when left out). Repeatable.",
     )
     setup_parser.add_argument("--dry-run", action="store_true", help="Print the plan; change nothing (read-only checks still run).")
+    from agents_router import setup_screen
+
+    setup_screen.add_arguments(setup_parser)
     setup_parser.add_argument(
         "--claude-route", choices=("auto", "cli", "settings"), default="auto",
         help="auto: `claude plugin ...`, or settings.json when the claude command is missing or fails. "

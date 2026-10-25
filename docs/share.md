@@ -15,7 +15,7 @@ It can share [your instruction files](#sharing-instructions) too, when you turn 
 
 ## Turning it on
 
-In a terminal, `agt share enable` finds your CLI folders and shows what sharing would do. Nothing is written until you press Enter; `p` changes what goes where, and `q` quits. An item whose copies already differ is asked about first.
+`agt setup` suggests sharing on its one screen, next to the plugin install. Later, in a terminal, `agt share enable` finds your CLI folders and shows what sharing would do. Nothing is written until you press Enter; `p` changes what goes where, and `q` quits. An item whose copies already differ is asked about first.
 
 Without a terminal, or to see the plan as text, add `--dry-run`:
 
@@ -249,7 +249,7 @@ The same list is in `agt share status --json` (`attention`, each entry with `kin
 
 Every command takes `--json`. A command that needs a choice it wasn't given never prompts an agent: it exits 3 with `{"error": "needs_choice", "ask", "choices", "retry"}`, and changes nothing. Ask the user, then run `retry` with their answer.
 
-To turn sharing on for a user:
+Setting agt up for a user covers sharing too: `agt setup --dry-run --json` returns the plugin install and the share proposal together, and its `command` (`agt setup --yes --if-plan <id> ...`) does all of it. The steps are the same as below. To turn sharing on later, or again:
 
 1. Run `agt share enable --dry-run --json`. Show the user the proposal as a table: each of `items` with its `cells` per folder, the `excluded` items with their reasons, and the `summary`.
 2. Ask once: as suggested, change some picks, or not now. Ask about each item in `needs_answer` (copies that differ) in the same question.

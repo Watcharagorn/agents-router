@@ -93,16 +93,17 @@ If you're the agent, do this. No slash commands are needed.
 
    Without uv, use `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal.
 
-2. Run setup. Ask the user whether they have other account folders (a second Claude login in `~/.claude-2`, say), and add one `--account` per folder they name; folders that are already logged in need no new login:
+2. Run setup's dry run. Ask the user whether they have other account folders (a second Claude login in `~/.claude-2`, say), and add one `--account` per folder they name; folders that are already logged in need no new login:
 
    ```bash
-   agt setup --dry-run --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
-   agt setup --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
+   agt setup --dry-run --json --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
    ```
 
-   `agt setup` finds the installed hosts, installs the plugin into each with the host's own terminal commands, registers and syncs the account folders, and ends with a list of what the user still has to do. It skips anything already in place, so running it twice is safe. It never starts a login and never reads credential files. Use `--host claude`, `--host codex` or `--host antigravity` to limit it. The runtime of an account folder is guessed from its contents; a `codex:` or `claude:` prefix sets it.
+   It returns one proposal: `plugin` (the hosts it installs into), `share` (the user's agents and skills, and which CLI each goes to), `repos` (repos with their own agents or skills), `switches` (worktrees, auto copy, tool widening, delegation rules, Codex's session line), `needs_answer` (items whose copies differ), `still_needed` and `command`.
 
-3. Offer to share the user's agents and skills between their CLIs. Run `agt share enable --dry-run --json`, show the user the proposal as a table (what goes where, and what can't and why), and ask once: as suggested, change some picks, or not now. If they change a pick or answer a question, run the dry run again with their answers as flags. Then run the newest proposal's `command` exactly as given: it already carries those flags and ends in `--yes --if-plan <id>`. See [For agents](docs/share.md#for-agents) in the share guide.
+3. Show the user the share table and the switches, and ask once: as suggested, change some, or the plugin only. With their answers, run the dry run again with them as flags (`--resolve <item>=<label>`, `--skip <item>@<label>`, `--only <item>=<label>[,<label>]`, `--projects <paths>|none`, `--rules on`, `--codex-session-line on`, or `--share off`). Then run the newest proposal's `command` exactly as given; it ends in `--yes --if-plan <id>`, which refuses if anything changed meanwhile.
+
+   `agt setup` installs the plugin into each installed host with the host's own terminal commands, registers and syncs the account folders, turns sharing on, and ends with what the user still has to do. It skips anything already in place, so running it twice is safe. It never starts a login and never reads credential files. Use `--host claude`, `--host codex` or `--host antigravity` to limit it. In a terminal, a person runs plain `agt setup` and gets the same proposal as one screen: Enter does all of it. See [For agents](docs/share.md#for-agents) in the share guide.
 
 4. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier, keeps work projects with the home vendor, and sets helper limits. Personal projects can try another CLI first and fall back to the home model when there is no room.
 
