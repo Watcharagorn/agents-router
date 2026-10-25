@@ -614,6 +614,7 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         grouped.setdefault(f"{change.kind}/{names.identity(change.name)}", []).append(change)
     made: list[Path] = []
     removed: list[Path] = []
+    released: list[Path] = []
     rotate = True
     for item in plan.items:
         decision = item.decision
@@ -652,6 +653,9 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
                     removed.append(change.path)
             outcomes.append(outcome)
         result.outcomes += outcomes
+        # A copy kept as your own file isn't agt's any more: its line leaves the repo's exclude file.
+        released.extend(holders[label].entries.get(label, holders[label].path)
+                        for label, how in item.drops.items() if how == "release" and label in holders)
         if _record(current, item, decision, outcomes):
             save_state(current, rotate=rotate)
             rotate = False
@@ -659,8 +663,8 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         save_state(current)  # a first run with nothing to write still starts the state
     if made:
         result.excluded = gitexclude.update(made)
-    if removed:
-        result.excluded += gitexclude.update(removed, remove=True)
+    if removed or released:
+        result.excluded += gitexclude.update(removed + released, remove=True)
     write_manifest(result, op, records)
     journal_path().unlink(missing_ok=True)
     return result

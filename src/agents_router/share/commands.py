@@ -8,7 +8,12 @@ match again from the saved settings, `status` says where things stand, and
 The item commands act on one item at once: `pick` changes which CLIs get it,
 `resolve` picks the version that wins a conflict, `rm` removes it everywhere,
 `mv` renames it everywhere, and `undo` puts back what the last change to it
-replaced. Every copy they
+replaced.
+
+`cli add|remove|list` and `kinds add|remove` change what shares; turning one
+off asks whether the copies agt made there stay as your own files or go to
+the backups (`--keep-copies`, `--remove-copies`). `disable` stops sharing and
+keeps every copy; `disable --remove-copies` also removes agt's copies. Every copy they
 replace or remove goes to the backups first. Nothing writes inside agt's own
 workers, and a command that needs a choice it wasn't given exits 3 with
 `needs_choice` instead of asking an agent.
@@ -27,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from agents_router import hosts
-from agents_router.config import load_config
+from agents_router.config import default_primary, load_config
 from agents_router.share import (
     apply, attention, engine, gitexclude, model, names, normalize, plan as planner, providers, settings, state, toolmap,
 )
@@ -45,7 +50,7 @@ def _folder_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--kiro-dir", action="append", default=[], metavar="PATH")
     parser.add_argument("--agy-dir", action="append", default=[], metavar="PATH", help="Antigravity's ~/.gemini folder.")
     parser.add_argument("--no-agy", action="store_true", help="Leave Antigravity out.")
-    parser.add_argument("--kinds", default="agents,skills", help="What to share: agents,skills (default).")
+    parser.add_argument("--kinds", help="What to share: agents,skills (the default, or what you saved).")
     parser.add_argument("--json", action="store_true", help="Print the result as JSON.")
 
 
@@ -62,9 +67,10 @@ def add_parser(subparsers) -> None:
     enable.add_argument("--skip", action="append", default=[], metavar="ITEM@LABEL", help="Untick one cell (repeatable).")
     enable.add_argument("--resolve", action="append", default=[], metavar="ITEM=LABEL|skip",
                         help="Which version wins for an item that differs between folders; skip doesn't share it.")
-    enable.add_argument("--auto-copy", default="on", help="New items go to every target: on, off or a list of kinds.")
-    enable.add_argument("--tool-widening", choices=toolmap.TOOL_WIDENING, default="allow-if-shell",
-                        help="Codex agents can't limit tools: allow-if-shell copies agents that have a shell, skip copies none with a tool list.")
+    enable.add_argument("--auto-copy", help="New items go to every target: on (the default), off or a list of kinds.")
+    enable.add_argument("--tool-widening", choices=toolmap.TOOL_WIDENING,
+                        help="Codex agents can't limit tools: allow-if-shell (the default) copies agents that have a shell, "
+                             "skip copies none with a tool list.")
     enable.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing.")
     enable.add_argument("--yes", action="store_true", help="Save your answers and apply the plan.")
     enable.add_argument("--if-plan", metavar="ID", help="Apply only if the plan is still the one a dry run showed.")
@@ -101,6 +107,35 @@ def add_parser(subparsers) -> None:
     remove = actions.add_parser("rm", help="Remove an item from every CLI, with backups.")
     remove.add_argument("item")
     remove.add_argument("--json", action="store_true")
+    disable = actions.add_parser("disable", help="Stop sharing. Every copy stays; `agt share enable` turns it on again.")
+    disable.add_argument("--remove-copies", action="store_true",
+                         help="Also remove the copies agt made that nobody edited since, with backups.")
+    disable.add_argument("--json", action="store_true")
+    clis = actions.add_parser("cli", help="The CLI folders that share: list, add or remove one.")
+    cli_actions = clis.add_subparsers(dest="cli_command", required=True)
+    cli_list = cli_actions.add_parser("list", help="The folders sharing, and the others agt found.")
+    cli_list.add_argument("--json", action="store_true")
+    cli_add = cli_actions.add_parser("add", help="Share a CLI folder too; it's filled from your items at once.")
+    cli_add.add_argument("cli", choices=("claude", "codex", "kiro", "antigravity", "agy"))
+    cli_add.add_argument("path", nargs="?", help="The folder (needed for Claude; the usual one otherwise).")
+    cli_add.add_argument("--dry-run", action="store_true")
+    cli_add.add_argument("--json", action="store_true")
+    cli_remove = cli_actions.add_parser("remove", help="Stop sharing a CLI folder.")
+    cli_remove.add_argument("label")
+    kinds = actions.add_parser("kinds", help="Which kinds share: add or remove one.")
+    kind_actions = kinds.add_subparsers(dest="kinds_command", required=True)
+    kind_add = kind_actions.add_parser("add", help="Share a kind too.")
+    kind_add.add_argument("kind")
+    kind_add.add_argument("--dry-run", action="store_true")
+    kind_add.add_argument("--json", action="store_true")
+    kind_remove = kind_actions.add_parser("remove", help="Stop sharing a kind.")
+    kind_remove.add_argument("kind")
+    for parser in (cli_remove, kind_remove):
+        choice = parser.add_mutually_exclusive_group()
+        choice.add_argument("--keep-copies", action="store_true", help="The copies agt made stay, as your own files.")
+        choice.add_argument("--remove-copies", action="store_true", help="The copies agt made go to the backups.")
+        parser.add_argument("--dry-run", action="store_true", help="Show what it would leave behind; change nothing.")
+        parser.add_argument("--json", action="store_true")
     move = actions.add_parser("mv", help="Rename an item in every CLI, keeping each copy's own fields.")
     move.add_argument("item")
     move.add_argument("new_name", metavar="NEW-NAME")
@@ -142,11 +177,14 @@ def _options(args: argparse.Namespace, labels: set[str], saved: settings.Setting
              resolve: dict[str, str] | None = None, keep_copies: bool = False) -> planner.Options:
     """Saved picks first, then the flags on top of them."""
 
-    if saved is not None and not hasattr(args, "kinds"):
-        options = planner.Options(kinds=saved.kinds, tool_widening=saved.tool_widening, auto_copy=saved.auto_copy)
-    else:
-        options = planner.Options(kinds=_kinds(args.kinds), tool_widening=getattr(args, "tool_widening", "allow-if-shell"),
-                                  auto_copy=settings.parse_auto_copy(getattr(args, "auto_copy", "on")))
+    # A flag you give wins; otherwise what you saved, otherwise the default (so `enable` again resumes).
+    kinds = getattr(args, "kinds", None)
+    widening = getattr(args, "tool_widening", None)
+    auto = getattr(args, "auto_copy", None)
+    options = planner.Options(
+        kinds=_kinds(kinds) if kinds else saved.kinds if saved else planner.KINDS,
+        tool_widening=widening or (saved.tool_widening if saved else "allow-if-shell"),
+        auto_copy=settings.parse_auto_copy(auto) if auto is not None else saved.auto_copy if saved else planner.KINDS)
     if saved is not None:
         options.off |= saved.off
         options.skip |= {(key, label) for key, chosen in saved.not_in.items() for label in chosen if label in labels}
@@ -194,12 +232,9 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
             parts += [flag, value]
     if args.no_agy:
         parts.append("--no-agy")
-    if args.kinds != "agents,skills":
-        parts += ["--kinds", args.kinds]
-    if args.tool_widening != "allow-if-shell":
-        parts += ["--tool-widening", args.tool_widening]
-    if args.auto_copy != "on":
-        parts += ["--auto-copy", args.auto_copy]
+    for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy)):
+        if value is not None:
+            parts += [flag, value]
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -207,7 +242,7 @@ def _folders(config: Any, explicit: list[tuple[str, Path]] | None, no_agy: bool,
              saved: settings.Settings | None) -> tuple[list[providers.Candidate], list[providers.Provider]]:
     """The folder rows and the ones sharing: the flags, else the saved folders, else the suggested ones."""
 
-    if explicit is None and saved is not None and saved.enabled and saved.folders:
+    if explicit is None and saved is not None and saved.folders:  # saved folders, even while sharing is off
         explicit = [(folder.cli, folder.path) for folder in saved.folders]
     rows = providers.candidates(config, explicit, no_agy=no_agy)
     if explicit is None:
@@ -442,10 +477,17 @@ def _sync(args: argparse.Namespace) -> int:
     if not saved.enabled:
         _print({"enabled": False, "message": NOT_ENABLED} if args.json else NOT_ENABLED)
         return 0
-    if args.dry_run:
+    return _run_sync(args, saved, "agt share sync")
+
+
+def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, *,
+              save: bool = False, notes: list[str] | None = None) -> int:
+    """A whole sync from these settings: `sync`, and `cli add` / `kinds add`, which `save` theirs first."""
+
+    if getattr(args, "dry_run", False):
         plan = _plan(args, state.load(), saved)
-        _print(planner.proposal(plan, "agt share sync", saves=False) if args.json else
-               planner.render_text(plan, "agt share sync", header="agt share sync: dry run, nothing was written.", saves=False))
+        _print(planner.proposal(plan, command, saves=False) if args.json else
+               planner.render_text(plan, command, header=f"{command}: dry run, nothing was written.", saves=False))
         return 0
     if apply.in_worker():
         print(IN_WORKER)
@@ -458,11 +500,12 @@ def _sync(args: argparse.Namespace) -> int:
         if any(item.decision.reason == "saved less than 3 s ago" for item in plan.waiting):
             time.sleep(planner.FRESH_SECONDS)  # wait the edit out instead of skipping it
             plan = _plan(args, current, saved)
+        saved_at = settings.save(saved) if save else None  # saved only now, holding the lock
         result = apply.apply(plan, current)
         result.replayed = replayed
-        saved_at = _after_renames(args, saved, current, result)
+        saved_at = _after_renames(args, saved, current, result) or saved_at
         _remember(plan, current, result)
-    _report(plan, result, saved_at, args.json)
+    _report(plan, result, saved_at, args.json, title=command, notes=notes)
     return 1 if result.failed else 0
 
 
@@ -929,6 +972,275 @@ def _mv(args: argparse.Namespace) -> int:
     return 1 if result.failed else 0
 
 
+TURN_OFF = ("cli-remove", "kinds-remove", "disable")
+
+
+def _left_lines(left: list[planner.Left]) -> list[str]:
+    lines = []
+    agt = [entry for entry in left if entry.status == "agt"]
+    for kind in planner.KINDS:
+        found = sorted({entry.item.name for entry in agt if entry.item.kind == kind})
+        if found:
+            lines.append(f"  {kind}: {', '.join(found)}")
+    stays = [entry for entry in left if entry.status != "agt"]
+    if stays:
+        lines.append("These stay either way:")
+        lines += [f"  {entry.item.name} in {', '.join(entry.labels)}: {entry.note}" for entry in stays]
+    return lines
+
+
+def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str], labels: set[str], op: str,
+              what: str, retry: str, change, done: str) -> int:
+    """Turn off some kinds in some CLIs. `change(saved, current)` makes the settings and state change afterwards.
+
+    The copies agt made there, unchanged since the last sync, stay as your own files or go to the backups:
+    `--keep-copies` / `--remove-copies`, or the question in a terminal. An agent without either gets
+    `needs_choice`. Nothing in the settings changes until every removal worked.
+    """
+
+    current = state.load()
+    plan = _plan(args, current, saved)
+    _no_rename_pending(plan)
+    left = planner.leave(plan, current, kinds, labels)
+    agt = [entry for entry in left if entry.status == "agt"]
+    choice = "remove" if getattr(args, "remove_copies", False) else "keep" if getattr(args, "keep_copies", False) or not agt else None
+    ask = (f"Turning off {what} leaves {len(agt)} cop{'y' if len(agt) == 1 else 'ies'} agt made there. "
+           "Keep them as your own files, or remove them (with a backup)?")
+    copies = [{"kind": entry.item.kind, "name": entry.item.name, "labels": entry.labels, "path": str(entry.path),
+               "status": entry.status, "note": entry.note} for entry in left]
+    if args.dry_run:
+        if args.json:
+            _print({"dry_run": True, "turn_off": what, "copies": copies,
+                    "needs_answer": [] if choice else [{"ask": ask, "choices": ["--keep-copies", "--remove-copies"]}]})
+        else:
+            print("\n".join([f"{retry.split(' --')[0]}: dry run, nothing was changed.",
+                             f"Turning off {what} leaves {len(agt)} copies agt made there:" if agt else
+                             f"agt made no copies there; turning off {what} removes nothing.", *_left_lines(left)]))
+        return 0
+    if choice is None:
+        if _interactive():
+            print("\n".join([f"Turning off {what} leaves these copies agt made:", *_left_lines(left)]))
+            while choice is None:
+                try:
+                    answer = input("Keep them as your own files, or remove them (with a backup)? k / r, q to quit: ").strip().lower()
+                except EOFError:
+                    answer = "q"
+                if answer == "q":
+                    print("Nothing was changed.")
+                    return 0
+                choice = {"k": "keep", "r": "remove"}.get(answer)
+        else:
+            if args.json:
+                _print({"error": "needs_choice", "ask": ask, "choices": [
+                    {"value": "--keep-copies", "means": "the copies stay as your own files; agt stops updating them"},
+                    {"value": "--remove-copies", "means": "the copies go to the backups"}], "copies": copies,
+                    "retry": f"{retry} --keep-copies | --remove-copies"})
+            else:
+                print("\n".join(["Nothing was changed: " + ask[0].lower() + ask[1:], *_left_lines(left),
+                                 f"Answer with `{retry} --keep-copies` or `{retry} --remove-copies`."]))
+            return 3
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    included = _folders(load_config(), None, False, saved)[1]
+    with apply.lock([provider.folder for provider in included]):
+        current = state.load()
+        replayed = apply.replay(current)
+        plan = _plan(args, current, saved)
+        _no_rename_pending(plan)
+        left = planner.leave(plan, current, kinds, labels)
+        off = planner.turn_off_plan(plan, left, choice == "remove")
+        result = apply.apply(off, current, op=op)
+        result.replayed = replayed
+        saved_at = None
+        if not result.failed:
+            change(saved, current)
+            state.save(current)
+            saved_at = settings.save(saved)
+            after = _plan(args, current, saved) if saved.enabled else None
+            if after is not None:
+                attention.save(after, current)
+            else:
+                attention.path().unlink(missing_ok=True)
+    kept = [f"{entry.item.name} in {', '.join(entry.labels)}: "
+            + ("kept as your own file; agt no longer updates it" if entry.status == "agt" else entry.note)
+            for entry in left if entry.status != "agt" or choice == "keep"]
+    notes = ([done] if not result.failed else
+             [f"Nothing else changed: a removal failed, so {what} still shares. Run it again to finish."]) + kept
+    _report(off, result, saved_at, args.json, title=retry.split(" --")[0], notes=notes)
+    return 1 if result.failed else 0
+
+
+def _drop_label(saved: settings.Settings, current: state.State, label: str) -> None:
+    """A CLI that stops sharing: its folder, your picks for it, and its place in every state record go.
+
+    Copies kept as your own files stay `released`, so if the CLI comes back they aren't mistaken for originals.
+    """
+
+    saved.folders = [folder for folder in saved.folders if folder.label != label]
+    for chosen in (saved.not_in, saved.only):
+        for key in list(chosen):
+            chosen[key] = [entry for entry in chosen[key] if entry != label]
+            if not chosen[key]:
+                del chosen[key]
+                if chosen is saved.only:
+                    saved.off.add(key)  # it was only in that CLI: now it's in none, so it isn't shared
+    for record in current.items.values():
+        record.get("copies", {}).pop(label, None)
+        for field_name in ("made", "stopped"):
+            if label in (record.get(field_name) or []):
+                record[field_name] = [entry for entry in record[field_name] if entry != label]
+
+
+def _disable(args: argparse.Namespace) -> int:
+    saved = settings.load()
+    if not saved.enabled:
+        print("agt share is already off.")
+        return 0
+    if not args.remove_copies:
+        if apply.in_worker():
+            print(IN_WORKER)
+            return 2
+        saved.enabled = False
+        at = settings.save(saved)
+        attention.path().unlink(missing_ok=True)
+        message = (f"agt share is off. Every copy stays as it is, and your answers stay in {short(at)}: "
+                   "`agt share enable` turns it on again.")
+        _print({"enabled": False, "settings": str(at), "message": message} if args.json else message)
+        return 0
+    args.dry_run, args.keep_copies = False, False
+    labels = {folder.label for folder in saved.folders}
+
+    def change(saved: settings.Settings, current: state.State) -> None:
+        saved.enabled = False
+        _put_back_replaced(current)
+
+    return _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
+                     "agt share is off; `agt share enable` turns it on again and fills the copies again.")
+
+
+def _put_back_replaced(current: state.State) -> None:
+    """`disable --remove-copies`: a skill folder of yours that `resolve` replaced with a link comes back.
+
+    Only while the link is still the one agt made; the item's record forgets its version, so if sharing
+    comes back the two versions are a conflict again, never an edit.
+    """
+
+    run = apply.new_run_id()
+    done: set[str] = set()
+    for manifest in apply.manifests():
+        if manifest.get("op") != "resolve":
+            continue
+        for entry in manifest["changes"]:
+            path, backup = Path(entry["path"]), Path(entry["backup"]) if entry.get("backup") else None
+            if entry.get("action") != "relink" or backup is None or str(path) in done or not backup.is_dir() \
+                    or os.path.islink(backup) or not os.path.islink(path) or not os.path.isabs(os.readlink(path)):
+                continue
+            done.add(str(path))
+            if apply.restore(entry, run).ok:
+                record = current.items.get(entry["key"])
+                if record:
+                    record.pop("version", None)
+                    record.pop("copies", None)
+
+
+def _cli(args: argparse.Namespace) -> int:
+    saved = settings.load()
+    config = load_config()
+    if args.cli_command == "list":
+        folders = [(folder.cli, folder.path) for folder in saved.folders]
+        found = folders + [entry for entry in providers.discovered_folders(config)
+                           if not any(entry[0] == cli and providers.same(entry[1], path) for cli, path in folders)]
+        rows = providers.candidates(config, found)
+        sharing = {(folder.cli, str(folder.path.resolve())): folder.label for folder in saved.folders} if saved.enabled else {}
+        listed = []
+        for row in rows:
+            label = sharing.get((row.provider.cli, str(row.provider.folder.resolve())))
+            status = "sharing" if label else row.reason or "not sharing; `agt share cli add` adds it"
+            listed.append({"label": label or row.provider.label, "cli": row.provider.cli, "path": str(row.provider.folder),
+                           "sharing": bool(label), "status": status})
+        if args.json:
+            _print({"enabled": saved.enabled, "folders": listed})
+        else:
+            print("\n".join([f"  {'[x]' if entry['sharing'] else '[ ]'} {entry['label']:<16} {short(Path(entry['path'])):<22} "
+                             f"{entry['status']}" for entry in listed] or ["agt found no CLI folders."]))
+        return 0
+    if not saved.enabled:
+        print(NOT_ENABLED)
+        return 0
+    if args.cli_command == "remove":
+        labels = {folder.label for folder in saved.folders}
+        _check_label(args.label, labels, "cli remove")
+        if len(labels) == 1:
+            raise ValueError(f"{args.label} is the last folder sharing; `agt share disable` turns sharing off")
+        folder = next(entry for entry in saved.folders if entry.label == args.label)
+        return _turn_off(args, saved, set(saved.kinds), {args.label}, "cli-remove", args.label,
+                         f"agt share cli remove {args.label}", lambda saved, current: _drop_label(saved, current, args.label),
+                         f"{args.label} doesn't share any more; `agt share cli add {folder.cli} {short(folder.path)}` "
+                         "shares it again and fills it.")
+    cli = "antigravity" if args.cli == "agy" else args.cli
+    if args.path:
+        folder = Path(args.path).expanduser().absolute()
+    elif cli == "claude":
+        raise ValueError("say which Claude folder: agt share cli add claude ~/.claude-other")
+    else:
+        folder = {"codex": default_primary("codex"), "antigravity": default_primary("antigravity").parent,
+                  "kiro": Path.home() / ".kiro"}[cli]
+    if not folder.is_dir():
+        raise ValueError(f"no such folder: {folder}")
+    if any(entry.cli == cli and providers.same(entry.path, folder) for entry in saved.folders):
+        print(f"agt share: {short(folder)} is already sharing.")
+        return 0
+    rows = providers.candidates(config, [(entry.cli, entry.path) for entry in saved.folders] + [(cli, folder)])
+    row = next(row for row in rows if row.provider.cli == cli and providers.same(row.provider.folder, folder))
+    if row.reason:
+        raise ValueError(f"{short(folder)} can't share: {row.reason}")
+    taken = {entry.label for entry in saved.folders}
+    label = row.provider.label if row.provider.label not in taken else f"{cli}@{short(folder)}"
+    saved.folders.append(settings.Folder(cli, folder, label))
+    # With auto copy off for a kind, your items don't go to the new folder until you pick them.
+    current = state.load()
+    held = sorted(f"{kind}/{key.partition('/')[2]}" for key in current.items if (kind := key.partition("/")[0]) in saved.kinds
+                  and kind not in saved.auto_copy and current.items[key].get("version"))
+    for key in held:
+        saved.not_in.setdefault(key, [])
+        if label not in saved.not_in[key]:
+            saved.not_in[key].append(label)
+    notes = [f"auto copy is off, so these don't go to {label} until you pick them "
+             f"(`agt share pick <item> --in {label}`): {', '.join(name.partition('/')[2] for name in held)}"] if held else []
+    return _run_sync(args, saved, "agt share cli add", save=True, notes=notes)
+
+
+def _kinds_command(args: argparse.Namespace) -> int:
+    saved = settings.load()
+    if not saved.enabled:
+        print(NOT_ENABLED)
+        return 0
+    kind = args.kind
+    if kind in LATER_KINDS:
+        raise ValueError(f"sharing {kind} comes in a later phase; this build shares agents and skills")
+    if kind not in SUPPORTED_KINDS:
+        raise ValueError(f"unknown kind {kind}; use agents or skills")
+    if args.kinds_command == "add":
+        if kind in saved.kinds:
+            print(f"agt share: {kind} already share.")
+            return 0
+        saved.kinds = tuple(entry for entry in SUPPORTED_KINDS if entry in saved.kinds or entry == kind)
+        return _run_sync(args, saved, "agt share kinds add", save=True)
+    if kind not in saved.kinds:
+        print(f"agt share: {kind} don't share now.")
+        return 0
+    if len(saved.kinds) == 1:
+        raise ValueError(f"{kind} is the last kind sharing; `agt share disable` turns sharing off")
+
+    def change(saved: settings.Settings, current: state.State) -> None:
+        saved.kinds = tuple(entry for entry in saved.kinds if entry != kind)
+
+    labels = {folder.label for folder in saved.folders}
+    return _turn_off(args, saved, {kind}, labels, "kinds-remove", kind, f"agt share kinds remove {kind}", change,
+                     f"{kind} don't share any more; `agt share kinds add {kind}` shares them again.")
+
+
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:
     """The newest run that left a backup of the item (with `label`, of a copy it removed there).
 
@@ -984,6 +1296,17 @@ def _undo(args: argparse.Namespace) -> int:
     if key is None:
         raise ValueError(f"agt has no agent or skill named {args.item} and no backup of one")
     name = key.partition("/")[2]
+    if manifest and manifest.get("op") in TURN_OFF:
+        what, back = {"cli-remove": ("turning off a CLI", "`agt share cli add <cli>`"),
+                      "kinds-remove": (f"turning off {key.partition('/')[0]}", f"`agt share kinds add {key.partition('/')[0]}`"),
+                      "disable": ("turning sharing off", "`agt share enable`")}[manifest["op"]]
+        print(f"agt share undo: {name}'s last backup is from {what}, which undo doesn't reverse; "
+              f"{back} fills the copies again.")
+        return 0
+    gone_labels = sorted({entry_label for entry in entries for entry_label in entry["labels"]} - labels)
+    if gone_labels:
+        print(f"agt share undo: {', '.join(gone_labels)} isn't sharing now; `agt share cli add` it first.")
+        return 0
     if label and manifest and manifest.get("op") == "rm":
         # One copy back after `rm` would leave the others looking deleted; rm's undo is all or nothing.
         print(f"agt share undo: `agt share rm` removed {name} from every CLI, so it comes back everywhere or not at all: "
@@ -1077,14 +1400,15 @@ def command(args: argparse.Namespace) -> int:
             return _sync(args)
         if action == "status":
             return _status(args)
-        if action in ("pick", "resolve", "rm", "mv", "undo"):
-            return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo}[action](args)
+        if action in ("pick", "resolve", "rm", "mv", "undo", "disable", "cli", "kinds"):
+            return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo, "disable": _disable,
+                    "cli": _cli, "kinds": _kinds_command}[action](args)
     except (settings.SettingsError, state.StateError, apply.Busy) as exc:
         print(f"agt share: {exc}", file=sys.stderr)
         return 1
     if action == "scan":
         plan = _plan(argparse.Namespace(**{**vars(args), "skip": [], "only": [], "resolve": [],
-                                           "tool_widening": "allow-if-shell", "auto_copy": "on"}), state.load(), None)
+                                           "tool_widening": None, "auto_copy": None}), state.load(), None)
         proposal = planner.proposal(plan, "")
         if args.json:
             _print({"kinds": [{"kind": kind, "suggested": kind in SUPPORTED_KINDS, "available": True} for kind in SUPPORTED_KINDS]

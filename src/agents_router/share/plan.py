@@ -576,6 +576,74 @@ def rename_changes(item: Item, new: str, included: list[Provider], made: set[str
     return sorted(changes.values(), key=lambda change: change.action != "rename-folder"), problems
 
 
+@dataclass
+class Left:
+    """One entry that turning off a kind or CLI leaves behind, and what happens to it."""
+
+    item: Item
+    labels: list[str]
+    path: Path
+    status: str  # "agt" (agt made it, unchanged), "edited", "original" or "shared" (a CLI still sharing reads it)
+    note: str
+
+
+def leave(plan: Plan, state: State, kinds: set[str], labels: set[str]) -> list[Left]:
+    """What turning off these kinds in these CLIs leaves behind, entry by entry.
+
+    Only copies agt made, unchanged since the last sync, can be removed. Your originals stay, so does a copy
+    with an edit the others don't have, and so does an entry a CLI that keeps sharing reads (Codex through
+    claude-lab's folder). Copies already kept as your own files aren't listed.
+    """
+
+    found: list[Left] = []
+    for item in plan.items:
+        if item.kind not in kinds:
+            continue
+        record = state.items.get(item.key) or {}
+        made, released, synced = set(record.get("made") or []), set(record.get("released") or []), record.get("copies") or {}
+        seen: set[str] = set()
+        for copy in item.copies:
+            for label, entry in copy.entries.items():
+                key = _entry_key(entry)
+                if label not in labels or label in released or key in seen:
+                    continue
+                seen.add(key)
+                sharing = sorted(other for other, path in copy.entries.items() if _entry_key(path) == key)
+                outside = [other for other in sharing if other not in labels and other not in released]
+                inside = [other for other in sharing if other in labels]
+                if outside:
+                    found.append(Left(item, inside, entry, "shared", f"{label} reads {outside[0]}'s folder, so it stays"))
+                elif not set(inside) <= made:
+                    found.append(Left(item, inside, entry, "original", "your original stays"))
+                elif copy.version is None or any(synced.get(other) != copy.version for other in inside):
+                    found.append(Left(item, inside, entry, "edited",
+                                      "it has an edit the other copies don't have, so it stays as your own file"))
+                else:
+                    found.append(Left(item, inside, entry, "agt", "agt made it"))
+    return found
+
+
+def turn_off_plan(plan: Plan, left: list[Left], remove: bool) -> Plan:
+    """The writes for a turn-off: agt's unchanged copies removed (or kept), edited ones kept as your own files."""
+
+    items: dict[str, Item] = {}
+    for entry in left:
+        if entry.status not in ("agt", "edited"):
+            continue
+        item = items.get(entry.item.key)
+        if item is None:
+            item = Item(entry.item.kind, entry.item.name, copies=entry.item.copies,
+                        decision=engine.Decision("turn-off", reason="turned off"))
+            items[item.key] = item
+        how = "remove" if remove and entry.status == "agt" else "release"
+        for label in entry.labels:
+            item.drops[label] = how
+            item.cells[label] = Cell(REMOVE if how == "remove" else RELEASED, entry.note)
+    chosen = list(items.values())
+    return Plan(plan.included, plan.rows, chosen, [change for item in chosen for change in changes_for(item, plan.included)],
+                [], plan.options)
+
+
 def removal_changes(item: Item) -> list[Change]:
     """`agt share rm`: one removal per entry of the item, links before the folders they lead to."""
 
