@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest import mock
 
+import helpers  # noqa: F401  (isolates the test process from your real folders)
+
 from agents_router.agy_review import commands, context, hook, install, paths, reviewer, rules, store
 from agents_router.agy_review.reviewer import CONTEXT_ENV, ROLE_ENV, ReviewError
 

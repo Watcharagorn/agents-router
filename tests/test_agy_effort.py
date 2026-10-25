@@ -2,6 +2,8 @@
 
 import unittest
 
+import helpers  # noqa: F401  (isolates the test process from your real folders)
+
 from agents_router.runtimes.antigravity import takes_effort
 
 

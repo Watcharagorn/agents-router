@@ -6,6 +6,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
+import helpers  # noqa: F401  (isolates the test process from your real folders)
+
 from agents_router import cli, rules, setup
 
 

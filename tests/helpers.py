@@ -1,6 +1,8 @@
+import atexit
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
@@ -8,6 +10,42 @@ import unittest
 from unittest.mock import patch
 
 FAKE_CLAUDE = Path(__file__).with_name("fake_claude.py")
+
+# Variables of the session that runs the tests (an agent CLI, an agt worker, a git hook).
+DROPPED_PREFIXES = ("CLAUDE", "CODEX_", "AGY_", "AGT_", "KIRO_", "ANTHROPIC_", "OPENAI_")
+DROPPED = {"AGY_CMD", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}
+OWN_COMMANDS = ("agt", "agents-router-mcp", "csa", "cli-subagents-mcp")
+
+
+def isolate_process() -> Path:
+    """Point the whole test process at throwaway folders, whichever test module loads first.
+
+    The tests must never see the real ~/.claude, ~/.codex, ~/.gemini, ~/.kiro or
+    ~/.agents-router, an installed agt on PATH, or the markers of the agent session
+    running them (CLAUDECODE and the like). Test classes still set their own folders.
+    """
+
+    root = Path(tempfile.mkdtemp(prefix="agt-tests-")).resolve()
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    for key in list(os.environ):
+        if key.startswith(DROPPED_PREFIXES) or key in DROPPED:
+            del os.environ[key]
+    home = root / "home"
+    home.mkdir()
+    folders = os.environ.get("PATH", "").split(os.pathsep)
+    kept = [folder for folder in folders if not any(
+        (Path(folder) / name).exists() or (Path(folder) / f"{name}.exe").exists() for name in OWN_COMMANDS
+    )]
+    os.environ.update(
+        HOME=str(home), USERPROFILE=str(home), PATH=os.pathsep.join(kept),
+        CLAUDE_CONFIG_DIR=str(home / ".claude"), CODEX_HOME=str(home / ".codex"),
+        AGT_HOME=str(home / ".agents-router"), AGT_CONFIG_DIR=str(home / ".agt"),
+        GIT_CONFIG_GLOBAL=str(root / "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
+    )
+    return root
+
+
+PROCESS_ROOT = isolate_process()
 
 
 def stop_job_runners(home: Path, wait: float = 2.0) -> None:
@@ -58,6 +96,8 @@ class TempHome(unittest.TestCase):
             os.environ,
             {
                 "AGT_HOME": str(self.home),
+                "CLAUDE_CONFIG_DIR": str(self.primary),
+                "CODEX_HOME": str(self.root / "codex-home"),
                 "AGT_CLAUDE_COMMAND": json.dumps([sys.executable, str(FAKE_CLAUDE)]),
                 "FAKE_CLAUDE_RECORD": str(self.record),
                 "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),

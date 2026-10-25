@@ -3,6 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import helpers  # noqa: F401  (isolates the test process from your real folders)
+
 from agents_router.hosts import detect_host, host_context, parent_note
 
 

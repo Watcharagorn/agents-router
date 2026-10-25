@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import helpers  # noqa: F401  (isolates the test process from your real folders)
+
 from agents_router import cli, setup
 from agents_router.config import default_primary, load_config
 from agents_router.runtimes.claude import ClaudeRuntime
