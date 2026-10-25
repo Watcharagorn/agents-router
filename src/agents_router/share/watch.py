@@ -42,7 +42,7 @@ from typing import Any
 
 from agents_router import fsutil, synclog
 from agents_router.config import load_config
-from agents_router.share import apply, attention, engine, providers, settings, state, triggers
+from agents_router.share import apply, attention, engine, providers, scope, settings, state, triggers
 from agents_router.share import plan as planner
 
 STALE_AFTER = 600  # a watcher that hasn't run for 10 minutes is stopped
@@ -58,11 +58,11 @@ def signature_path() -> Path:
 
 
 def heartbeat_path() -> Path:
-    return state.share_dir() / "heartbeat.json"
+    return scope.share_root() / "heartbeat.json"
 
 
 def good_settings_path() -> Path:
-    return state.share_dir() / "settings.good.toml"
+    return scope.share_root() / "settings.good.toml"
 
 
 # What moved ------------------------------------------------------------------------
@@ -147,23 +147,46 @@ def included_folders(saved: settings.Settings) -> list[providers.Provider]:
 
 
 def watched_files(saved: settings.Settings, included: list[providers.Provider]) -> list[Path]:
-    """Files whose change starts a run besides the folders: your settings, and the instruction files when they share."""
+    """Files whose change starts a run besides the folders: your settings (and a repo's), and the instruction files."""
 
     from agents_router.share import instructions
 
-    return [settings.path(), *(instructions.signature_files(included) if saved.instructions != "off" else [])]
+    current = scope.current()
+    with scope.use(scope.USER):
+        files = [settings.path()]
+    if current.project:
+        return [*files, current.settings_file]
+    return [*files, *(instructions.signature_files(included) if saved.instructions != "off" else [])]
+
+
+def repo_scopes(saved: settings.Settings) -> list[scope.Scope]:
+    """The listed repos (and their worktrees) a background run covers; one in the middle of a merge waits."""
+
+    if not saved.enabled:
+        return []
+    return [target for target in scope.scopes(worktrees_join=saved.worktrees == "auto") if not scope.busy(target.root)]
 
 
 def stale(saved: settings.Settings, included: list[providers.Provider] | None = None) -> bool:
+    """Whether anything moved since the last background sync: in your user folders or in a listed repo."""
+
     included = included_folders(saved) if included is None else included
-    return signature(included, watched_files(saved, included)) != saved_signature()
+    if signature(included, watched_files(saved, included)) != saved_signature():
+        return True
+    for target in repo_scopes(saved):
+        with scope.use(target):
+            inner = settings.load()
+            mine = included_folders(inner)
+            if signature(mine, watched_files(inner, mine)) != saved_signature():
+                return True
+    return False
 
 
 # One background run ------------------------------------------------------------------
 
 
 def background_sync(trigger: str, *, if_stale: bool = True) -> tuple[str, list[str]]:
-    """A sync from the saved settings that never waits for the lock. Returns what happened and what it wrote."""
+    """A sync of your user folders and every listed repo that never waits for a lock. Returns what happened and what it wrote."""
 
     if apply.in_worker():
         return "inside an agt worker", []
@@ -172,6 +195,22 @@ def background_sync(trigger: str, *, if_stale: bool = True) -> tuple[str, list[s
         return "the share settings can't be read", []
     if not saved.enabled:
         return "sharing is off", []
+    outcome, written = _scope_sync(saved, trigger, if_stale)
+    for target in repo_scopes(saved):
+        with scope.use(target):
+            try:
+                inner_outcome, inner_written = _scope_sync(settings.load(), trigger, if_stale)
+            except settings.SettingsError as exc:
+                inner_outcome, inner_written = f"stopped: {exc}", []
+        if inner_outcome != "nothing moved":
+            outcome += f"; {target.name}: {inner_outcome}"
+        written += [name for name in inner_written if name not in written]
+    return outcome, written
+
+
+def _scope_sync(saved: settings.Settings, trigger: str, if_stale: bool) -> tuple[str, list[str]]:
+    """One scope's background sync (your user folders, or the repo `scope.use()` set)."""
+
     from agents_router.share import commands
 
     included = included_folders(saved)
@@ -337,7 +376,7 @@ def notify(saved: settings.Settings) -> bool:
     if not saved.notify or not command:
         return False
     urgent = [entry for entry in attention.load() if entry.get("kind") in URGENT]
-    location = state.share_dir() / "notified.json"
+    location = scope.share_root() / "notified.json"
     data = fsutil.read_json(location, {}) or {}
     told = set(data.get("ids") or [])
     ids = sorted(entry["id"] for entry in urgent)
@@ -431,7 +470,7 @@ def attention_lines(limit: int = 3, *, remember: bool = True) -> list[str]:
             return []
     except settings.SettingsError:
         return []
-    location = state.share_dir() / "shown.json"
+    location = scope.share_root() / "shown.json"
     shown = fsutil.read_json(location, {}) or {}
     now = time.time()
     waiting = [entry for entry in attention.load() if entry.get("who") in ("choice", "action")
@@ -470,7 +509,7 @@ def session(label: str | None, stdin_text: str, event: str = "SessionStart") -> 
         pid = spawn(["share", "sync", "--if-stale", "--quiet", "--trigger", "session"])
         caught_up = _wait(pid, SESSION_BUDGET)
     if label:
-        marks_path = state.share_dir() / "sessions.json"
+        marks_path = scope.share_root() / "sessions.json"
         marks = fsutil.read_json(marks_path, {}) or {}
         last = marks.get(label)
         if isinstance(last, dict):
@@ -485,12 +524,36 @@ def session(label: str | None, stdin_text: str, event: str = "SessionStart") -> 
         fsutil.write_json(marks_path, marks)
     if not caught_up:
         lines.append("agt share: still catching up; anything new appears in your next session.")
+    lines += _unlisted_repo(stdin_text)
     lines += attention_lines()
     if not lines:
         return None
     text = "\n".join(lines)
     return json.dumps({"systemMessage": text, "hookSpecificOutput": {"hookEventName": event, "additionalContext": text}},
                       ensure_ascii=False)
+
+
+def _unlisted_repo(stdin_text: str) -> list[str]:
+    """In a repo that has its own agents or skills but isn't shared: one line, the first time only."""
+
+    try:
+        cwd = json.loads(stdin_text or "{}").get("cwd")
+    except (ValueError, AttributeError):
+        return []
+    if not isinstance(cwd, str) or not cwd:
+        return []
+    top = scope.toplevel(Path(cwd))
+    if top is None or scope.scope_of(top) is not None or not scope.has_items(top):
+        return []
+    location = scope.share_root() / "hinted.json"
+    hinted = fsutil.read_json(location, []) or []
+    real = os.path.realpath(top)
+    if real in hinted:
+        return []
+    fsutil.make_private_dir(location.parent)
+    fsutil.write_json(location, [*hinted, real])
+    return [f"agt share: {scope._short(top)} has its own agents or skills, and this repo isn't shared: `agt share repo add .` "
+            "shares them between your CLIs."]
 
 
 def _inside(path: str, folders: list[str]) -> bool:

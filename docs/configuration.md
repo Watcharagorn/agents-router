@@ -318,6 +318,7 @@ These keys take effect at once; the switches set what runs sharing without you (
 | Key | Default | Meaning |
 |---|---|---|
 | `share.instructions` | `off` | Share each CLI's instruction file: `block` (agt's marked block of it) or `whole`; see [Sharing instructions](share.md#sharing-instructions) |
+| `share.worktrees` | `auto` | A listed repo's worktrees share by themselves, or wait for `agt share repo add .` (`command`) |
 | `share.watcher` | `true` | The background watcher (macOS): a sync every minute and when a shared folder changes |
 | `share.push_on_save` | `true` | Claude Code's save entry: a save inside a shared folder spreads within seconds |
 | `share.notify` | `true` | macOS notifications for conflicts and other urgent items, at most once an hour |
@@ -337,6 +338,7 @@ Your settings are in the files under [Settings files](#settings-files), not here
 | `state/leases/` | Lock files for per-account job slots |
 | `cache/claude/<account>/` | Generated `settings.json` overlay and MCP config passed to workers |
 | `state/share/` | `agt share`'s `state.json` (each item at the last sync), `attention.json` (what waits for you), `events.jsonl`, `backups/<run>/` with each run's `manifest.json`, `backups/hooks/` (each `settings.json` or `hooks.json` before agt changed its entries), `heartbeat.json` (the watcher's last run), `launchd.log`, and `signature.json` (what the folders looked like at the last background sync) |
+| `state/share/projects.json`, `state/share/projects/<repo>/` | The repos that share their own agents and skills, and each one's state and backups |
 | `bin/agt-run` | The launcher the watcher and the hook entries call: it records the Python and install agt runs from |
 | `state/log/` | The log, one file per month, and `seen.json` (what agt last saw of each settings file) |
 | `state/backups/settings/` | A settings file as it was before each `agt config set` or `unset` |

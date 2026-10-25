@@ -131,6 +131,8 @@ KEYS: dict[str, Key] = {key.name: key for key in [
         toolmap.TOOL_WIDENING, user_only=True, applies=SYNC),
     Key("share.instructions", "choice", "Share each CLI's instruction file: off, block (agt's marked block) or whole.",
         share_settings.INSTRUCTIONS, user_only=True, applies=SYNC),
+    Key("share.worktrees", "choice", "A listed repo's worktrees share by themselves (auto), or by `agt share repo add .`.",
+        share_settings.WORKTREES, user_only=True, applies=SYNC),
     Key("share.watcher", "bool", "The background watcher (macOS): a sync every minute and when a shared folder changes.",
         user_only=True, applies=AT_ONCE),
     Key("share.push_on_save", "bool", "A save in Claude Code inside a shared folder spreads within seconds.",
@@ -527,6 +529,7 @@ SHARE_COMMANDS = {
     "share.tool_widening": f"agt config set share.tool_widening {'|'.join(toolmap.TOOL_WIDENING)}",
     **{f"share.{name}": f"agt config set share.{name} true|false" for name in share_settings.SWITCHES},
     "share.instructions": "agt share kinds add|remove instructions, or agt config set share.instructions block|whole|off",
+    "share.worktrees": "agt config set share.worktrees auto|command",
 }
 
 
@@ -538,7 +541,8 @@ def share_command(args: argparse.Namespace) -> int:
     share = share_settings.parse(layer.data.get("share", {}), user) if layer else share_settings.Settings()
     rows = []
     for key in (KEYS[name] for name in ("share.enabled", "share.kinds", "share.auto_copy", "share.tool_widening",
-                                         "share.instructions", *(f"share.{name}" for name in share_settings.SWITCHES))):
+                                         "share.instructions", "share.worktrees",
+                                         *(f"share.{name}" for name in share_settings.SWITCHES))):
         value = _value(key, config.defaults(), share)
         level, found = _source(key, [layer] if layer else [])
         command = SHARE_COMMANDS.get(key.name) or ("agt share disable" if share.enabled else "agt share enable")

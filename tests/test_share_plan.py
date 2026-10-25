@@ -222,7 +222,7 @@ class DryRunTests(MacCopy):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             for args in (["--kinds", "hooks"], ["--kinds", "nope"], ["--skip", "dana@nowhere"], ["--skip", "dana"],
-                         ["--projects", "all-with-items"], ["--claude-dir", str(self.root / "missing")]):
+                         ["--projects", str(self.root / "missing")], ["--claude-dir", str(self.root / "missing")]):
                 with self.subTest(args=args):
                     code, _ = self.run_share("enable", *args, "--dry-run")
                     self.assertEqual(code, 2)

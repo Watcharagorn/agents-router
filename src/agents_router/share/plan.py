@@ -44,6 +44,7 @@ class Options:
     off: set[str] = field(default_factory=set)  # items that aren't shared, by name or <kind>/<name>
     auto_copy: tuple[str, ...] = KINDS  # kinds whose new items go to every target
     instructions_from: str | None = None  # `--resolve instructions=<label>`: the instruction file that wins
+    project: Path | None = None  # a repo's scope: its root (copies follow the checked-out files)
     keep_copies: bool = False  # a copy left out by a pick stays as your own file instead of being removed
     deletes: dict[str, str] = field(default_factory=dict)  # frozen label -> "apply" or "refill", for this run only
 
@@ -407,6 +408,12 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
             # `sync --refill`: the copies that disappeared from a frozen folder are filled again, not deleted.
             last = engine.Last(last.version, {label: v for label, v in last.copies.items() if label not in back},
                                last.made, last.stopped, last.released)
+        if last is not None and options.project is not None:
+            # In a repo, a copy agt made that's gone (`git clean -X`, a fresh worktree) is made again, never a delete.
+            cleaned = {label for label in last.made if label in by_label and label not in holding} - back
+            if cleaned & set(last.copies):
+                last = engine.Last(last.version, {label: v for label, v in last.copies.items() if label not in cleaned},
+                                   last.made - cleaned, last.stopped, last.released)
         if last is not None:
             # A copy kept as your own file that you deleted since: that CLI gets the item again (unless you left it out).
             item.unreleased = {label for label in last.released
@@ -456,6 +463,8 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
         ignore = absent.get(item.kind, set()) | left_out
         item.ignored = ignore  # their state entries stay as they were, so a freeze lasts until you answer it
         decision = engine.decide(copies, targets | (set(holders) - left_out), last, ignore)
+        if decision.action == engine.PENDING_DELETE and options.project is not None:
+            decision = _branch_switch(item, decision, by_label, holders, last, options.project)
         choice = options.resolve.get(item.name) or options.resolve.get(f"{item.kind}/{item.name}")
         if decision.action == engine.CONFLICT and choice:
             decision = _resolved(item, decision, choice, holders, targets, left_out | released)
@@ -469,6 +478,36 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
         for label in decision.updates:
             item.cells[label] = Cell(UPDATE)
     return found.notices
+
+
+def _branch_switch(item: Item, decision: engine.Decision, by_label: dict[str, Provider], holders: dict[str, Physical],
+                   last: engine.Last, root: Path) -> engine.Decision:
+    """In a repo: an original git has (gone with a checkout or a pull) takes agt's copies away, with backups.
+
+    They come back when the original does. A copy that holds an edit not yet written back stays. An original
+    git never had waits for `agt share rm`, as in your user folders.
+    """
+
+    from agents_router.share import scope
+
+    for label in decision.labels:
+        folder = by_label[label].writable(item.kind).path if label in by_label else None
+        path = model.new_agent_path(by_label[label].cli, folder, item.name) if folder and item.kind == "agents" else \
+            (folder / item.name if folder else None)
+        if path is None or not scope.committed(root, path):
+            return decision
+    kept = []
+    for label, copy in holders.items():
+        if last.copies.get(label) == copy.version and label in last.made:
+            item.drops[label] = "remove"
+            item.cells[label] = Cell(REMOVE, "its original isn't checked out here; it comes back with it")
+        else:
+            kept.append(label)
+    if kept:
+        return engine.Decision(engine.WAIT, labels=sorted(kept),
+                               reason=f"its original isn't checked out here, and the copy in {', '.join(sorted(kept))} has an "
+                                      "edit, so it stays")
+    return engine.Decision(engine.NOTHING, reason="its original isn't checked out here")
 
 
 def _resolved(item: Item, decision: engine.Decision, choice: str, holders: dict[str, Physical],

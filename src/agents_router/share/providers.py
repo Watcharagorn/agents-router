@@ -67,6 +67,12 @@ class Candidate:
 
 
 def locations(cli: str, folder: Path, home: Path) -> dict[str, list[Location]]:
+    from agents_router.share import scope
+
+    root = scope.owner(folder)
+    if root is not None:  # a repo's own project folders
+        return {kind: [Location(kind, path, writable) for path, writable in entries]
+                for kind, entries in scope.project_locations(cli, root).items()}
     if cli == "claude":
         return {"agents": [Location("agents", folder / "agents")], "skills": [Location("skills", folder / "skills")]}
     if cli == "codex":

@@ -3,8 +3,11 @@
 The file is `$AGT_CONFIG_DIR/settings.toml`; with only `AGT_HOME` set it's
 `<AGT_HOME>/settings.toml`, and otherwise `~/.agt/settings.toml` (see
 levels.py). The rest of agt reads the same file. Saving rewrites the `[share]`
-tables and keeps every other line of the file. A workspace's own `[share]`
-comes with sharing a repo's items.
+tables and keeps every other line of the file.
+
+In a repo's scope (scope.py), `load()` gives your user choices with the repo's
+own folders, and the picks from the repo's `.agt/settings.toml`; `save()`
+writes only that file's `[share.targets]`.
 
     [share]
     enabled = true
@@ -16,6 +19,7 @@ comes with sharing a repo's items.
     notify = true                         # macOS notifications for conflicts and the like
     codex_session = false                 # agt's session-start entry in Codex's hooks.json
     instructions = "block"                # share agt's block of each CLI's instruction file ("off" by default)
+    worktrees = "command"                 # a listed repo's worktrees join by `agt share repo add .` ("auto" by default)
 
     [[share.folders]]                     # the folders sharing, with their labels
     cli = "claude"
@@ -43,6 +47,7 @@ KINDS = ("agents", "skills")
 # On/off switches for the background side (see triggers.py), with their defaults. Saved only when they differ.
 SWITCHES = {"watcher": True, "push_on_save": True, "notify": True, "codex_session": False}
 INSTRUCTIONS = ("off", "block", "whole")  # see instructions.py
+WORKTREES = ("auto", "command")  # a listed repo's worktrees join by themselves, or by `agt share repo add`
 
 
 class SettingsError(levels.SettingsError):
@@ -71,6 +76,7 @@ class Settings:
     notify: bool = True
     codex_session: bool = False
     instructions: str = "off"
+    worktrees: str = "auto"
 
 
 def path() -> Path:
@@ -91,6 +97,11 @@ def parse_auto_copy(value: Any) -> tuple[str, ...]:
 
 
 def load(location: Path | None = None) -> Settings:
+    from agents_router.share import scope
+
+    current = scope.current()
+    if location is None and current.project:
+        return _load_project(current)
     location = location or path()
     try:
         text = location.read_text(encoding="utf-8")
@@ -123,7 +134,7 @@ def _labels(key: str, value: Any) -> list[str]:
 def _settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("must be a table")
-    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", *SWITCHES}
+    known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", "worktrees", *SWITCHES}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown key {unknown[0]}")
@@ -149,8 +160,12 @@ def _settings(data: Any) -> Settings:
     mode = data.get("instructions", "off")
     if mode not in INSTRUCTIONS:
         raise ValueError(f"instructions must be {', '.join(INSTRUCTIONS)}")
+    worktrees = data.get("worktrees", "auto")
+    if worktrees not in WORKTREES:
+        raise ValueError(f"worktrees must be {' or '.join(WORKTREES)}")
     result = Settings(enabled=enabled, kinds=tuple(kinds), tool_widening=widening,
-                      auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, instructions=mode, **switches)
+                      auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, instructions=mode,
+                      worktrees=worktrees, **switches)
     targets = data.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be a table")
@@ -179,6 +194,8 @@ def render(settings: Settings) -> str:
               if getattr(settings, name) != default]
     if settings.instructions != "off":
         lines.append(f"instructions = {value(settings.instructions)}")
+    if settings.worktrees != "auto":
+        lines.append(f"worktrees = {value(settings.worktrees)}")
     for folder in settings.folders:
         lines += ["", "[[share.folders]]", f"cli = {value(folder.cli)}", f"label = {value(folder.label)}",
                   f"path = {value(str(folder.path))}"]
@@ -195,11 +212,61 @@ def render(settings: Settings) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_project(current) -> Settings:
+    """A repo's settings: your user choices, its own CLI folders, and the picks in its `.agt/settings.toml`."""
+
+    from agents_router.share import scope
+
+    with scope.use(scope.USER):
+        user = load()
+    clis = list(dict.fromkeys(folder.cli for folder in user.folders))
+    result = Settings(enabled=user.enabled, kinds=user.kinds, tool_widening=user.tool_widening, auto_copy=user.auto_copy,
+                      folders=[Folder(cli, scope.project_folder(cli, current.root), cli) for cli in clis])
+    location = current.settings_file
+    try:
+        data = tomllib.loads(location.read_text(encoding="utf-8")).get("share", {})
+    except FileNotFoundError:
+        return result
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SettingsError(f"{location}: {exc}") from None
+    picks = parse({"targets": data.get("targets", {})}, location)
+    result.off, result.not_in, result.only = picks.off, picks.not_in, picks.only
+    return result
+
+
+def _render_targets(settings: Settings) -> str:
+    keys = sorted(settings.off | set(settings.not_in) | set(settings.only))
+    if not keys:
+        return ""
+    lines = ["[share.targets]"]
+    for key in keys:
+        if key in settings.off:
+            lines.append(f"{json.dumps(key)} = \"off\"")
+            continue
+        parts = [f"{name} = {codex_toml.render_value(sorted(chosen[key]))}" for name, chosen in
+                 (("not_in", settings.not_in), ("only", settings.only)) if key in chosen]
+        lines.append(f"{json.dumps(key)} = {{ {', '.join(parts)} }}")
+    return "\n".join(lines) + "\n"
+
+
 def save(settings: Settings, location: Path | None = None) -> Path:
-    """Replace the `[share]` tables in the settings file, keeping every other line."""
+    """Replace the `[share]` tables in the settings file, keeping every other line.
+
+    In a repo's scope, only the repo's `[share.targets]` (its picks) are written, to its `.agt/settings.toml`.
+    """
 
     from agents_router import synclog
+    from agents_router.share import scope
 
+    current = scope.current()
+    if location is None and current.project:
+        location = current.settings_file
+        rendered = _render_targets(settings)
+        if not rendered and not location.exists():
+            return location  # no picks, and no file to keep them in
+        written = levels.replace_tables(location, lambda header: header == "share.targets", rendered)
+        synclog.saved(written)
+        return written
     location = location or path()
     synclog.notice_file(location, "user", None)
     written = levels.replace_tables(location, lambda header: header.split(".")[0] == "share", render(settings))

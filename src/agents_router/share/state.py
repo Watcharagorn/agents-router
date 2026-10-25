@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from agents_router import fsutil
-from agents_router.config import state_dir
 from agents_router.share import engine
 from agents_router.share.normalize import NORM_VERSION
 
@@ -48,7 +47,11 @@ class State:
 
 
 def share_dir() -> Path:
-    return state_dir() / "share"
+    """This scope's state folder: `state/share` for your user folders, `state/share/projects/<key>` for a repo."""
+
+    from agents_router.share import scope
+
+    return scope.folder()
 
 
 def path() -> Path:

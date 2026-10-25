@@ -22,6 +22,10 @@ Turning sharing on also sets up what runs it without you (triggers.py): the
 background watcher, and agt's session-start and save entries in each Claude
 folder. `watch`, `session` and `saved` are what those run (watch.py), and
 `badge` prints a short marker for a status line.
+
+A repo you list with `repo add` is a scope of its own (scope.py): `sync`,
+`status` and `enable --projects` cover every listed repo and its worktrees,
+and an item command run inside a listed repo acts on that repo's item.
 """
 
 from __future__ import annotations
@@ -39,8 +43,8 @@ from typing import Any
 from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, instructions, model, names, normalize, picker, plan as planner, providers, settings,
-    state, toolmap, triggers,
+    apply, attention, engine, gitexclude, instructions, model, names, normalize, picker, plan as planner, providers, scope,
+    settings, state, toolmap, triggers,
 )
 from agents_router.share.providers import _short as short
 
@@ -76,7 +80,9 @@ def add_parser(subparsers) -> None:
     actions = share.add_subparsers(dest="share_command", required=True)
     enable = actions.add_parser("enable", help="Turn sharing on: --dry-run shows the plan, --yes saves your answers and applies it.")
     _folder_flags(enable)
-    enable.add_argument("--projects", default="none", help="Repos to share too: none (project scope comes later).")
+    enable.add_argument("--projects", default="none", metavar="none|all-with-items|PATH[,PATH]",
+                        help="Repos to share too: none (the default), every repo your CLIs know that has agents or skills, "
+                             "or these paths.")
     enable.add_argument("--only", action="append", default=[], metavar="ITEM=LABEL[,LABEL]", help="Keep an item in these CLIs only.")
     enable.add_argument("--skip", action="append", default=[], metavar="ITEM@LABEL", help="Untick one cell (repeatable).")
     enable.add_argument("--resolve", action="append", default=[], metavar="ITEM=LABEL|skip",
@@ -170,6 +176,20 @@ def add_parser(subparsers) -> None:
     adopt.add_argument("--wrap", action="store_true", help="Put the file's own text inside the block, instead of an empty block.")
     adopt.add_argument("--dry-run", action="store_true")
     adopt.add_argument("--json", action="store_true")
+    repo = actions.add_parser("repo", help="The repos that share their own agents and skills: list, add or remove one.")
+    repo_actions = repo.add_subparsers(dest="repo_command", required=True)
+    repo_list = repo_actions.add_parser("list", help="The repos sharing, with their worktrees.")
+    repo_list.add_argument("--json", action="store_true")
+    repo_add = repo_actions.add_parser("add", help="Share a repo's own agents and skills between its CLI folders.")
+    repo_add.add_argument("path", nargs="?", default=".")
+    repo_add.add_argument("--json", action="store_true")
+    repo_remove = repo_actions.add_parser("remove", help="Stop sharing a repo.")
+    repo_remove.add_argument("path", nargs="?", default=".")
+    choice = repo_remove.add_mutually_exclusive_group()
+    choice.add_argument("--keep-copies", action="store_true", help="The copies agt made there stay, as your own files.")
+    choice.add_argument("--remove-copies", action="store_true", help="The copies agt made there go to the backups.")
+    repo_remove.add_argument("--dry-run", action="store_true")
+    repo_remove.add_argument("--json", action="store_true")
     move = actions.add_parser("mv", help="Rename an item in every CLI, keeping each copy's own fields.")
     move.add_argument("item")
     move.add_argument("new_name", metavar="NEW-NAME")
@@ -178,6 +198,8 @@ def add_parser(subparsers) -> None:
     undo.add_argument("item")
     undo.add_argument("--in", dest="in_label", metavar="LABEL", help="Bring back the copy removed from this CLI.")
     undo.add_argument("--json", action="store_true")
+    for parser in (pick, resolve, remove, move, undo):
+        parser.add_argument("--repo", metavar="PATH", help="A listed repo's item (inside a listed repo, it's that repo's).")
 
 
 def _kinds(value: str) -> tuple[str, ...]:
@@ -254,6 +276,7 @@ def _options(args: argparse.Namespace, labels: set[str], saved: settings.Setting
         options.off -= {item, *(f"{kind}/{item}" for kind in SUPPORTED_KINDS)}
     options.resolve.update(resolve or {})
     options.keep_copies = keep_copies
+    options.project = scope.current().root
     for answer, flag in (("apply", "allow_deletes"), ("refill", "refill")):
         for label in getattr(args, flag, []):
             _check_label(label, labels, "--" + flag.replace("_", "-"))
@@ -271,6 +294,8 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
             parts += [flag, value]
     if args.no_agy:
         parts.append("--no-agy")
+    if getattr(args, "projects", "none") not in (None, "none"):
+        parts += ["--projects", args.projects]
     for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy),
                         ("--instructions", getattr(args, "instructions", None))):
         if value is not None:
@@ -361,7 +386,7 @@ def _saved_answers(plan: planner.Plan, args: argparse.Namespace, saved: settings
                                auto_copy=options.auto_copy,
                                folders=[settings.Folder(p.cli, p.folder, p.label) for p in plan.included],
                                instructions=getattr(args, "instructions", None) or (saved.instructions if saved else "off"),
-                               **switches)
+                               worktrees=saved.worktrees if saved else "auto", **switches)
     result.off = {_item_key(plan, name) for name in options.off}
     for name, label in options.skip:
         result.not_in.setdefault(_item_key(plan, name), []).append(label)
@@ -401,21 +426,68 @@ def _kept(plan: planner.Plan) -> list[str]:
             if item.drops.get(label) == "release" or (cell.state == planner.HAS and cell.note)]
 
 
+def _repo_lines(entry: dict[str, Any], title: str) -> list[str]:
+    target = entry["scope"]
+    name = target.name + (f" (a worktree of {short(target.main)})" if target.main else "")
+    if entry.get("skipped"):
+        return [f"{title} in {name}: left alone; {entry['skipped']}."]
+    plan = entry["plan"]
+    with scope.use(target):
+        if "result" not in entry:
+            changes = [f"  {change.action} {change.kind}/{change.name} in {', '.join(change.labels)}: {short(change.path)}"
+                       for change in plan.changes]
+            return [f"In {name}: {len(plan.changes)} change{'s' if len(plan.changes) != 1 else ''}, "
+                    f"{len(plan.conflicts)} conflict{'s' if len(plan.conflicts) != 1 else ''}.", *changes]
+        return _report_lines(plan, entry["result"], None, f"{title} in {name}", None)
+
+
+def _repo_json(entry: dict[str, Any]) -> dict[str, Any]:
+    target = entry["scope"]
+    data: dict[str, Any] = {"root": str(target.root), "worktree_of": str(target.main) if target.main else None}
+    if entry.get("skipped"):
+        return {**data, "skipped": entry["skipped"]}
+    plan = entry["plan"]
+    with scope.use(target):
+        if "result" not in entry:
+            return {**data, "changes": len(plan.changes), "conflicts": [item.name for item in plan.conflicts]}
+        return {**data, **_report_json(plan, entry["result"], None, None)}
+
+
 def _report(plan: planner.Plan, result: apply.Result, saved_at: Path | None, as_json: bool, *,
-            title: str = "agt share", notes: list[str] | None = None) -> None:
-    extra = [f"{old.partition('/')[2]} is {new.partition('/')[2]} now, in every CLI. "
+            title: str = "agt share", notes: list[str] | None = None, repos: list[dict[str, Any]] | None = None) -> None:
+    if as_json:
+        data = _report_json(plan, result, saved_at, notes)
+        if repos:
+            data["repos"] = [_repo_json(entry) for entry in repos]
+        _print(data)
+        return
+    lines = _report_lines(plan, result, saved_at, title, notes)
+    for entry in repos or []:
+        lines += ["", *_repo_lines(entry, title)]
+    print("\n".join(lines))
+
+
+def _report_json(plan: planner.Plan, result: apply.Result, saved_at: Path | None, notes: list[str] | None) -> dict[str, Any]:
+    extra = _report_notes(plan, result, notes)
+    return {
+        "run": result.run, "written": [_outcome(o) for o in result.written], "failed": [_outcome(o) for o in result.failed],
+        "conflicts": [item.name for item in plan.conflicts], "waiting": [item.name for item in plan.waiting],
+        "notes": extra + plan.notices + [note for item in plan.items for note in item.notes], "replayed": result.replayed,
+        "settings": str(saved_at) if saved_at else None,
+        "backups": str(state.share_dir() / "backups" / result.run) if any(o.backup for o in result.written) else None,
+        "git_exclude": [{"file": str(path), "lines": lines} for path, lines in result.excluded],
+    }
+
+
+def _report_notes(plan: planner.Plan, result: apply.Result, notes: list[str] | None) -> list[str]:
+    return [f"{old.partition('/')[2]} is {new.partition('/')[2]} now, in every CLI. "
              f"`agt share mv {new.partition('/')[2]} {old.partition('/')[2]}` renames it back."
              for old, new in result.renamed] + (notes or []) + _kept(plan)
-    if as_json:
-        _print({
-            "run": result.run, "written": [_outcome(o) for o in result.written], "failed": [_outcome(o) for o in result.failed],
-            "conflicts": [item.name for item in plan.conflicts], "waiting": [item.name for item in plan.waiting],
-            "notes": extra + plan.notices + [note for item in plan.items for note in item.notes], "replayed": result.replayed,
-            "settings": str(saved_at) if saved_at else None,
-            "backups": str(state.share_dir() / "backups" / result.run) if any(o.backup for o in result.written) else None,
-            "git_exclude": [{"file": str(path), "lines": lines} for path, lines in result.excluded],
-        })
-        return
+
+
+def _report_lines(plan: planner.Plan, result: apply.Result, saved_at: Path | None, title: str,
+                  notes: list[str] | None) -> list[str]:
+    extra = _report_notes(plan, result, notes)
     count = len(result.written)
     folders = sorted({label for outcome in result.written for label in outcome.labels})
     lines = [f"{title}: wrote {count} change{'s' if count != 1 else ''} in {len(folders)} folder{'s' if len(folders) != 1 else ''}."
@@ -437,7 +509,7 @@ def _report(plan: planner.Plan, result: apply.Result, saved_at: Path | None, as_
         lines.append(f"\nSaved your answers in {short(saved_at)}.")
     if any(outcome.backup for outcome in result.written):
         lines.append(f"Backups of what was replaced or removed are in {short(state.share_dir() / 'backups' / result.run)}.")
-    print("\n".join(lines))
+    return lines
 
 
 def _outcome(outcome: apply.Outcome) -> dict[str, Any]:
@@ -488,9 +560,38 @@ def _after_renames(args: argparse.Namespace, saved: settings.Settings, current: 
     return saved_at
 
 
+def _user_folders(saved: settings.Settings | None) -> list[Path]:
+    """Your CLIs' own folders, which can't be repos too."""
+
+    found = [folder.path for folder in saved.folders] if saved else []
+    return found + [path for _, path in providers.discovered_folders(load_config())]
+
+
+def _project_choice(args: argparse.Namespace, saved: settings.Settings | None) -> list[Path]:
+    """The repos `--projects` adds: none, every repo your CLIs know that has agents or skills, or these paths."""
+
+    value = getattr(args, "projects", "none") or "none"
+    if value == "none":
+        return []
+    listed = {os.path.realpath(entry["root"]) for entry in scope.listed()}
+    mine = _user_folders(saved)
+    if value == "all-with-items":
+        config = load_config()
+        claude = [path for cli, path in providers.discovered_folders(config) if cli == "claude"]
+        found = scope.known_projects(claude, default_primary("codex"), mine)
+        return [root for root in found if scope.has_items(root) and os.path.realpath(root) not in listed]
+    roots = []
+    for part in value.split(","):
+        root = Path(part.strip()).expanduser().absolute()
+        why = scope.refuse(root, mine)
+        if why:
+            raise ValueError(f"--projects: {why}")
+        if os.path.realpath(root) not in listed:
+            roots.append(Path(os.path.realpath(root)))
+    return roots
+
+
 def _enable(args: argparse.Namespace) -> int:
-    if args.projects != "none":
-        raise ValueError("project scope (--projects) comes in a later phase; use --projects none")
     saved = settings.load()
     if not (args.dry_run or args.yes or args.json) and _interactive():
         return _enable_screen(args, saved)
@@ -501,7 +602,12 @@ def _enable(args: argparse.Namespace) -> int:
                 continue
             _item_key(plan, name.partition("=")[0].rpartition("@")[0] or name.partition("=")[0])
         line = _command_line(args, plan.digest)
-        _print(planner.proposal(plan, line) if args.json else planner.render_text(plan, line))
+        repos = _project_choice(args, saved)
+        if args.json:
+            _print({**planner.proposal(plan, line), "repos": [str(root) for root in repos]})
+        else:
+            print(planner.render_text(plan, line) + ("\n\nRepos to share too: " + ", ".join(short(root) for root in repos)
+                                                   if repos else ""))
         if not args.dry_run and not args.json:
             print("\nNothing was written. Add --yes to save these answers and apply the plan.")
         return 0 if args.dry_run else 2
@@ -536,8 +642,12 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
         _after_renames(argparse.Namespace(**{key: value for key, value in vars(args).items() if key != "kinds"}),
                        answers, current, result)
         _remember(plan, current, result)
-    _report(plan, result, saved_at, args.json, notes=_refresh_triggers(answers, plan.included))
-    return 1 if result.failed else 0
+    repos = []
+    for root in _project_choice(args, saved):
+        scope.add(root, "sweep" if args.projects == "all-with-items" else "command")
+        repos.append(_sync_scope(argparse.Namespace(json=args.json, dry_run=False), scope.Scope(root), "agt share enable"))
+    _report(plan, result, saved_at, args.json, notes=_refresh_triggers(answers, plan.included), repos=repos)
+    return 1 if result.failed or any(entry.get("result") and entry["result"].failed for entry in repos) else 0
 
 
 def _enable_screen(args: argparse.Namespace, saved: settings.Settings) -> int:
@@ -654,6 +764,8 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
 def _refresh_triggers(saved: settings.Settings, included: list[providers.Provider] | None = None) -> list[str]:
     """Bring the watcher and the hook entries in line with the settings; the lines say what runs sharing now."""
 
+    if scope.current().project:
+        return []  # the watcher and the hook entries belong to your user folders
     try:
         if included is None and saved.enabled:
             included = _folders(load_config(), None, False, saved)[1]
@@ -674,14 +786,51 @@ def _sync(args: argparse.Namespace) -> int:
     return _run_sync(args, saved, "agt share sync")
 
 
+def _sync_scope(args: argparse.Namespace, target: scope.Scope, command: str) -> dict[str, Any]:
+    """One repo's sync (or dry run): its plan and result, or why it was left alone."""
+
+    with scope.use(target):
+        why = scope.busy(target.root)
+        if why:
+            return {"scope": target, "skipped": f"git is in the middle of a {why} there, so agt catches up afterwards"}
+        saved = settings.load()
+        if getattr(args, "dry_run", False):
+            return {"scope": target, "plan": _plan(args, state.load(), saved)}
+        included = _folders(load_config(), None, False, saved)[1]
+        with apply.lock([provider.folder for provider in included]):
+            current = state.load()
+            replayed = apply.replay(current)
+            plan = _plan(args, current, saved)
+            if any(item.decision.reason == "saved less than 3 s ago" for item in plan.waiting):
+                time.sleep(planner.FRESH_SECONDS)
+                plan = _plan(args, current, saved)
+            result = apply.apply(plan, current, command=command, trigger=getattr(args, "trigger", "command"))
+            result.replayed = replayed
+            _after_renames(args, saved, current, result)
+            _remember(plan, current, result)
+        return {"scope": target, "plan": plan, "result": result}
+
+
+def _repo_scopes(saved: settings.Settings) -> list[scope.Scope]:
+    return scope.scopes(worktrees_join=saved.worktrees == "auto") if saved.enabled else []
+
+
 def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, *,
               save: bool = False, notes: list[str] | None = None) -> int:
-    """A whole sync from these settings: `sync`, and `cli add` / `kinds add`, which `save` theirs first."""
+    """A whole sync from these settings: `sync`, and `cli add` / `kinds add`, which `save` theirs first. Listed repos too."""
 
+    if scope.current().project:
+        repos = []
+    else:
+        repos = [_sync_scope(argparse.Namespace(json=args.json, dry_run=getattr(args, "dry_run", False)), target, command)
+                 for target in _repo_scopes(saved)]
     if getattr(args, "dry_run", False):
         plan = _plan(args, state.load(), saved)
-        _print(planner.proposal(plan, command, saves=False) if args.json else
-               planner.render_text(plan, command, header=f"{command}: dry run, nothing was written.", saves=False))
+        if args.json:
+            _print({**planner.proposal(plan, command, saves=False), "repos": [_repo_json(entry) for entry in repos]})
+        else:
+            print("\n".join([planner.render_text(plan, command, header=f"{command}: dry run, nothing was written.", saves=False),
+                             *(line for entry in repos for line in ["", *_repo_lines(entry, command)])]))
         return 0
     if apply.in_worker():
         print(IN_WORKER)
@@ -701,8 +850,8 @@ def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, 
         _remember(plan, current, result)
     if save:
         notes = (notes or []) + _refresh_triggers(saved, plan.included)
-    _report(plan, result, saved_at, args.json, title=command, notes=notes)
-    return 1 if result.failed else 0
+    _report(plan, result, saved_at, args.json, title=command, notes=notes, repos=repos)
+    return 1 if result.failed or any(entry.get("result") and entry["result"].failed for entry in repos) else 0
 
 
 def _core_text(copy: planner.Physical, kind: str) -> list[str]:
@@ -756,12 +905,16 @@ def _status(args: argparse.Namespace) -> int:
                       "message": "the background watcher stopped", "fix": ["agt doctor --fix"]})
     shared = plan.instructions
     code = 1 if plan.conflicts or pending or plan.frozen or (shared is not None and shared.conflict) else 0
+    repos = [] if scope.current().project else [_repo_status(target) for target in _repo_scopes(saved)]
+    if any(entry.get("conflicts") or entry.get("pending") for entry in repos):
+        code = 1
     if args.json:
         _print({"enabled": True, "folders": [{"label": p.label, "cli": p.cli, "path": str(p.folder)} for p in plan.included],
                 "in_sync": len(in_sync), "to_write": len(plan.changes), "conflicts": [i.name for i in plan.conflicts],
                 "waiting": [i.name for i in plan.waiting], "pending_delete": [i.name for i in pending],
                 "frozen": plan.frozen, "not_shared": len(plan.excluded), "notes": plan.notices, "attention": needs,
                 "watcher": health, "instructions": shared.summary() if shared is not None else None,
+                "repos": [{key: value for key, value in entry.items() if key != "scope"} for entry in repos],
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
     lines = ["agt share is on for " + ", ".join(f"{p.label} ({short(p.folder)})" for p in plan.included) + ".",
@@ -783,13 +936,37 @@ def _status(args: argparse.Namespace) -> int:
     shown = {entry["message"] for entry in needs}
     lines += [f"  Note: {note}" for note in plan.notices if not any(note.startswith(message) for message in shown)
               and "disappeared from" not in note]
-    if plan.changes or (shared is not None and shared.writes):
+    for entry in repos:
+        lines.append(f"  {entry['line']}")
+        lines += [f"    {TITLES.get(need['kind'], need['kind'])}: {need['message']}."
+                  + (f" Fix: `{need['fix'][0]}`." if need["fix"] else "") for need in entry.get("attention", [])]
+    if plan.changes or (shared is not None and shared.writes) or any(entry.get("to_write") for entry in repos):
         lines.append("  `agt share sync` writes the changes.")
     print("\n".join(lines))
     return code
 
 
 # Item commands -----------------------------------------------------------------------
+
+
+def _repo_status(target: scope.Scope) -> dict[str, Any]:
+    """One listed repo for `status`: a line, the counts, and what waits there."""
+
+    name = target.name + (f" (a worktree of {short(target.main)})" if target.main else "")
+    data: dict[str, Any] = {"scope": target, "root": str(target.root), "worktree_of": str(target.main) if target.main else None}
+    why = scope.busy(target.root)
+    if why:
+        return {**data, "line": f"Repo {name}: left alone while git is in the middle of a {why}.", "busy": why}
+    with scope.use(target):
+        current = state.load()
+        plan = _plan(argparse.Namespace(json=False), current, settings.load())
+        in_sync = [item for item in plan.items if item.decision and item.decision.action == engine.NOTHING and item.decision.version]
+        pending = [item.name for item in plan.items if item.decision and item.decision.action == engine.PENDING_DELETE]
+        needs = attention.entries(plan, current)
+    return {**data, "in_sync": len(in_sync), "to_write": len(plan.changes), "conflicts": [i.name for i in plan.conflicts],
+            "pending": pending, "attention": needs,
+            "line": f"Repo {name}: {len(in_sync)} items in sync, {len(plan.changes)} changes for the next sync, "
+                    f"{len(plan.conflicts)} conflicts."}
 
 
 def _interactive() -> bool:
@@ -1490,8 +1667,16 @@ def _disable(args: argparse.Namespace) -> int:
         saved.enabled = False
         _put_back_replaced(current)
 
-    return _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
+    repos = _repo_scopes(saved)
+    code = _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
                      lambda removed: "agt share is off; `agt share enable` turns it on again and fills the copies again.")
+    for target in repos if code == 0 else []:
+        with scope.use(target):
+            inner = settings.load()
+            code = max(code, _turn_off(args, inner, set(inner.kinds), {folder.label for folder in inner.folders}, "disable",
+                                       f"sharing in {target.name}", "agt share disable --remove-copies",
+                                       lambda saved, current: None, lambda removed: f"{target.name}: agt's copies are gone too."))
+    return code
 
 
 def _put_back_replaced(current: state.State) -> None:
@@ -1588,6 +1773,79 @@ def _cli(args: argparse.Namespace) -> int:
              f"(`agt share pick <item> --in {label}`): {', '.join(name.partition('/')[2] for name in held)}"] if held else []
     notes += _kept_there(current, saved.kinds, {label})
     return _run_sync(args, saved, "agt share cli add", save=True, notes=notes)
+
+
+def _repo(args: argparse.Namespace) -> int:
+    """`repo list|add|remove`: the repos that share their own agents and skills."""
+
+    saved = settings.load()
+    if args.repo_command == "list":
+        found = scope.scopes(worktrees_join=saved.worktrees == "auto")
+        entries = [{"root": str(target.root), "worktree_of": str(target.main) if target.main else None} for target in found]
+        if args.json:
+            _print({"enabled": saved.enabled, "repos": entries})
+        else:
+            print("\n".join([f"  {short(target.root)}" + (f"  (a worktree of {short(target.main)})" if target.main else "")
+                             for target in found] or ["No repo shares yet; `agt share repo add <path>` adds one."]))
+        return 0
+    if not saved.enabled:
+        _say_off(args)
+        return 0
+    root = Path(args.path).expanduser().absolute()
+    if args.repo_command == "add":
+        why = scope.refuse(root, _user_folders(saved))
+        if why:
+            raise ValueError(why)
+        top = Path(os.path.realpath(root))
+        if not scope.add(top):
+            print(f"agt share: {short(top)} already shares.")
+            return 0
+        entry = _sync_scope(argparse.Namespace(json=args.json, dry_run=False), scope.Scope(top), "agt share repo add")
+        if args.json:
+            _print({"added": str(top), **_repo_json(entry)})
+        else:
+            print("\n".join([*_repo_lines(entry, "agt share repo add"),
+                             f"\n{short(top)} shares its own agents and skills now; `agt share repo remove {short(top)}` stops it."]))
+        return 1 if entry.get("result") and entry["result"].failed else 0
+    real = os.path.realpath(root)
+    target = next((entry for entry in scope.scopes(worktrees_join=False) if os.path.realpath(entry.root) == real), None)
+    if target is None:
+        raise ValueError(f"{short(root)} isn't a listed repo; `agt share repo list` shows them")
+
+    def change(saved: settings.Settings, current: state.State) -> None:
+        scope.remove(target.root)
+        current.items.clear()  # if it comes back, it starts afresh
+
+    with scope.use(target):
+        inner = settings.load()
+        labels = {folder.label for folder in inner.folders}
+        return _turn_off(args, inner, set(inner.kinds), labels, "repo-remove", f"sharing in {target.name}",
+                         f"agt share repo remove {short(target.root)}", change,
+                         lambda removed: f"{target.name} doesn't share any more; `agt share repo add {short(target.root)}` "
+                                         "shares it again.")
+
+
+def _item_scope(args: argparse.Namespace) -> scope.Scope:
+    """Where an item command acts: `--repo`, else the listed repo you're in when the item is there, else your user folders."""
+
+    if getattr(args, "repo", None):
+        real = os.path.realpath(Path(args.repo).expanduser())
+        found = next((entry for entry in scope.scopes() if os.path.realpath(entry.root) == real), None)
+        if found is None:
+            raise ValueError(f"--repo: {args.repo} isn't a listed repo; `agt share repo list` shows them")
+        return found
+    name = getattr(args, "item", None)
+    if not name or name == "instructions":
+        return scope.USER
+    here = scope.scope_of(Path.cwd())
+    if here is None:
+        return scope.USER
+    with scope.use(here):
+        try:
+            _existing(_plan(argparse.Namespace(json=False), state.load(), settings.load()), name)
+        except (ValueError, settings.SettingsError):
+            return scope.USER
+    return here
 
 
 def _kept_there(current: state.State, kinds: tuple[str, ...], labels: set[str]) -> list[str]:
@@ -1838,9 +2096,11 @@ def command(args: argparse.Namespace) -> int:
             from agents_router import config_cli
 
             return config_cli.share_command(args)
-        if action in ("pick", "resolve", "rm", "mv", "undo", "disable", "cli", "kinds", "adopt"):
-            return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo, "disable": _disable,
-                    "cli": _cli, "kinds": _kinds_command, "adopt": _adopt}[action](args)
+        if action in ("pick", "resolve", "rm", "mv", "undo"):
+            with scope.use(_item_scope(args)):
+                return {"pick": _pick, "resolve": _resolve, "rm": _rm, "mv": _mv, "undo": _undo}[action](args)
+        if action in ("disable", "cli", "kinds", "adopt", "repo"):
+            return {"disable": _disable, "cli": _cli, "kinds": _kinds_command, "adopt": _adopt, "repo": _repo}[action](args)
     except (settings.SettingsError, state.StateError, apply.Busy) as exc:
         print(f"agt share: {exc}", file=sys.stderr)
         return 1

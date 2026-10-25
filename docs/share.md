@@ -11,7 +11,7 @@ It covers your user folders today:
 | Antigravity | `~/.gemini` | `config/agents/<name>.md` | `antigravity-cli/skills/<name>/` |
 | Kiro | `~/.kiro` | `agents/<name>.json` | `skills/<name>/` |
 
-It can share [your instruction files](#sharing-instructions) too, when you turn that on. MCP servers, hooks, plugins, commands and a repo's own `.claude/agents` come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
+It can share [your instruction files](#sharing-instructions) too, when you turn that on, and [a repo's own agents and skills](#repos) between that repo's CLI folders. MCP servers, hooks, plugins and commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
 
 ## Turning it on
 
@@ -65,6 +65,26 @@ The options:
 | `--accept-suggested` | Take the suggested answer for every open choice. |
 
 `agt share scan` lists every choice setup would offer and writes nothing.
+
+## Repos
+
+A repo can keep agents and skills of its own: `.claude/agents` and `.claude/skills` for Claude Code, `.codex/agents` for Codex, `.agents/agents` and `.agents/skills` for Codex and Antigravity, `.kiro/agents` and `.kiro/skills` for Kiro. List a repo, and agt shares them between those folders the way it shares your user folders:
+
+```bash
+agt share repo add ~/code/app       # or `agt share repo add .` inside it
+agt share repo list
+agt share repo remove ~/code/app --keep-copies
+```
+
+`agt share enable --projects all-with-items` lists every repo your CLIs know (from Claude's and Codex's project lists) that has agents or skills, and `--projects <path>[,<path>]` lists the ones you name. A repo joins only that way; agt never adds one on its own. A session that starts in a repo with its own agents or skills says once that it isn't shared.
+
+- **What changes in a repo.** Skill links are relative, so a worktree's links stay inside it. Copies agt makes go in the repo's `.git/info/exclude`, so they never show in `git status` or get committed by accident. Your originals and their edits are ordinary files: agt never stages or commits anything, and your review is `git diff`.
+- **Worktrees** of a listed repo join by themselves, with the repo's picks. `agt config set share.worktrees command` makes them wait for `agt share repo add .` instead.
+- **Branches.** A copy agt made that's gone (after `git clean -X`, say) is made again. When a checkout or pull removes an original git has, its copies go to the backups and come back with it; one that holds an edit not yet written back stays. When a branch has no `.claude/agents` folder at all, the copies stay as they are until it's back.
+- **During a merge, rebase or cherry-pick,** agt leaves the repo alone and catches up afterwards.
+- **Picks** for a repo's items are saved in its `.agt/settings.toml`, under `[share.targets]`. Inside a listed repo, `agt share pick`, `resolve`, `rm`, `mv` and `undo` act on that repo's item when it has one; `--repo <path>` names the repo from anywhere.
+
+`agt share sync` and `status` cover every listed repo, with one line per repo, and so does the background watcher. Each repo keeps its own state and backups under `~/.agents-router/state/share/projects/`.
 
 ## Sharing instructions
 

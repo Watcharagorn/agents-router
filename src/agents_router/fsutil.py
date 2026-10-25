@@ -287,8 +287,12 @@ def link_target(path: Path) -> str | None:
     return target
 
 
-def make_dir_link(source: Path, link: Path) -> str:
-    """Link a directory without admin rights. Returns 'junction', 'symlink' or 'copy'."""
+def make_dir_link(source: Path, link: Path, *, relative: bool = False) -> str:
+    """Link a directory without admin rights. Returns 'junction', 'symlink' or 'copy'.
+
+    `relative` makes the symlink relative (inside a repo, so each worktree's links stay in that worktree);
+    a Windows junction is always absolute.
+    """
 
     link.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
@@ -300,7 +304,8 @@ def make_dir_link(source: Path, link: Path) -> str:
         except (ImportError, OSError):
             pass
     try:
-        os.symlink(source, link, target_is_directory=True)
+        target = os.path.relpath(source, os.path.realpath(link.parent)) if relative else source
+        os.symlink(target, link, target_is_directory=True)
         return "symlink"
     except OSError:
         shutil.copytree(source, link)

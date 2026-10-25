@@ -78,6 +78,12 @@ class Result:
         return [outcome for outcome in self.outcomes if not outcome.ok]
 
 
+def _in_repo() -> bool:
+    from agents_router.share import scope
+
+    return scope.current().project
+
+
 def in_worker() -> bool:
     """agt share never syncs inside agt's own workers."""
 
@@ -283,7 +289,7 @@ def _write_skill(change: planner.Change, item: planner.Item, decision: engine.De
               "backup": str(backup) if backup else None})
     if backup:
         shutil.move(str(change.path), str(backup))  # a link moves as a link, a folder as a whole
-    how = fsutil.make_dir_link(source, change.path)
+    how = fsutil.make_dir_link(source, change.path, relative=_in_repo())
     if how == "copy":
         shutil.rmtree(change.path, ignore_errors=True)
     ok = how != "copy" and Path(os.path.realpath(change.path)) == Path(os.path.realpath(source))
@@ -459,7 +465,7 @@ def _rename(change: planner.Change, item: planner.Item, cli: str, run: str, op: 
         if not change.real.is_dir():
             raise _Skip(f"{change.real} isn't there")
         _journal({**entry, "new": f"link:{change.real}"})
-        if fsutil.make_dir_link(change.real, to) == "copy":
+        if fsutil.make_dir_link(change.real, to, relative=_in_repo()) == "copy":
             shutil.rmtree(to, ignore_errors=True)
             return Outcome(item.kind, item.name, change.labels, change.action, to, False,
                            "this system can't make folder links here"), lambda: None
