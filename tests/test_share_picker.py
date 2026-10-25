@@ -2,6 +2,11 @@
 
 import builtins
 import os
+from pathlib import Path
+import select
+import signal
+import sys
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -146,6 +151,71 @@ class KeyTests(unittest.TestCase):
             self.assertFalse(picker.can_draw())
 
 
+SRC = str(Path(__file__).resolve().parent.parent / "src")
+CHILD = """
+import sys, termios
+sys.path.insert(0, {src!r})
+from agents_router.share import picker
+def mode():
+    attrs = termios.tcgetattr(0)
+    attrs[3] &= ~getattr(termios, "PENDIN", 0)  # macOS's driver sets it on its own when line editing comes back
+    return attrs
+before = mode()
+state = picker.ListState("Folders", [picker.Choice("a", "first"), picker.Choice("b", "second")], "folders")
+outcome = picker.choose(state)
+print("RESULT", outcome, ",".join(sorted(state.checked())) or "-", mode() == before, flush=True)
+"""
+
+
+@unittest.skipIf(os.name == "nt", "a pseudo-terminal is POSIX only")
+class RealTerminalTests(unittest.TestCase):
+    """The picker in a real pseudo-terminal, with real key bytes: no mocks between it and the terminal."""
+
+    def run_keys(self, *writes):
+        import pty
+
+        env = {"PATH": os.environ.get("PATH", ""), "TERM": "xterm", "COLUMNS": "60", "LINES": "12", "HOME": "/nonexistent"}
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve(sys.executable, [sys.executable, "-I", "-c", CHILD.format(src=SRC)], env)
+        output = b""
+        deadline = time.time() + 15
+        try:
+            while b"Folders" not in output and time.time() < deadline:  # drawn: it's in single-key mode now
+                if select.select([fd], [], [], 0.1)[0]:
+                    output += os.read(fd, 4096)
+            for data in writes:
+                if isinstance(data, float):
+                    time.sleep(data)
+                else:
+                    os.write(fd, data)
+            while b"RESULT" not in output and time.time() < deadline:
+                if select.select([fd], [], [], 0.1)[0]:
+                    try:
+                        output += os.read(fd, 4096)
+                    except OSError:
+                        break
+        finally:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+            os.close(fd)
+        line = next((line for line in output.decode("utf-8", "replace").splitlines() if line.startswith("RESULT")), None)
+        self.assertIsNotNone(line, output[-500:])
+        return line.split()[1:]
+
+    def test_an_arrow_then_space_then_enter(self):
+        self.assertEqual(self.run_keys(b"\x1b[B", b" ", b"\r"), ["done", "b", "True"])
+
+    def test_esc_alone_quits_and_the_terminal_is_put_back(self):
+        self.assertEqual(self.run_keys(b" ", b"\x1b", 0.3), ["quit", "a", "True"])
+
+    def test_ctrl_c_quits_and_the_terminal_is_put_back(self):
+        self.assertEqual(self.run_keys(b" ", 0.3, b"\x03"), ["quit", "a", "True"])  # Ctrl-C drops unread keys, so wait
+
+
 class PickGridTests(ItemBase):
     """`agt share pick` for a person, through the numbered grid (the tests have no real terminal)."""
 
@@ -247,4 +317,16 @@ class EnableScreenTests(ItemBase):
                 patch("sys.stdout.isatty", lambda: True), patch.object(builtins, "input", side_effect=AssertionError):
             out = self.share("enable", *FLAGS, code=2)
         self.assertIn("Add --yes to save these answers", out)
+
+    def test_on_a_rerun_the_folder_list_offers_a_folder_found_later(self):
+        self.share("enable", *FLAGS, "--resolve", "gamma-apikey=skip", "--yes")
+        personal = self.folder(".claude-other")
+        (personal / "agents").mkdir()
+        queue = ["p", "", "5", "", "", "", ""]  # tick the new folder (row 5), confirm the rest, then Enter
+
+        with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", lambda prompt: queue.pop(0)):
+            out = self.share("enable")
+        self.assertEqual(queue, [])
+        self.assertIn("claude-other", [folder.label for folder in settings.load().folders])
+        self.assertTrue((personal / "agents" / "dana.md").is_file(), out)
 

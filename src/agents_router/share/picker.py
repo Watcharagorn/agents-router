@@ -292,6 +292,22 @@ def _raw_available() -> bool:
     return True
 
 
+def _windows_colors() -> bool:
+    """An old Windows console prints escape codes as text: turn them on, or say it can't."""
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # the console's output
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(mode.value & 0x0004) or bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except (AttributeError, ImportError, OSError):
+        return False
+
+
 def can_draw() -> bool:
     """Whether this terminal can send single keys and redraw in place."""
 
@@ -299,7 +315,9 @@ def can_draw() -> bool:
         terminal = sys.stdin.isatty() and sys.stdout.isatty()
     except (AttributeError, ValueError):
         return False
-    return terminal and os.environ.get("TERM", "") != "dumb" and _raw_available()
+    if not terminal or os.environ.get("TERM", "") == "dumb" or not _raw_available():
+        return False
+    return os.name != "nt" or _windows_colors()
 
 
 class Terminal:

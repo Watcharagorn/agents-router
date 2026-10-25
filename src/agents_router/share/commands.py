@@ -550,18 +550,27 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
     if picker.choose(kinds) == picker.QUIT or not kinds.checked():
         return drop()
     args.kinds = ",".join(kind for kind in SUPPORTED_KINDS if kind in kinds.checked())
-    sharing = {(folder.cli, str(folder.path)) for folder in saved.folders} if saved.enabled else set()
-    used = {provider.label for provider in plan.included}
+    # Every folder agt can find, not only the ones in this plan, so a CLI installed later shows up unticked.
+    config = load_config()
+    given = [(provider.cli, provider.folder) for provider in plan.included]
+    found = given + [entry for entry in providers.discovered_folders(config)
+                     if not any(entry[0] == cli and providers.same(entry[1], path) for cli, path in given)]
+    rows = providers.candidates(config, found)
+    sharing = {(folder.cli, str(folder.path.resolve())) for folder in saved.folders} if saved.enabled else set()
+    in_plan = {(provider.cli, str(provider.folder.resolve())) for provider in plan.included}
+    labels = {(provider.cli, str(provider.folder.resolve())): provider.label for provider in plan.included}
     choices = []
-    for index, row in enumerate(plan.rows):
+    for index, row in enumerate(rows):
         provider = row.provider
-        text = f"{provider.label:<16} {short(provider.folder):<22} {row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
-        fixed = "sharing now; `agt share cli remove` stops it" if (provider.cli, str(provider.folder)) in sharing else None
-        choices.append(picker.Choice(str(index), text, provider.label in used, row.reason, fixed))
+        where = (provider.cli, str(provider.folder.resolve()))
+        label = labels.get(where, provider.label)
+        text = f"{label:<16} {short(provider.folder):<22} {row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
+        fixed = "sharing now; `agt share cli remove` stops it" if where in sharing else None
+        choices.append(picker.Choice(str(index), text, where in in_plan, row.reason, fixed))
     folders = picker.ListState("Which CLI folders share?", choices, "folders")
     if picker.choose(folders) == picker.QUIT or not folders.checked():
         return drop()
-    chosen = [plan.rows[int(key)].provider for key in sorted(folders.checked(), key=int)]
+    chosen = [rows[int(key)].provider for key in sorted(folders.checked(), key=int)]
     for cli, flag in (("claude", "claude_dir"), ("codex", "codex_dir"), ("kiro", "kiro_dir"), ("antigravity", "agy_dir")):
         setattr(args, flag, [str(provider.folder) for provider in chosen if provider.cli == cli])
     args.no_agy = not any(provider.cli == "antigravity" for provider in chosen)
