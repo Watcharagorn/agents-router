@@ -159,12 +159,17 @@ class ShareHome(unittest.TestCase):
             "FAKE_HOST_LOG": str(self.root / "host-log.jsonl"),
         })
         self._env.start()
+        # agt share's run lock goes in the temp folder; keep it inside this test's folder too.
+        (self.root / "tmp").mkdir()
+        self._tempdir = patch.object(tempfile, "tempdir", str(self.root / "tmp"))
+        self._tempdir.start()
         for key in list(os.environ):
             if key in ("AGY_CMD", "CLAUDE_CODE_EXECPATH", "AGT_DEPTH", "AGT_JOB_ID", "AGT_AGY_COMMAND",
                        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE") or key.startswith("AGY_REVIEW_"):
                 os.environ.pop(key)
 
     def tearDown(self):
+        self._tempdir.stop()
         self._env.stop()
         self._temp.cleanup()
 

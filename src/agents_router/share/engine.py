@@ -6,7 +6,7 @@ like edits. Each copy keeps its own last-synced version.
 
 | Situation | Decision |
 |---|---|
-| A copy can't be parsed, or one was saved less than 3 s ago | wait: nothing is written for the item |
+| A copy can't be parsed, or one was edited less than 3 s ago | wait: nothing is written for the item |
 | First sight, all copies agree | fill the targets that don't have it |
 | First sight, copies differ | conflict |
 | No copy changed since the last sync | fill missing targets |
@@ -75,7 +75,9 @@ def decide(copies: list[Copy], targets: set[str], last: Last | None = None, abse
     if problems:
         return Decision(WAIT, labels=sorted(copy.label for copy in problems),
                         reason="; ".join(copy.problem or f"{copy.label}: can't be read" for copy in problems))
-    fresh = sorted(label for label, copy in present.items() if copy.fresh)
+    # A just-saved copy waits, unless it's exactly what agt wrote there last (agt's own write, not an edit).
+    synced = last.copies if last else {}
+    fresh = sorted(label for label, copy in present.items() if copy.fresh and synced.get(label) != copy.version)
     if fresh:
         return Decision(WAIT, labels=fresh, reason="saved less than 3 s ago")
     stopped = last.stopped if last else set()

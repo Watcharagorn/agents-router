@@ -89,6 +89,57 @@ def to_antigravity(tools: list[str]) -> tuple[list[str], list[str]]:
     return mapped, lost
 
 
+def _reverse(table: dict[str, list[str]]) -> dict[str, str]:
+    back: dict[str, str] = {}
+    for claude, names in table.items():
+        for name in names:
+            back.setdefault(name, claude)
+    return back
+
+
+FROM_KIRO = {**_reverse(KIRO_V2), "shell": "Bash"}
+FROM_ANTIGRAVITY = _reverse(ANTIGRAVITY)
+
+
+def to_claude(cli: str, tools: list[str] | None) -> list[str] | None:
+    """Another CLI's tool list as Claude names. None means every tool; names with no Claude tool are left out."""
+
+    if tools is None or cli == "codex":
+        return None
+    if cli == "claude":
+        return list(tools)
+    if cli == "kiro" and "*" in tools:
+        return None
+    found: list[str] = []
+    for tool in tools:
+        if cli == "kiro" and tool.startswith("@"):
+            server, _, name = tool[1:].partition("/")
+            name = f"mcp__{server}__{name}" if name else f"mcp__{server}"
+        else:
+            name = (FROM_KIRO if cli == "kiro" else FROM_ANTIGRAVITY).get(tool)
+        if name and name not in found:
+            found.append(name)
+    return found
+
+
+def for_target(source: str, target: str, tools: list[str] | None, servers: set[str], engine: str = "v2") -> list[str] | None:
+    """The tools a new copy in `target` gets. None leaves the field out, which means every tool.
+
+    A Kiro copy leaves out the tools of MCP servers that Kiro doesn't have,
+    so it never names a server it can't load.
+    """
+
+    claude = to_claude(source, tools)
+    if claude is None or target == "codex":
+        return None
+    if target == "claude":
+        return claude
+    if target == "antigravity":
+        return to_antigravity(claude)[0]
+    mapped = to_kiro(claude, engine)[0]
+    return [tool for tool in mapped if not tool.startswith("@") or tool[1:].partition("/")[0] in servers]
+
+
 def codex_problem(tools: list[str] | None, widening: str) -> str | None:
     """Why a Claude agent with these tools may not go to Codex, which can't limit tools."""
 

@@ -130,6 +130,70 @@ def write_private(path: Path, data: bytes) -> None:
             temporary.unlink()
 
 
+def stat_signature(path: Path) -> tuple[int, int, int] | None:
+    """(mtime in ns, size, inode) of the entry itself, links not followed; None when it's gone."""
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size, info.st_ino)
+
+
+def write_preserving(path: Path, data: bytes, *, new: bool = False) -> None:
+    """Write `data` to the file at `path`, keeping its mode, through a link to the real file.
+
+    The write goes to a temporary file that then replaces the real one, so a
+    reader never sees half a file. A file with other hard links is rewritten
+    in place instead, so every link sees the change. With `new=True` the file
+    must not exist yet: it's linked into place, which fails if something
+    appeared there meanwhile. A new file gets the usual 0o666 minus the umask.
+    """
+
+    real = Path(os.path.realpath(path))
+    info = None if new else os.stat(real)
+    if info is not None and info.st_nlink > 1:
+        with real.open("r+b") as handle:
+            handle.write(data)
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+        return
+    temporary = temp_sibling(real)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if info is not None:
+            os.chmod(temporary, stat.S_IMODE(info.st_mode))
+        if new:
+            try:
+                os.link(temporary, real)  # FileExistsError when something appeared there
+            except FileExistsError:
+                raise
+            except OSError:
+                # A filesystem without hard links: check, then rename (a much smaller window).
+                if os.path.lexists(real):
+                    raise FileExistsError(str(real)) from None
+                os.replace(temporary, real)
+        else:
+            os.replace(temporary, real)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def append_synced(path: Path, line: str) -> None:
+    """Append one line to a private log and fsync it, so it's on disk before the next step."""
+
+    with open_private(path) as handle:
+        handle.write((line.rstrip("\n") + "\n").encode("utf-8"))
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def write_json(path: Path, value: Any) -> None:
     write_private(path, (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
 

@@ -18,7 +18,9 @@ FLAGS = ["--claude-dir", "~/.claude-lab", "--claude-dir", "~/.claude", "--codex-
          "--no-agy", "--projects", "none", "--tool-widening", "allow-if-shell", "--auto-copy", "on"]
 
 
-class DryRunTests(ShareHome):
+class MacCopy(ShareHome):
+    """A small copy of this Mac's folders: what the read-only gate ran against, in a temp home."""
+
     def setUp(self):
         super().setUp()
         claude, lab = self.folder(".claude"), self.folder(".claude-lab")
@@ -76,6 +78,8 @@ class DryRunTests(ShareHome):
         item = next(item for item in proposal["items"] if item["name"] == name)
         return {label: cell["state"] for label, cell in item["cells"].items()}
 
+
+class DryRunTests(MacCopy):
     def test_the_plan_on_a_copy_of_this_mac(self):
         proposal = self.dry_run()
         changes = sorted((c["name"], tuple(c["labels"]), c["action"]) for c in proposal["changes"])
@@ -116,15 +120,17 @@ class DryRunTests(ShareHome):
 
     def test_missing_servers_and_tools_are_notes(self):
         notes = [note for item in self.dry_run()["items"] for note in item["notes"]]
-        self.assertIn("dana in claude-lab, codex, kiro: no `tracker` server (no CLI here has one)", notes)
-        self.assertIn("dana in claude-lab, codex, kiro: no `brave-search` server (no CLI here has one)", notes)
-        self.assertIn("explorer in kiro: no `brave-search` server (no CLI here has one)", notes)
+        left = "; the Kiro copy leaves out its {} tools"
+        self.assertIn("dana in claude-lab, codex, kiro: no `tracker` server (no CLI here has one)" + left.format("tracker"), notes)
+        self.assertIn("dana in claude-lab, codex, kiro: no `brave-search` server (no CLI here has one)" + left.format("brave-search"), notes)
+        self.assertIn("explorer in kiro: no `brave-search` server (no CLI here has one)" + left.format("brave-search"), notes)
 
     def test_a_server_one_folder_has_is_found_by_name_only(self):
         (self.user / ".claude.json").write_text(json.dumps({"mcpServers": {"tracker": {"command": "tracker", "env": {"TOKEN": "x"}}}}),
                                                 encoding="utf-8")
         notes = [note for item in self.dry_run()["items"] for note in item["notes"]]
-        self.assertIn("dana in claude-lab, codex, kiro: no `tracker` server (Phase 3 brings it along)", notes)
+        self.assertIn("dana in claude-lab, codex, kiro: no `tracker` server (Phase 3 brings it along); the Kiro copy leaves out its tracker tools",
+                      notes)
 
     def test_skip_unticks_one_cell_and_shows_what_it_would_save(self):
         proposal = self.dry_run("--skip", "dana@codex")
@@ -160,7 +166,7 @@ class DryRunTests(ShareHome):
         self.assertIn("gamma-apikey (skills):", text)
         self.assertIn("9 changes in 4 folders.", text)
         digest = self.dry_run()["plan"]
-        self.assertIn(f"Plan {digest}. Writing isn't in this build yet", text)
+        self.assertIn(f"Plan {digest}. To apply it:", text)
         self.assertIn(f"  agt share enable --yes --if-plan {digest} --claude-dir '~/.claude-lab'", text)
 
     def test_the_plan_id_changes_when_an_item_changes(self):
@@ -195,16 +201,22 @@ class DryRunTests(ShareHome):
         self.assertIn("claude-lab", [folder["label"] for folder in data["folders"]])
         self.assertEqual(data["needs_answer"][0]["id"], "resolve:gamma-apikey")
 
-    def test_writing_runs_are_refused_in_this_build(self):
+    def test_nothing_is_written_without_yes_or_with_an_open_conflict(self):
         before = self.snapshot()
-        for args in (["enable", *FLAGS], ["enable", *FLAGS, "--yes"], ["sync"]):
-            with self.subTest(args=args[:2]):
-                code, out = self.run_share(*args)
-                self.assertEqual(code, 2)
-                self.assertIn("only does dry runs", out)
+        code, out = self.run_share("enable", *FLAGS)
+        self.assertEqual(code, 2)
+        self.assertIn("Nothing was written. Add --yes", out)
+        code, out = self.run_share("enable", *FLAGS, "--yes", "--json")
+        self.assertEqual(code, 3)
+        answer = json.loads(out)
+        self.assertEqual(answer["error"], "needs_choice")
+        self.assertIn("--resolve gamma-apikey=<choice>", answer["retry"])
         self.assertEqual(self.snapshot(), before)
-        code, out = self.run_share("sync", "--dry-run")
-        self.assertEqual((code, out.strip()), (0, "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."))
+        self.assertFalse((self.agt_home / "state" / "share" / "state.json").exists())
+        for args in (["sync"], ["sync", "--dry-run"], ["status"]):
+            with self.subTest(args=args):
+                code, out = self.run_share(*args)
+                self.assertEqual((code, out.strip()), (0, "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."))
 
     def test_bad_flags_are_errors(self):
         err = io.StringIO()

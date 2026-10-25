@@ -3,7 +3,12 @@
 It lives in `<agt home>/state/share/state.json`. The loader is strict: a
 missing file is a first run, but a file that can't be read, or one written by
 a newer agt (a higher `schema`), stops the sync instead of looking like a
-first run, which would refill or re-copy everything.
+first run, which would refill or re-copy everything. Each save keeps the
+previous file as `state.json.prev`.
+
+A record holds the item's version at the last sync, each copy's own version
+then (`copies`), and the folders where agt made the copy (`made`). A record
+with only `made` belongs to an item whose first sync didn't finish.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agents_router import fsutil
 from agents_router.config import state_dir
 from agents_router.share import engine
 from agents_router.share.normalize import NORM_VERSION
@@ -33,7 +39,7 @@ class State:
 
     def last(self, kind: str, identity: str) -> engine.Last | None:
         record = self.items.get(f"{kind}/{identity}")
-        if not record:
+        if not record or not record.get("version"):
             return None
         return engine.Last(
             version=record["version"], copies=dict(record.get("copies") or {}), made=set(record.get("made") or []),
@@ -41,8 +47,22 @@ class State:
         )
 
 
+def share_dir() -> Path:
+    return state_dir() / "share"
+
+
 def path() -> Path:
-    return state_dir() / "share" / "state.json"
+    return share_dir() / "state.json"
+
+
+def save(current: State, location: Path | None = None, *, rotate: bool = False) -> None:
+    """Write the state atomically. With `rotate`, the file it replaces is kept as `state.json.prev` first."""
+
+    location = location or path()
+    if rotate and location.exists():
+        fsutil.write_private(location.with_name(location.name + ".prev"), location.read_bytes())
+    current.first_run = False
+    fsutil.write_json(location, {"schema": SCHEMA, "norm_version": current.norm_version, "items": current.items})
 
 
 def load(location: Path | None = None) -> State:

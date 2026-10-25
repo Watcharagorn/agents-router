@@ -25,9 +25,11 @@ from agents_router.share.state import State
 
 KINDS = ("agents", "skills")
 FRESH_SECONDS = 3
-# Codex's own agent roles: a custom agent with one of these names would replace it.
-CODEX_BUILTIN_AGENTS = {"default", "explorer", "worker"}
+# Codex's own agent roles: a custom agent with one of these names would replace it. Codex 0.164.0 ships
+# explorer.toml and awaiter.toml and a "Default agent"; worker is in its multi-agent docs.
+CODEX_BUILTIN_AGENTS = {"default", "explorer", "worker", "awaiter"}
 HAS, COPY, UPDATE, SKIPPED, BLOCKED, CONFLICTED, WAITING = "has", "copy", "update", "skipped", "blocked", "conflict", "wait"
+NOT_SHARED = "you chose not to share it; every copy stays as it is"
 
 
 @dataclass
@@ -36,7 +38,12 @@ class Options:
     tool_widening: str = "allow-if-shell"
     skip: set[tuple[str, str]] = field(default_factory=set)  # (item name, label) cells you unticked
     only: dict[str, set[str]] = field(default_factory=dict)  # item name -> the only labels it goes to
-    resolve: dict[str, str] = field(default_factory=dict)  # item name -> label whose version wins, or "skip"
+    resolve: dict[str, str] = field(default_factory=dict)  # item name -> label whose version wins
+    off: set[str] = field(default_factory=set)  # items that aren't shared, by name or <kind>/<name>
+    auto_copy: tuple[str, ...] = KINDS  # kinds whose new items go to every target
+
+    def names(self, item: "Item") -> tuple[str, str]:
+        return item.name, f"{item.kind}/{item.name}"
 
 
 @dataclass
@@ -101,6 +108,7 @@ class Plan:
     changes: list[Change]
     excluded: list[Excluded]
     options: Options
+    notices: list[str] = field(default_factory=list)
 
     @property
     def conflicts(self) -> list[Item]:
@@ -202,7 +210,7 @@ def read_items(included: list[Provider], options: Options, now: float, disabled:
                         item.notes.append(f"names collide after case-folding: {item.name}, {entry_name(item, physical)}")
     shared = []
     for item in items.values():
-        problem = _item_problem(item)
+        problem = NOT_SHARED if set(options.names(item)) & options.off else _item_problem(item)
         if problem:
             excluded.append(Excluded(item.kind, item.name, sorted({l for c in item.copies for l in c.labels}), problem))
         else:
@@ -268,13 +276,54 @@ def _blocked(item: Item, provider: Provider, options: Options, source: Physical 
     return None
 
 
-def decide_items(items: list[Item], included: list[Provider], options: Options, state: State) -> None:
+def absent_labels(items: list[Item], included: list[Provider], options: Options, state: State) -> tuple[dict[str, set[str]], list[str]]:
+    """Per kind, the labels that count as absent this run, and why.
+
+    A folder whose kind folder is missing, after agt has synced it, is absent:
+    nothing is filled or deleted there. So is a folder where more than
+    max(3, 25%) of the items agt knew disappeared at once: its deletes freeze
+    until you look. Labels that stopped sharing are absent too.
+    """
+
     by_label = {provider.label: provider for provider in included}
+    present = {(item.key, label) for item in items for copy in item.copies for label in copy.labels}
+    absent: dict[str, set[str]] = {kind: set() for kind in options.kinds}
+    notices: list[str] = []
+    for kind in options.kinds:
+        known: dict[str, int] = {}
+        gone: dict[str, int] = {}
+        for key, record in state.items.items():
+            if not key.startswith(kind + "/"):
+                continue
+            for label in record.get("copies") or {}:
+                if label not in by_label:
+                    absent[kind].add(label)  # a folder that isn't sharing any more
+                    continue
+                known[label] = known.get(label, 0) + 1
+                if (key, label) not in present:
+                    gone[label] = gone.get(label, 0) + 1
+        for label in known:
+            location = by_label[label].writable(kind)
+            if location is None or not location.path.is_dir():
+                absent[kind].add(label)
+                notices.append(f"{label}'s {kind} folder is missing: nothing is filled or deleted there until it's back")
+        for label in engine.frozen(known, gone) - absent[kind]:
+            absent[kind].add(label)
+            notices.append(f"{gone[label]} of {known[label]} {kind} disappeared from {label} at once, "
+                           "so deletes there wait until you check (`agt share status`)")
+    return absent, notices
+
+
+def decide_items(items: list[Item], included: list[Provider], options: Options, state: State) -> list[str]:
+    by_label = {provider.label: provider for provider in included}
+    absent, notices = absent_labels(items, included, options, state)
     for item in items:
         last = state.last(item.kind, names.identity(item.name))
         holders = {label: copy for copy in item.copies for label in copy.labels}
         source = next((copy for copy in item.copies if copy.version), None)
-        allowed = options.only.get(item.name)
+        allowed = next((options.only[name] for name in options.names(item) if name in options.only), None)
+        unticked = {label for name, label in options.skip if name in options.names(item)}
+        held_new = last is None and not state.first_run and item.kind not in options.auto_copy
         targets = set()
         for label, provider in by_label.items():
             if label in holders:
@@ -283,14 +332,21 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
             reason = _blocked(item, provider, options, source)
             if reason:
                 item.cells[label] = Cell(BLOCKED, reason)
-            elif (item.name, label) in options.skip or (allowed is not None and label not in allowed):
-                item.cells[label] = Cell(SKIPPED, "you unticked it" if (item.name, label) in options.skip else "--only")
+            elif label in unticked or (allowed is not None and label not in allowed):
+                item.cells[label] = Cell(SKIPPED, "you unticked it" if label in unticked else "--only")
+            elif held_new:
+                item.cells[label] = Cell(WAITING, "new, waiting for you to pick its targets (auto copy is off)")
+            elif label in absent.get(item.kind, set()):
+                item.cells[label] = Cell(WAITING, "its folder is missing or frozen this run")
             else:
                 item.cells[label] = Cell(COPY)
                 targets.add(label)
         copies = [engine.Copy(label, copy.version, copy.fresh, copy.problem) for label, copy in holders.items()]
-        decision = engine.decide(copies, targets | set(holders), last)
-        choice = options.resolve.get(item.name)
+        if held_new:
+            item.decision = engine.Decision(engine.NOTHING, reason="new, waiting for you to pick its targets")
+            continue
+        decision = engine.decide(copies, targets | set(holders), last, absent.get(item.kind))
+        choice = options.resolve.get(item.name) or options.resolve.get(f"{item.kind}/{item.name}")
         if decision.action == engine.CONFLICT and choice:
             decision = _resolved(item, decision, choice, holders, targets)
         item.decision = decision
@@ -302,12 +358,11 @@ def decide_items(items: list[Item], included: list[Provider], options: Options, 
                     item.cells[label] = Cell(held, decision.reason)
         for label in decision.updates:
             item.cells[label] = Cell(UPDATE)
+    return notices
 
 
 def _resolved(item: Item, decision: engine.Decision, choice: str, holders: dict[str, Physical],
               targets: set[str]) -> engine.Decision:
-    if choice == "skip":
-        return engine.Decision(engine.NOTHING, reason="left as it is (--resolve skip)")
     if choice not in holders or holders[choice].version is None:
         return decision
     version = holders[choice].version
@@ -400,7 +455,9 @@ def add_notes(items: list[Item], included: list[Provider], home: Path) -> None:
             missing = [label for label in item.decision.fills if server not in servers.get(label, set())]
             if missing:
                 where = "no CLI here has one" if server not in everywhere else "Phase 3 brings it along"
-                item.notes.append(f"{item.name} in {', '.join(missing)}: no `{server}` server ({where})")
+                kiro = [label for label in missing if by_label[label].cli == "kiro"]
+                left = f"; the Kiro copy leaves out its {server} tools" if kiro else ""
+                item.notes.append(f"{item.name} in {', '.join(missing)}: no `{server}` server ({where}){left}")
         if tools is not None and getattr(source.obj, "cli", None) == "claude":
             for label in item.decision.fills:
                 cli = by_label[label].cli
@@ -420,10 +477,11 @@ def build(config: Any, rows: list[providers.Candidate], included: list[Provider]
     codex = next((provider.folder for provider in included if provider.cli == "codex"), None)
     disabled = exclude.codex_disabled_skills(codex) if codex else set()
     items, excluded = read_items(included, options, now, disabled)
-    decide_items(items, included, options, state)
+    notices = decide_items(items, included, options, state)
     changes = [change for item in items for change in changes_for(item, included)]
     add_notes(items, included, home)
-    return Plan(included=included, rows=rows, items=items, changes=changes, excluded=excluded, options=options)
+    return Plan(included=included, rows=rows, items=items, changes=changes, excluded=excluded, options=options,
+                notices=notices)
 
 
 # Showing it --------------------------------------------------------------------
@@ -444,8 +502,17 @@ def _group_excluded(excluded: list[Excluded]) -> list[str]:
     return lines
 
 
-def render_text(plan: Plan, command: str) -> str:
-    lines = ["agt share: dry run, nothing was written.", "", "Folders:"]
+def would_save(plan: Plan) -> list[str]:
+    """Your picks from the flags, as they'd be saved in the user settings."""
+
+    lines = [f"{name}: not in {label}" for name, label in sorted(plan.options.skip)]
+    lines += [f"{name}: only in {', '.join(sorted(labels))}" for name, labels in sorted(plan.options.only.items())]
+    lines += [f"{name.partition('/')[2] or name}: not shared; every copy stays as it is" for name in sorted(plan.options.off)]
+    return lines
+
+
+def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, nothing was written.") -> str:
+    lines = [header, "", "Folders:"]
     used = {provider.label for provider in plan.included}
     for row in plan.rows:
         provider = row.provider
@@ -481,24 +548,24 @@ def render_text(plan: Plan, command: str) -> str:
             versions = ", ".join(f"{'/'.join(copy.labels)} {short(copy.path)}" + (" (newer)" if copy is newest else "")
                                  for copy in item.copies)
             lines.append(f"  {item.name} ({item.kind}): {versions}")
-            lines.append(f"    choose with --resolve {item.name}=<label>, or `agt share resolve {item.name}`")
+            lines.append(f"    pick one with --resolve {item.name}=<label>, or --resolve {item.name}=skip to leave every copy as it is")
     if plan.waiting:
         lines += ["", "Waiting:"] + [f"  {item.name}: {item.decision.reason}" for item in plan.waiting]
     if plan.excluded:
         lines += ["", "Not shared:"] + [f"  {line}" for line in _group_excluded(plan.excluded)]
-    notes = [note for item in plan.items for note in item.notes]
+    notes = plan.notices + [note for item in plan.items for note in item.notes]
     if notes:
         lines += ["", "Notes:"] + [f"  {note}" for note in notes]
-    skips = sorted(plan.options.skip)
-    if skips:
-        lines += ["", "Would save in your user settings:"] + [f"  {name}: not in {label}" for name, label in skips]
+    saving = would_save(plan)
+    if saving and command:
+        lines += ["", "Would save in your user settings:"] + [f"  {line}" for line in saving]
     if plan.new_folders:
         lines += ["", "New folders: " + ", ".join(short(folder) for folder in plan.new_folders)]
     count = len(plan.changes)
     lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
                   f"{'s' if len(plan.folders_changed) != 1 else ''}."]
-    if count or plan.conflicts:
-        lines.append(f"Plan {plan.digest}. Writing isn't in this build yet; once it is, this applies the plan:")
+    if (count or plan.conflicts or saving) and command:
+        lines.append(f"Plan {plan.digest}. To apply it:")
         lines.append(f"  {command}")
     return "\n".join(lines)
 
@@ -512,7 +579,8 @@ def proposal(plan: Plan, command: str) -> dict[str, Any]:
         choices = [{"value": copy.labels[0], "path": str(copy.path), "newer": copy is newest} for copy in item.copies]
         needs.append({
             "id": f"resolve:{item.name}", "ask": f"{item.name} differs between {', '.join(c['value'] for c in choices)}. Which version should every CLI get?",
-            "choices": choices + [{"value": "skip", "path": None, "newer": False}], "flag": f"--resolve {item.name}=<choice>",
+            "choices": choices + [{"value": "skip", "path": None, "newer": False, "means": "don't share it; every copy stays as it is"}],
+            "flag": f"--resolve {item.name}=<choice>",
         })
     return {
         "dry_run": True,
@@ -529,6 +597,8 @@ def proposal(plan: Plan, command: str) -> dict[str, Any]:
         "needs_answer": needs,
         "excluded": [{"kind": e.kind, "name": e.name, "labels": e.labels, "reason": e.reason} for e in plan.excluded],
         "new_folders": [str(folder) for folder in plan.new_folders],
+        "notices": plan.notices,
+        "would_save": would_save(plan),
         "summary": f"{len(plan.changes)} changes in {len(plan.folders_changed)} folders, {len(plan.conflicts)} conflicts",
         "command": command,
     }
