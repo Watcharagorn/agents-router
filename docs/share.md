@@ -180,9 +180,10 @@ To turn sharing on for a user:
 
 1. Run `agt share enable --dry-run --json`. Show the user the proposal as a table: each of `items` with its `cells` per folder, the `excluded` items with their reasons, and the `summary`.
 2. Ask once: as suggested, change some picks, or not now. Ask about each item in `needs_answer` (copies that differ) in the same question.
-3. Run the proposal's `command` (`agt share enable --yes --if-plan <id>`), plus `--resolve`, `--skip` or `--only` for the user's answers. If the plan changed meanwhile, it refuses and prints the new one.
+3. If the user changed a pick or answered a question, run the dry run again with their answers as flags: `--resolve <item>=<label>` or `<item>=skip`, `--skip <item>@<label>`, `--only <item>=<label>[,<label>]`.
+4. Run the newest proposal's `command` exactly as given. It already carries those flags, and ends in `--yes --if-plan <id>`. Don't add flags to an older `command`: they change the plan, so it's refused ("the plan changed since your dry run"), as it is when a folder changed meanwhile.
 
-Take answers from the user's own words: "remove them" is `--remove-copies`, "keep them" is `--keep-copies`, "use the work one" is `--prefer claude-work`.
+Take answers from the user's own words: "remove them" is `--remove-copies`, "keep them" is `--keep-copies`, and "use the work one" is `--resolve <item>=claude-work` with `enable`, or `--prefer claude-work` with `resolve`.
 
 ## Settings
 

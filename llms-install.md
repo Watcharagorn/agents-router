@@ -17,7 +17,7 @@ Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigrav
    agt setup --account <name>=<folder>
    ```
 
-3. Offer to share the user's agents and skills between their CLIs: run `agt share enable --dry-run --json`, show the proposal as a table, ask once (as suggested, change some picks, or not now), then run its `command` with the user's answers. See [For agents](docs/share.md#for-agents).
+3. Offer to share the user's agents and skills between their CLIs: run `agt share enable --dry-run --json`, show the proposal as a table, ask once (as suggested, change some picks, or not now). With the user's answers, run the dry run again with them as flags, then run that proposal's `command` exactly as given. See [For agents](docs/share.md#for-agents).
 
 4. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room.
 
