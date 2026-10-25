@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import helpers  # noqa: F401  (isolates the test process from your real folders)
 from test_share_items import ItemBase
+from test_share_plan import FLAGS
+from test_share_sync import age
 
 from agents_router.share import commands, picker, settings
 from agents_router.share.picker import BLOCKED, DONE, FIXED, OFF, ON, QUIT, Cell, Choice, GridState, ListState, Row
@@ -184,3 +186,65 @@ class PickGridTests(ItemBase):
         with patch.dict(os.environ, {"CLAUDECODE": "1"}), patch("sys.stdin.isatty", lambda: True), \
                 patch("sys.stdout.isatty", lambda: True), patch.object(picker, "choose", side_effect=AssertionError):
             self.share("pick", code=3)
+
+
+class EnableScreenTests(ItemBase):
+    """`agt share enable` for a person at a terminal, answered through the numbered lists."""
+
+    def screen(self, *answers, code=0):
+        queue = list(answers)
+
+        def typed(prompt):
+            answer = queue.pop(0)
+            return answer(prompt) if callable(answer) else answer
+
+        with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", typed):
+            out = self.share("enable", *FLAGS, code=code)
+        self.assertEqual(queue, [], "some answers weren't asked for")
+        return out
+
+    def test_enter_applies_the_plan_on_screen_like_yes(self):
+        out = self.screen("s", "")  # gamma-apikey: don't share it; then Enter
+        self.assertIn("Nothing is written until you press Enter.", out)
+        self.assertIn("agt share: wrote 9 changes in 4 folders.", out)
+        saved = settings.load()
+        self.assertEqual(saved.off, {"skills/gamma-apikey"})
+        self.assertEqual([folder.label for folder in saved.folders], ["claude-lab", "claude", "codex", "kiro"])
+
+    def test_p_changes_the_folders_and_q_in_a_list_drops_the_changes(self):
+        self.screen("s", "p", "", "4", "", "", "", "")  # untick kiro in the folder list, confirm the rest, then Enter
+        self.assertFalse((self.user / ".kiro" / "agents" / "dana.json").exists())
+        self.assertEqual([folder.label for folder in settings.load().folders], ["claude-lab", "claude", "codex"])
+
+    def test_q_in_a_list_drops_its_changes(self):
+        self.screen("s", "p", "", "4", "q", "")
+        self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").exists())
+
+    def test_the_grid_on_the_screen_leaves_a_cell_out(self):
+        self.screen("s", "p", "", "", "", "1d", "", "")  # dana in kiro: unticked
+        self.assertFalse((self.user / ".kiro" / "agents" / "dana.json").exists())
+        self.assertTrue((self.user / ".codex" / "agents" / "dana.toml").exists())
+        self.assertEqual(settings.load().not_in, {"agents/dana": ["kiro"]})
+
+    def test_a_plan_that_changed_meanwhile_is_shown_again(self):
+        def edit_then_enter(prompt):
+            self.agent(self.claude, "dana", body="Dana, edited meanwhile.", tools="Bash, Read")
+            age(self.claude / "agents" / "dana.md")
+            return ""
+
+        out = self.screen("s", edit_then_enter, "")
+        self.assertIn("The plan changed while you looked at it; here's the new one.", out)
+        self.assertIn("Dana, edited meanwhile.", (self.lab / "agents" / "dana.md").read_text(encoding="utf-8"))
+
+    def test_q_writes_nothing(self):
+        before = self.snapshot()
+        self.assertIn("Nothing was written.", self.screen("s", "q"))
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(settings.path().exists())
+
+    def test_an_agent_with_a_terminal_gets_the_plan_and_no_screen(self):
+        with patch.dict(os.environ, {"CLAUDECODE": "1"}), patch("sys.stdin.isatty", lambda: True), \
+                patch("sys.stdout.isatty", lambda: True), patch.object(builtins, "input", side_effect=AssertionError):
+            out = self.share("enable", *FLAGS, code=2)
+        self.assertIn("Add --yes to save these answers", out)
+

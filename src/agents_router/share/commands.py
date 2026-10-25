@@ -444,6 +444,8 @@ def _enable(args: argparse.Namespace) -> int:
     if args.projects != "none":
         raise ValueError("project scope (--projects) comes in a later phase; use --projects none")
     saved = settings.load()
+    if not (args.dry_run or args.yes or args.json) and _interactive():
+        return _enable_screen(args, saved)
     if args.dry_run or not args.yes:
         plan = _plan(args, state.load(), saved)
         for name in [*args.resolve, *args.skip, *args.only]:
@@ -453,6 +455,12 @@ def _enable(args: argparse.Namespace) -> int:
         if not args.dry_run and not args.json:
             print("\nNothing was written. Add --yes to save these answers and apply the plan.")
         return 0 if args.dry_run else 2
+    return _enable_write(args, saved)
+
+
+def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen: bool = False) -> int | None:
+    """`enable --yes`: save your answers and apply the plan. On the screen, None means the plan changed meanwhile."""
+
     if apply.in_worker():
         print(IN_WORKER)
         return 2
@@ -464,6 +472,8 @@ def _enable(args: argparse.Namespace) -> int:
         plan = _plan(args, current, saved)
         line = _command_line(args, plan.digest)
         if args.if_plan and args.if_plan != plan.digest:
+            if screen:
+                return None
             print(f"Nothing was written: the plan changed since your dry run (it was {args.if_plan}, now {plan.digest}).")
             print(planner.render_text(plan, line))
             return 1
@@ -478,6 +488,108 @@ def _enable(args: argparse.Namespace) -> int:
         _remember(plan, current, result)
     _report(plan, result, saved_at, args.json)
     return 1 if result.failed else 0
+
+
+def _enable_screen(args: argparse.Namespace, saved: settings.Settings) -> int:
+    """`agt share enable` for a person at a terminal: the plan, then Enter applies it, `p` changes it, `q` quits.
+
+    A conflict is asked first. Enter applies exactly the plan on screen (`--yes --if-plan <id>`): if it changed
+    meanwhile, the new one is shown instead.
+    """
+
+    while True:
+        plan = _plan(args, state.load(), saved)
+        answered = {value.partition("=")[0] for value in args.resolve}
+        open_conflicts = [item for item in plan.conflicts if item.name not in answered and f"{item.kind}/{item.name}" not in answered]
+        if open_conflicts:
+            for item in open_conflicts:
+                choice = _ask_version(item)
+                if choice is None:
+                    print("Nothing was written.")
+                    return 0
+                args.resolve.append(f"{item.name}={choice}")
+            continue
+        line = _command_line(args, plan.digest)
+        print(planner.render_text(plan, line, header="agt share enable: what sharing would do. "
+                                                     "Nothing is written until you press Enter."))
+        try:
+            answer = input("Enter applies it, p changes what goes where, q quits: ").strip().lower()
+        except EOFError:
+            answer = "q"
+        if answer == "q":
+            print("Nothing was written.")
+            return 0
+        if answer == "p":
+            _enable_lists(args, saved, plan)
+            continue
+        if answer:
+            continue
+        args.yes, args.if_plan = True, plan.digest
+        code = _enable_write(args, saved, screen=True)
+        if code is not None:
+            return code
+        args.yes, args.if_plan = False, None
+        print("\nThe plan changed while you looked at it; here's the new one.")
+
+
+def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: planner.Plan) -> None:
+    """`p` on the enable screen: kinds, folders, the on/off choices, then what goes where.
+
+    Your answers become the same ones the flags give. `q` in any list drops every change from these lists.
+    """
+
+    before = {key: list(value) if isinstance(value, list) else value for key, value in vars(args).items()}
+    picks = (dict(saved.not_in), dict(saved.only), set(saved.off))
+
+    def drop() -> None:
+        vars(args).update(before)
+        saved.not_in, saved.only, saved.off = dict(picks[0]), dict(picks[1]), set(picks[2])
+
+    kinds = picker.ListState("Which kinds share?", [picker.Choice(kind, kind, kind in plan.options.kinds) for kind in SUPPORTED_KINDS]
+                             + [picker.Choice(kind, kind, reason="comes in a later phase") for kind in LATER_KINDS], "kinds")
+    if picker.choose(kinds) == picker.QUIT or not kinds.checked():
+        return drop()
+    args.kinds = ",".join(kind for kind in SUPPORTED_KINDS if kind in kinds.checked())
+    sharing = {(folder.cli, str(folder.path)) for folder in saved.folders} if saved.enabled else set()
+    used = {provider.label for provider in plan.included}
+    choices = []
+    for index, row in enumerate(plan.rows):
+        provider = row.provider
+        text = f"{provider.label:<16} {short(provider.folder):<22} {row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
+        fixed = "sharing now; `agt share cli remove` stops it" if (provider.cli, str(provider.folder)) in sharing else None
+        choices.append(picker.Choice(str(index), text, provider.label in used, row.reason, fixed))
+    folders = picker.ListState("Which CLI folders share?", choices, "folders")
+    if picker.choose(folders) == picker.QUIT or not folders.checked():
+        return drop()
+    chosen = [plan.rows[int(key)].provider for key in sorted(folders.checked(), key=int)]
+    for cli, flag in (("claude", "claude_dir"), ("codex", "codex_dir"), ("kiro", "kiro_dir"), ("antigravity", "agy_dir")):
+        setattr(args, flag, [str(provider.folder) for provider in chosen if provider.cli == cli])
+    args.no_agy = not any(provider.cli == "antigravity" for provider in chosen)
+    switches = picker.ListState("Choices", [
+        picker.Choice("widen", "Codex agents get every tool (Codex can't limit an agent's tools)",
+                      plan.options.tool_widening == "allow-if-shell"),
+        picker.Choice("auto", "New items go to every CLI (auto copy)", bool(plan.options.auto_copy))], "choices")
+    if picker.choose(switches) == picker.QUIT:
+        return drop()
+    # Only a switch you flipped changes (auto copy for some kinds stays as it is otherwise).
+    if ("widen" in switches.checked()) != (plan.options.tool_widening == "allow-if-shell"):
+        args.tool_widening = "allow-if-shell" if "widen" in switches.checked() else "skip"
+    if ("auto" in switches.checked()) != bool(plan.options.auto_copy):
+        args.auto_copy = "on" if "auto" in switches.checked() else "off"
+    shown = _plan(args, state.load(), saved)
+    current = state.load()
+    rows = [picker.Row(f"{item.kind}/{item.name}", item.name, {
+        label: _grid_cell(item, label, set((current.items.get(item.key) or {}).get("made") or []))
+        for label in (provider.label for provider in shown.included)}) for item in shown.items]
+    grid = picker.GridState("What goes where? Enter goes back to the plan.", [p.label for p in shown.included], rows)
+    if picker.choose(grid) == picker.QUIT:
+        return drop()
+    try:
+        for (key, label), ticked in sorted(grid.changes().items()):
+            _change_picks(saved, key, [label] if ticked else [], [] if ticked else [label], None, _find(shown, key))
+    except ValueError as exc:
+        print(f"Not changed: {exc}.")
+        return drop()
 
 
 def _sync(args: argparse.Namespace) -> int:

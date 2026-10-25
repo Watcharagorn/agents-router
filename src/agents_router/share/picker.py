@@ -40,6 +40,11 @@ class Choice:
     text: str
     checked: bool = False
     reason: str | None = None  # why agt won't use it: shown greyed out, and the cursor skips it
+    fixed: str | None = None  # ticked, and changed elsewhere (shown greyed with this note; the cursor skips it)
+
+    @property
+    def locked(self) -> bool:
+        return self.reason is not None or self.fixed is not None
 
 
 class ListState:
@@ -49,7 +54,7 @@ class ListState:
         self.cursor = usable[0] if usable else 0
 
     def _usable(self) -> list[int]:
-        return [index for index, choice in enumerate(self.choices) if choice.reason is None]
+        return [index for index, choice in enumerate(self.choices) if not choice.locked]
 
     def press(self, key: str) -> str | None:
         usable = self._usable()
@@ -71,15 +76,16 @@ class ListState:
         return None
 
     def checked(self) -> set[str]:
-        return {choice.key for choice in self.choices if choice.checked and choice.reason is None}
+        return {choice.key for choice in self.choices if (choice.checked or choice.fixed) and choice.reason is None}
 
     def lines(self, width: int = 100, height: int = 40, *, color: bool = True) -> list[str]:
         body = []
         for index, choice in enumerate(self.choices):
-            mark = "[-]" if choice.reason else "[x]" if choice.checked else "[ ]"
+            mark = "[-]" if choice.reason else "[x]" if choice.checked or choice.fixed else "[ ]"
             pointer = ">" if index == self.cursor else " "
-            text = _fit(f"{pointer} {mark} {choice.text}" + (f"  ({choice.reason})" if choice.reason else ""), width)
-            body.append(f"{DIM}{text}{PLAIN}" if color and choice.reason else text)  # cut first, so codes never count
+            note = choice.reason or choice.fixed
+            text = _fit(f"{pointer} {mark} {choice.text}" + (f"  ({note})" if note else ""), width)
+            body.append(f"{DIM}{text}{PLAIN}" if color and choice.locked else text)  # cut first, so codes never count
         room = max(height - 4, 3)
         top = max(0, min(self.cursor - room // 2, len(body) - room))
         count = f"{len(self.checked())} of {len(self._usable())} {self.noun} ticked"
@@ -91,8 +97,9 @@ class ListState:
 
         while True:
             for number, choice in enumerate(self.choices, 1):
-                mark = "[-]" if choice.reason else "[x]" if choice.checked else "[ ]"
-                write(f"  {number:>2}. {mark} {choice.text}" + (f"  ({choice.reason})" if choice.reason else ""))
+                mark = "[-]" if choice.reason else "[x]" if choice.checked or choice.fixed else "[ ]"
+                note = choice.reason or choice.fixed
+                write(f"  {number:>2}. {mark} {choice.text}" + (f"  ({note})" if note else ""))
             try:
                 answer = read("Type numbers to tick or untick (1 3), a for all, n for none; Enter confirms, q quits: ")
             except EOFError:
@@ -106,7 +113,7 @@ class ListState:
                 self.press(answer)
                 continue
             for word in answer.replace(",", " ").split():
-                if word.isdigit() and 1 <= int(word) <= len(self.choices) and self.choices[int(word) - 1].reason is None:
+                if word.isdigit() and 1 <= int(word) <= len(self.choices) and not self.choices[int(word) - 1].locked:
                     self.choices[int(word) - 1].checked = not self.choices[int(word) - 1].checked
 
 
