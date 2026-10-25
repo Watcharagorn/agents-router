@@ -1,6 +1,6 @@
 ---
 name: agents-router
-description: How to run subagents through Agents Router (the agt-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity). Skip it for trivial answers and tiny edits.
+description: How to run subagents through Agents Router (the agt-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity). Also use it to share agents and skills between the user's CLIs (agt share), change agt's settings (agt config), or explain what agt changed (agt log). Skip it for trivial answers and tiny edits.
 ---
 
 # Agents Router
@@ -75,6 +75,16 @@ Put the user's own words in `override`, for example the relay line `override=use
 | `auth` | For an extra account, ask the user to run `agt accounts login <name>`; add `--runtime codex` or `--runtime antigravity` for non-Claude accounts. For a primary login, use the vendor CLI (`claude auth login`, `codex login` or `agy`). |
 | `timeout`, `max_turns` | Narrow the task or raise the limit |
 | `error`, `lost` | Read `message` and `warnings`; retry once at most. `model at capacity after N retries` means agt already waited and retried, and the model stayed overloaded. Fall back as your delegation rules say; do not manage another retry timer. |
+
+## Sharing, settings and the log
+
+Use agt's own commands for these, with `--json`. A command that needs a choice it wasn't given changes nothing and exits 3 with `needs_choice` (`ask`, `choices`, `retry`); ask the user with your CLI's own question tool and run `retry` with the answer.
+
+- Sharing agents and skills between the user's CLIs: run `agt share enable --dry-run --json`. Show the user the whole proposal as a table (each of `items` with its `cells` per folder, the `excluded` items with their reasons, the `summary`) and ask once: as suggested, change some picks, or not now. Put each `needs_answer` item (copies that differ) in the same question. Then run the proposal's `command` (`agt share enable --yes --if-plan <id>`) with the answers as `--resolve <item>=<label>`, `--resolve <item>=skip`, `--skip <item>@<label>` or `--only <item>=<label>[,<label>]`. [The share guide](../../docs/share.md) has every command.
+- Take answers from the user's request instead of asking again: "remove them" is `--remove-copies`, "keep them" is `--keep-copies`, "use the work one" is `--prefer claude-work`. Ask before `agt share resolve`, `agt share rm` or `--remove-copies` only when the request doesn't already answer it, and before `--yes` only when the dry run does more than the user asked.
+- `agt share status --json` lists what waits in `attention`: each entry has `who` (`choice`: the user decides; `action`: the user fixes something by hand; `agent`: you can run the fix) and `fix`, the commands that settle it. Offer the fix.
+- Settings: `agt config show --json` lists every setting in effect with its source; `agt config set <key> <value>` and `agt config unset <key>` change one. Raising a limit or loosening safety needs `--user-said "<the user's own words>"`: pass the words from the user's request, without asking "are you sure". Without a request from the user for it, don't make that change. Never edit a limit or safety key in a settings file by hand. After a change, tell the user which file it went to (`file` in the result).
+- To explain what agt changed and why, read `agt log --json` (`--all`, `--item <name>`, `--key <key>`, `--since 7d`).
 
 ## Per host
 

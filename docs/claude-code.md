@@ -108,7 +108,7 @@ The relay agents are built on the same jobs as the MCP tools, which work in ever
 | `subagent_list` | Recent jobs |
 | `subagent_accounts` | Accounts, logins, usage with reset times, and cooldowns |
 
-From a terminal, the same jobs are available through `agt run` (add `--follow` to watch each step), `agt start`, `agt follow`, `agt status`, `agt result`, `agt cancel`, `agt jobs`, `agt wait` and `agt message`. `agt --home <folder>` uses a different Agents Router folder for one command.
+From a terminal, the same jobs are available through `agt run` (add `--follow` to watch each step), `agt start`, `agt follow`, `agt status`, `agt result`, `agt cancel`, `agt jobs` (the jobs started in this folder's workspace; `--all` for every job), `agt wait` and `agt message`. `agt --home <folder>` uses a different Agents Router folder for one command.
 
 `access` controls permissions:
 

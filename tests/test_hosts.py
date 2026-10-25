@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 import helpers  # noqa: F401  (isolates the test process from your real folders)
 
@@ -32,6 +33,16 @@ class HostTests(unittest.TestCase):
             self.assertIn(str(config / "CLAUDE.md"), note)
             self.assertEqual(parent_note(context, "claude"), "")
             self.assertEqual(parent_note({"host": "unknown"}, "codex"), "")
+
+    def test_antigravity_skills_come_from_the_cli_or_the_app_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            (home / ".gemini" / "config" / "skills").mkdir(parents=True)
+            project = home / "project"
+            (project / ".agents" / "skills").mkdir(parents=True)
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+                context = host_context("antigravity", str(project), {})
+            self.assertEqual(context["skills"], [str(home / ".gemini" / "config" / "skills"), str(project / ".agents" / "skills")])
 
 
 if __name__ == "__main__":

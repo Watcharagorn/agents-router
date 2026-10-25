@@ -104,7 +104,7 @@ Permission levels are mapped per runtime instead of passing through raw flags: `
 ### Layout
 
 ```toml
-# ~/.agents-router/config.toml
+# ~/.agt/settings.toml
 [claude]
 primary = "~/.claude"                 # the setup everyone shares
 failover = "on-limit"                 # on-limit (default) | off

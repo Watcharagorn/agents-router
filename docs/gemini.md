@@ -144,7 +144,7 @@ Reads, ordinary workspace edits, read-only commands and sandboxed commands that 
 
 ### Settings
 
-Under `[antigravity]` in `config.toml`: `reviewer` (`"agy"`, `"claude"` or `"off"`), `reviewer_model`, `reviewer_account` (the Claude account for `"claude"`), and `sandbox` (`false` sends every non-read-only command to the reviewer). See [configuration](configuration.md).
+Under `[antigravity]` in agt's settings (`agt config set antigravity.reviewer claude`, say): `reviewer` (`"agy"`, `"claude"` or `"off"`), `reviewer_model`, `reviewer_account` (the Claude account for `"claude"`), and `sandbox` (`false` sends every non-read-only command to the reviewer). See [configuration](configuration.md).
 
 ### Limits
 

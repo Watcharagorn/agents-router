@@ -1,6 +1,90 @@
 # Configuration
 
-Agents Router keeps everything under `~/.agents-router/` (or `AGT_HOME`). `agt accounts add` writes the config for you; edit it by hand for the other options.
+Agents Router keeps its jobs, state and account folders under `~/.agents-router/` (or `AGT_HOME`), and your settings in `settings.toml` files: one for you, and one or two per workspace. `agt config` shows and changes them, `agt accounts add` writes your account entries, and editing the files by hand is fine too.
+
+## Settings files
+
+| Level | File | Committed | Holds |
+|---|---|---|---|
+| User | `~/.agt/settings.toml` | no | your settings for every workspace |
+| Workspace | `<workspace>/.agt/settings.toml` | yes, shared with your team | the team's settings for this repo |
+| Local | `<workspace>/.agt/settings.local.toml` | never: agt keeps it out of git | your own settings for this repo |
+
+Each file holds the same keys: the top-level ones, `[claude]`, `[codex]`, `[antigravity]` and `[share]`. Later levels win, key by key: a job started in a repo uses its local file, then the repo's file, then yours, then agt's defaults. `$AGT_CONFIG_DIR` moves the user file; with only `AGT_HOME` set, it's `<AGT_HOME>/settings.toml`, so `agt --home` keeps settings apart too.
+
+Which workspace you're in:
+
+- inside a git checkout: the nearest folder with `.agt/` between the current folder and the checkout's root, else the root. agt never looks above the root, so a worktree, a submodule or a nested clone never uses an outer repo's settings;
+- outside git: the nearest folder with `.agt/` at or above the current one, else the current folder;
+- your home folder is never a workspace (its `.agt/` is your user level), so there only your user file counts.
+
+A worktree without its own `settings.local.toml` reads the main checkout's, so your own picks follow you into it. agt never creates `.agt/` on its own; only `agt config set` run in a workspace does.
+
+Some keys are machine-wide and count only in your user file: `primary`, `binary` and the account tables (`[[claude.accounts]]` and the like). A workspace file that sets one is reported with its file and line (`agt config show` and `agt doctor` list it), and the value is ignored. `[share]` is read from your user file only, for now: a repo's own share settings come with sharing a repo's items. A workspace can still pick which of your accounts its jobs use, by name, usually in its local file:
+
+```toml
+[claude]
+accounts = ["max-2"]    # unpinned jobs here use only max-2; a name that isn't one of your accounts is ignored, with a note
+```
+
+A value of the wrong type or out of range is never used. agt names the file and the line, and jobs don't start in that workspace until it's fixed; `agt config show` still works and shows the problem. A job reads the settings of the folder it runs in, so a worker started for a repo uses that repo's models, accounts, limits and safety settings. Running jobs are counted across the whole machine either way.
+
+When a change applies: job settings at the next job start (running jobs keep theirs), and share settings at the next sync.
+
+## agt config
+
+```bash
+agt config show                         # every setting in effect here, and where each value comes from
+agt config set codex.max_jobs 2         # in a workspace: its .agt/settings.toml
+agt config set codex.max_jobs 2 --user  # your user file
+agt config unset codex.max_jobs         # back to the next level, or the default
+```
+
+`show` lists each key with its value and its source: the default, an environment variable (`CLAUDE_CONFIG_DIR` for `claude.primary`, say), or a file and its line. `--json` adds each key's description and whether an agent needs the user's words to change it.
+
+`set` and `unset` change one line of one file. Comments and every other line stay as they are, and the old file is backed up to `~/.agents-router/state/backups/settings/`. Each prints the old and new value, the file, what still limits the value or overrides it here, and the command that undoes it:
+
+```text
+$ agt config set codex.max_jobs 1
+codex.max_jobs: 2 → 1 in /work/app/.agt/settings.toml (workspace)
+In effect here: 1. Applies at the next job start (running jobs keep theirs).
+Undo: agt config set codex.max_jobs 2 --workspace
+```
+
+Where a change goes: in a workspace, its `.agt/settings.toml`; in your home folder, your user file. Account picks (`claude.accounts` and the like) go to the local file, because they're yours. `primary`, `binary` and the `share.*` keys always go to your user file. `--user`, `--workspace` and `--local` pick the file. `unset` removes the key from the file whose value is in effect here, unless you name one. A new local file is added to the repo's `.git/info/exclude`.
+
+A few keys raise a limit or loosen safety:
+
+| Key | Needs the user's words when |
+|---|---|
+| `max_jobs`, `max_depth`, and `<runtime>.max_jobs`, `max_jobs_per_account`, `primary_max_jobs`, `primary_max_effort`, `usage_ceiling` | it goes up, or to no cap (unsetting a cap counts) |
+| `<runtime>.plan`, `primary_models`, `edit_permission_mode` | it changes at all |
+| `antigravity.reviewer`, `antigravity.sandbox` | the reviewer turns `off`, or the sandbox `false` |
+| `codex.network_access`, `codex.windows_sandbox` | network access turns `true`, or the sandbox `off` |
+
+Typed by you in a terminal, the change just applies: the command is your words. From an agent (agt sees `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_THREAD*` or `CODEX_SANDBOX*`, terminal or not), it needs `--user-said "<the user's words>"`; without it, nothing changes and the command exits 3 with `{"error": "needs_user_words", "ask", "retry"}`. The words go to the log. Lowering a limit never needs them. A change to your user file counts even when this workspace overrides it, because it applies everywhere else. agt can't tell an agent's hand edit from yours, so agents must change these keys only with `agt config`.
+
+`max_jobs_by_room` and the `[[<runtime>.pools]]` and account tables are edited by hand (`agt accounts` handles accounts).
+
+## The log
+
+agt writes one line for each thing it changes to `~/.agents-router/state/log/<year>-<month>.jsonl`:
+
+- every settings change: the key, the old and new value, the file and where the change came from (`agt config`, with the user's words when an agent passed them; a hand edit; or git, with the commit that last changed the file when the file matches it);
+- every `agt share` run that writes: the command, each write, link, removal and backup, the copies kept, the conflicts, and how long it took;
+- every turn-off, with the keep-or-remove answer and each copy;
+- a value that stopped a job from starting, with its file, line and reason, once.
+
+agt notices hand edits and commits by each file's hash, the next time it reads the file on a path that writes anyway: a real sync, `agt config set`, or a job start. The first time it sees a file, it only remembers it. `status`, dry runs and `config show` never write the log. Values that can hold a secret (anything named like `env`, `headers` or `token`) are logged as a hash. Months older than 12 are removed, and the oldest go first past 50 MB.
+
+```bash
+agt log                           # this workspace's entries and your user level's, newest first
+agt log --all                     # every workspace
+agt log --item reviewer --since 7d
+agt log --key codex.max_jobs --json
+```
+
+`--since` takes `30m`, `12h`, `7d`, `2w`, `today`, `yesterday` or a date such as `2026-10-01`. In a workspace, the list ends with how many entries other workspaces have.
 
 ## Model capacity retries
 
@@ -18,7 +102,9 @@ capacity_retry_seconds = 30   # initial wait, doubled for each retry
 
 See [the signal research](research/capacity-errors.md) for the overload messages each runtime recognizes.
 
-## config.toml
+## The settings
+
+Every key agt knows, with its default, as it would look in any of the files above:
 
 ```toml
 job_retention_days = 7       # finished job records older than this are deleted
@@ -88,7 +174,7 @@ When no extra accounts are configured, workers run on the primary account. That 
 
 `agt run --follow`, `agt follow` and `agt message --follow` accept `--window SECONDS`, a positive integer. Bare `--window` uses 60 seconds. This bounds each watch call and repeats the window in its authenticated continuation command, including after a worker question. `--max-wait` still provides an upper bound when it is shorter. The worker keeps running when a watch call returns.
 
-The Claude Code relay agents use `--window 60` so the app can show a finished Bash call's output about once a minute, plus the relay's next-turn delay. Supply `window=120` in the relay's initial prompt to change it. Without `--window`, terminal use keeps streaming with the existing 540-second watch limit (`--max-wait` changes it). This is a command option, not a `config.toml` key.
+The Claude Code relay agents use `--window 60` so the app can show a finished Bash call's output about once a minute, plus the relay's next-turn delay. Supply `window=120` in the relay's initial prompt to change it. Without `--window`, terminal use keeps streaming with the existing 540-second watch limit (`--max-wait` changes it). This is a command option, not a setting.
 
 ## Limits
 
@@ -219,15 +305,20 @@ The alternative names depend on which other installed runtimes have room. `agt a
 ### What goes where
 
 - Defaults: no cap on jobs per account, `usage_ceiling = 0.95` when usage is known, and `when_full = "refuse"` for explicit caps. Plans and extra caps are opt-in.
-- Your `config.toml` holds your plans and caps: `plan`, `max_jobs`, `models`, `fallback`.
+- Your settings hold your plans and caps: `plan`, `max_jobs`, `models`, `fallback`.
 - Your agent instructions (`CLAUDE.md` and the like) hold preferences, such as which model to use for what kind of task.
 - agt decides by itself: it counts running jobs, checks cooldowns and usage, picks an account, and lowers the effort when the account's plan needs it.
 
+## Sharing
+
+The `[share]` tables of your user file hold `agt share`'s answers: what shares, between which folders, and your picks per item. See [Sharing agents and skills](share.md#settings). `agt share settings` lists them with the command that changes each.
+
 ## Files
+
+Your settings are in the files under [Settings files](#settings-files), not here. The rest is under `~/.agents-router/` (or `AGT_HOME`):
 
 | Path | Contents |
 |---|---|
-| `config.toml` | The configuration above |
 | `homes/<runtime>/<account>/` | Account folders (login, state, sessions, linked shared setup) |
 | `homes/antigravity/primary/` | The folder Antigravity jobs on your primary account run in (its login stays in the OS keyring) |
 | `homes/antigravity/.reviewer/<account>/` | The bare folder the Antigravity reviewer runs from |
@@ -235,6 +326,9 @@ The alternative names depend on which other installed runtimes have room. `agt a
 | `state/<runtime>-usage.json` | Last known usage, cooldowns and last use per account |
 | `state/leases/` | Lock files for per-account job slots |
 | `cache/claude/<account>/` | Generated `settings.json` overlay and MCP config passed to workers |
+| `state/share/` | `agt share`'s `state.json` (each item at the last sync), `attention.json` (what waits for you), `events.jsonl`, and `backups/<run>/` with each run's `manifest.json` |
+| `state/log/` | The log, one file per month, and `seen.json` (what agt last saw of each settings file) |
+| `state/backups/settings/` | A settings file as it was before each `agt config set` or `unset` |
 
 Job records and generated files contain your prompts, results and MCP server settings. They stay on your machine and are created with owner-only permissions where the OS supports it.
 
@@ -242,7 +336,8 @@ Job records and generated files contain your prompts, results and MCP server set
 
 | Variable | Effect |
 |---|---|
-| `AGT_HOME` | Use a different root folder (`agt --home <folder>` sets it for one command) |
+| `AGT_HOME` | Use a different root folder (`agt --home <folder>` sets it for one command). Without `AGT_CONFIG_DIR`, your user settings move with it, to `<AGT_HOME>/settings.toml` |
+| `AGT_CONFIG_DIR` | The folder of your user `settings.toml` (default `~/.agt`) |
 | `AGT_DEPTH` | Set by Agents Router in workers; used to refuse nested delegation |
 | `CLAUDE_CONFIG_DIR` | Default for `[claude] primary` when the config doesn't set it |
 | `CODEX_HOME` | Default for `[codex] primary` when the config doesn't set it |

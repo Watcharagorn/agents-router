@@ -508,7 +508,7 @@ def _check_agt_on_path(report: Report) -> None:
         return
     scripts = sysconfig.get_path("scripts")
     report.add_todo(
-        "The plugin starts `agt`, but it isn't on PATH. Run `pipx ensurepath`, or add "
+        "The plugin starts `agt`, but it isn't on PATH. Run `uv tool update-shell` (or `pipx ensurepath`), or add "
         f"{scripts} to PATH, then restart your terminal and agent."
     )
 

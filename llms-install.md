@@ -5,19 +5,21 @@ Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigrav
 1. Install the `agt` command:
 
    ```bash
-   pipx install git+https://github.com/Watcharagorn/agents-router
+   uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
    ```
 
-   Without pipx: `pip install --user git+https://github.com/Watcharagorn/agents-router`, then make sure the Python scripts folder is on PATH. Check with `agt --version`.
+   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal. Check with `agt --version`.
 
-2. Install the plugin into the installed host CLIs and register any extra account folders the user named:
+2. Install the plugin into the installed host CLIs. Ask the user whether they have other account folders, and register each one they name:
 
    ```bash
    agt setup --dry-run --account <name>=<folder>
    agt setup --account <name>=<folder>
    ```
 
-3. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room.
+3. Offer to share the user's agents and skills between their CLIs: run `agt share enable --dry-run --json`, show the proposal as a table, ask once (as suggested, change some picks, or not now), then run its `command` with the user's answers. See [For agents](docs/share.md#for-agents).
+
+4. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room.
 
    Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, preview with `agt rules --show` and their values, then install. Otherwise skip it. For example:
 
@@ -27,9 +29,9 @@ Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigrav
 
    Use their host and models. Add `--work-folder` for each work folder they want listed. Nothing installs these rules without `--install`.
 
-4. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
+5. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
 
-5. Run `agt doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`). Plain `agt doctor` checks Claude only. To update later, run `agt update`.
+6. Run `agt doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`). Plain `agt doctor` checks Claude only. To update later, run `agt update`.
 
 For an MCP client without a plugin system (Cline, Cursor and others), add a stdio server instead of step 2:
 

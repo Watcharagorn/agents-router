@@ -69,7 +69,9 @@ def host_context(host: str, cwd: str, env: dict[str, str] | None = None) -> dict
         skills = [codex_home / "skills", project / ".agents" / "skills", project / ".codex" / "skills"]
     elif host == "antigravity":
         instructions = [home / ".gemini" / "GEMINI.md", project / "GEMINI.md", project / "AGENTS.md", project / ".agents" / "rules"]
-        skills = [home / ".gemini" / "antigravity-cli" / "skills", project / ".agents" / "skills"]
+        # The CLI's docs name antigravity-cli/skills and the app's config/skills; a machine has one or the other.
+        skills = [home / ".gemini" / "antigravity-cli" / "skills", home / ".gemini" / "config" / "skills",
+                  project / ".agents" / "skills"]
     return {"host": host, "instructions": _existing(instructions), "skills": _existing(skills)}
 
 
