@@ -533,6 +533,21 @@ class RenameDetectionTests(ItemBase):
         self.assertEqual(sorted(self.record("skills/lesson-site")["made"]), ["claude", "kiro"])
         self.assertIn("everything is in sync", self.share("sync"))
 
+    def test_an_item_command_waits_for_sync_to_finish_a_rename(self):
+        self.enable()
+        self.share("pick", "dana", "--not-in", "codex")
+        self.rename_file(self.claude, "dana", "reviewer")
+        before = self.folders()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.share("pick", "reviewer", "--not-in", "kiro", code=2)
+        self.assertIn("`agt share sync` finishes the rename", err.getvalue())
+        self.assertEqual(self.folders(), before)
+        self.share("sync")
+        self.share("pick", "reviewer", "--not-in", "kiro")
+        self.assertEqual(settings.load().not_in, {"agents/reviewer": ["codex", "kiro"]})
+        self.assertFalse((self.user / ".codex" / "agents" / "reviewer.toml").exists())
+
     def test_an_edited_copy_left_under_the_old_name_stops_it(self):
         self.enable()
         self.write_kiro("dana", prompt="Dana, edited in Kiro.")

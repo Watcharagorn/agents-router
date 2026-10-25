@@ -318,7 +318,7 @@ def absent_labels(items: list[Item], included: list[Provider], options: Options,
 
     A folder whose kind folder is missing, after agt has synced it, is absent:
     nothing is filled or deleted there. So is a folder where more than
-    max(3, 25%) of the items agt knew disappeared at once: its deletes freeze,
+    max(3, 25%) of the copies agt made there disappeared at once: its deletes freeze,
     run after run, until you answer: `sync --allow-deletes <label>` lets them
     go, and `sync --refill <label>` puts the copies back. Labels that stopped
     sharing are absent too.
@@ -341,7 +341,8 @@ def absent_labels(items: list[Item], included: list[Provider], options: Options,
                     absent[kind].add(label)  # a folder that isn't sharing any more
                     continue
                 known[label] = known.get(label, 0) + 1
-                if (key, label) not in present:
+                # Only copies agt made count: a vanished original writes nothing anyway, and waits for `agt share rm`.
+                if (key, label) not in present and label in (record.get("made") or []):
                     gone[label] = gone.get(label, 0) + 1
         for label in known:
             location = by_label[label].writable(kind)

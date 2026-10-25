@@ -125,3 +125,21 @@ class FreezeTests(ItemBase):
         self.assertFalse(os.path.lexists(self.kiro_skills / "extra-0"))
 
     entries = AttentionTests.entries
+
+
+class OriginalsDontFreezeTests(ItemBase):
+    def test_deleting_many_originals_waits_for_rm_without_a_freeze(self):
+        for index in range(5):
+            self.agent(self.claude, f"helper-{index}", body=f"Help {index}.")
+        age(*(self.claude / "agents").iterdir())
+        self.enable()
+        for index in range(4):
+            (self.claude / "agents" / f"helper-{index}.md").unlink()
+        before = self.folders()
+        self.share("sync")
+        self.assertEqual(self.folders(), before)
+        code, out = self.run_share("status")
+        self.assertEqual(code, 1)
+        self.assertNotIn("Frozen", out)
+        self.assertEqual(out.count("Waiting to be deleted: helper-"), 4)
+

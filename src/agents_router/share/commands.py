@@ -571,7 +571,17 @@ def _locked_plan(args: argparse.Namespace, saved: settings.Settings, current: st
     if any(item.decision.reason == "saved less than 3 s ago" for item in plan.waiting):
         time.sleep(planner.FRESH_SECONDS)
         plan = _plan(args, current, saved, **kwargs).restricted(keys)
+    _no_rename_pending(plan)
     return plan
+
+
+def _no_rename_pending(plan: planner.Plan) -> None:
+    """An item renamed by hand and not synced yet: `sync` finishes the rename and moves your picks first."""
+
+    for item in plan.items:
+        if item.decision and item.decision.action == "rename":
+            raise ValueError(f"{item.name} was renamed from {item.renamed_from.partition('/')[2]} by hand; "
+                             "`agt share sync` finishes the rename, and your picks follow it")
 
 
 def _not_shared(plan: planner.Plan, key: str) -> str | None:
@@ -1034,6 +1044,7 @@ def _undo(args: argparse.Namespace) -> int:
             saved_at = settings.save(saved)
         own = frozenset(os.path.realpath(outcome.path) for outcome in restored if outcome.ok)
         plan = _plan(args, current, saved, own=own).restricted({_identity(key)})
+        _no_rename_pending(plan)
         result = apply.apply(plan, current, op="undo", run=run, prior=[outcome for outcome in restored if outcome.ok])
         result.outcomes += [outcome for outcome in restored if not outcome.ok]
         result.replayed = replayed
