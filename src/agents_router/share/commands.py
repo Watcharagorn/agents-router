@@ -34,7 +34,7 @@ from typing import Any
 from agents_router import hosts
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, model, names, normalize, plan as planner, providers, settings, state, toolmap,
+    apply, attention, engine, gitexclude, model, names, normalize, picker, plan as planner, providers, settings, state, toolmap,
 )
 from agents_router.share.providers import _short as short
 
@@ -649,8 +649,8 @@ def _existing(plan: planner.Plan, name: str) -> str:
     return key
 
 
-def _show_picks(plan: planner.Plan, key: str | None, as_json: bool) -> int:
-    """`pick` with no flags: what goes where, read-only. An agent gets `needs_choice` to ask the user."""
+def _show_picks(args: argparse.Namespace, plan: planner.Plan, key: str | None) -> int:
+    """`pick` with no flags: the grid for a person at a terminal; the table and `needs_choice` otherwise."""
 
     if key is None:
         shown = sorted(plan.items, key=lambda item: (not any(c.state == planner.WAITING for c in item.cells.values()),
@@ -662,8 +662,10 @@ def _show_picks(plan: planner.Plan, key: str | None, as_json: bool) -> int:
                   f"`agt share pick {key.partition('/')[2]} --in <label>` shares it again.")
             return 0
         shown = [item]
+    if not args.json and _interactive():
+        return _pick_grid(args, plan, shown)
     retry = f"agt share pick {key.partition('/')[2] if key else '<item>'} --in <label> | --not-in <label> | --only <label>[,<label>]"
-    if as_json:
+    if args.json:
         _print({"error": "needs_choice", "ask": "Which CLIs should get it?", "labels": [p.label for p in plan.included],
                 "choices": [{"kind": item.kind, "name": item.name,
                              "cells": {label: {"state": cell.state, "note": cell.note} for label, cell in item.cells.items()}}
@@ -673,38 +675,58 @@ def _show_picks(plan: planner.Plan, key: str | None, as_json: bool) -> int:
     lines += ["", f"To change it: {retry}",
               "  --not-in removes the copy agt made there, with a backup; add --keep-copies to keep it as your own file."]
     print("\n".join(lines))
-    return 0 if _interactive() else 3
+    return 3
 
 
-def _pick(args: argparse.Namespace) -> int:
-    saved = _enabled()
-    if saved is None:
-        _say_off(args)
+def _grid_cell(item: planner.Item, label: str, made: set[str]) -> picker.Cell:
+    """One cell of the pick grid: ticked where the item is or goes, and fixed where agt never changes it."""
+
+    cell = item.cells.get(label, planner.Cell(planner.BLOCKED, "not a folder agt shares"))
+    state, note = cell.state, cell.note
+    if state == planner.HAS:
+        if note:  # your original, or a folder another CLI reads
+            return picker.Cell(picker.FIXED, note)
+        if label not in made:
+            return picker.Cell(picker.FIXED, "your original: agt never removes it")
+        return picker.Cell(picker.ON, "agt's copy; untick to remove it, with a backup")
+    if state in (planner.COPY, planner.UPDATE, planner.CONFLICTED):
+        return picker.Cell(picker.ON, note or "agt copies it there")
+    if state == planner.WAITING:
+        if note.startswith(planner.NEW_WAITING):
+            return picker.Cell(picker.OFF, "new: tick where it should go")
+        if note == "its folder is missing or frozen this run":
+            return picker.Cell(picker.FIXED, note)
+        return picker.Cell(picker.ON, note)
+    if state == planner.BLOCKED:
+        return picker.Cell(picker.BLOCKED, note)
+    return picker.Cell(picker.OFF, note or "left out")  # unticked, kept as your own file, or a removal still to finish
+
+
+def _pick_grid(args: argparse.Namespace, plan: planner.Plan, shown: list[planner.Item]) -> int:
+    current = state.load()
+    columns = [provider.label for provider in plan.included]
+    rows = []
+    for item in shown:
+        made = set((current.items.get(item.key) or {}).get("made") or [])
+        rows.append(picker.Row(f"{item.kind}/{item.name}", item.name if len({i.name for i in shown}) == len(shown)
+                               else f"{item.kind}/{item.name}", {label: _grid_cell(item, label, made) for label in columns}))
+    grid = picker.GridState("agt share pick: which CLIs get what. Enter applies your changes.", columns, rows)
+    changes = grid.changes() if picker.choose(grid) == picker.DONE else {}
+    if not changes:
+        print("Nothing was changed.")
         return 0
-    plan = _plan(args, state.load(), saved)
-    labels = {provider.label for provider in plan.included}
-    to_in = _label_list(args.in_labels, labels, "--in")
-    to_out = _label_list(args.not_in, labels, "--not-in")
-    only = _label_list(args.only_in, labels, "--only") if args.only_in else None
-    if not args.item:
-        if to_in or to_out or only:
-            raise ValueError("name the item: agt share pick <item> --in <label>")
-        return _show_picks(plan, None, args.json)
-    key = _existing(plan, args.item)
+    picks: dict[str, tuple[list[str], list[str]]] = {}
+    for (key, label), ticked in sorted(changes.items()):
+        to_in, to_out = picks.setdefault(key, ([], []))
+        (to_in if ticked else to_out).append(label)
+    return _apply_picks(args, picks, keep_copies=False)
+
+
+def _change_picks(saved: settings.Settings, key: str, to_in: list[str], to_out: list[str], only: list[str] | None,
+                  item: planner.Item | None) -> None:
+    """One item's picks in the settings: `--in`, `--not-in` and `--only`."""
+
     name = key.partition("/")[2]
-    if not (to_in or to_out or only):
-        return _show_picks(plan, key, args.json)
-    both = sorted(set(to_in) & set(to_out))
-    if both:
-        raise ValueError(f"{', '.join(both)} is in both --in and --not-in")
-    item = _find(plan, key)
-    if item is None and not (to_in or only):
-        print(f"{name} isn't shared ({_not_shared(plan, key)}), so there's nothing to take out. "
-              f"`agt share pick {name} --in <label>` shares it again.")
-        return 0
-    if apply.in_worker():
-        print(IN_WORKER)
-        return 2
     not_in = set(saved.not_in.get(key, []))
     chosen = sorted(only) if only is not None else saved.only.get(key)
     if item is not None and item.decision and item.decision.reason == planner.NEW_WAITING and chosen is None and not to_out:
@@ -730,29 +752,78 @@ def _pick(args: argparse.Namespace) -> int:
         saved.only[key] = sorted(chosen)
     if to_in or only:
         saved.off.discard(key)
+
+
+def _apply_picks(args: argparse.Namespace, picks: dict[str, tuple[list[str], list[str]]], *, keep_copies: bool,
+                 only: dict[str, list[str]] | None = None) -> int:
+    """Save these items' picks and act on them at once, in one run. `picks`: key -> (labels in, labels out).
+
+    The settings are read again holding the lock, so a pick made meanwhile elsewhere isn't lost.
+    """
+
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    only = only or {}
+    saved = settings.load()
     included = _folders(load_config(), None, False, saved)[1]
+    keys = {_identity(key) for key in picks}
     with apply.lock([provider.folder for provider in included]):
         current = state.load()
         replayed = apply.replay(current)
-        record = current.items.get(_identity(key))
-        if record:
-            # A CLI picked again gets the item again, whatever stopped it there.
-            back = set(to_in) | set(only or [])
-            for field_name in ("stopped", "released"):
-                left = [label for label in record.get(field_name) or [] if label not in back]
-                if left:
-                    record[field_name] = left
-                else:
-                    record.pop(field_name, None)
+        saved = settings.load()
+        before = _plan(args, current, saved)
+        _no_rename_pending(before.restricted(keys))
+        for key, (to_in, to_out) in picks.items():
+            _change_picks(saved, key, to_in, to_out, only.get(key), _find(before, key))
+            record = current.items.get(_identity(key))
+            if record:
+                # A CLI picked again gets the item again, whatever stopped it there.
+                back = set(to_in) | set(only.get(key) or [])
+                for field_name in ("stopped", "released"):
+                    left = [label for label in record.get(field_name) or [] if label not in back]
+                    if left:
+                        record[field_name] = left
+                    else:
+                        record.pop(field_name, None)
         saved_at = settings.save(saved)
-        plan = _locked_plan(args, saved, current, {_identity(key)}, keep_copies=args.keep_copies)
+        plan = _locked_plan(args, saved, current, keys, keep_copies=keep_copies)
         result = apply.apply(plan, current, op="pick")
         result.replayed = replayed
-        _remember(plan, current, result, {_identity(key)})
-    undo = [f"`agt share undo {name} --in {label}` brings a removed copy back."
-            for label in sorted({label for outcome in result.written if outcome.action == "remove" for label in outcome.labels})]
+        _remember(plan, current, result, keys)
+    undo = [f"`agt share undo {outcome.name} --in {label}` brings a removed copy back."
+            for outcome in result.written if outcome.action == "remove" for label in outcome.labels]
     _report(plan, result, saved_at, args.json, title="agt share pick", notes=undo)
     return 1 if result.failed else 0
+
+
+def _pick(args: argparse.Namespace) -> int:
+    saved = _enabled()
+    if saved is None:
+        _say_off(args)
+        return 0
+    plan = _plan(args, state.load(), saved)
+    labels = {provider.label for provider in plan.included}
+    to_in = _label_list(args.in_labels, labels, "--in")
+    to_out = _label_list(args.not_in, labels, "--not-in")
+    only = _label_list(args.only_in, labels, "--only") if args.only_in else None
+    if not args.item:
+        if to_in or to_out or only:
+            raise ValueError("name the item: agt share pick <item> --in <label>")
+        return _show_picks(args, plan, None)
+    key = _existing(plan, args.item)
+    name = key.partition("/")[2]
+    if not (to_in or to_out or only):
+        return _show_picks(args, plan, key)
+    both = sorted(set(to_in) & set(to_out))
+    if both:
+        raise ValueError(f"{', '.join(both)} is in both --in and --not-in")
+    if _find(plan, key) is None and not (to_in or only):
+        print(f"{name} isn't shared ({_not_shared(plan, key)}), so there's nothing to take out. "
+              f"`agt share pick {name} --in <label>` shares it again.")
+        return 0
+    return _apply_picks(args, {key: (to_in, to_out)}, keep_copies=args.keep_copies,
+                        only={key: only} if only is not None else None)
 
 
 def _ask_version(item: planner.Item) -> str | None:

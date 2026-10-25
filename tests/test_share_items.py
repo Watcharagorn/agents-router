@@ -156,10 +156,11 @@ class PickTests(ItemBase):
     def test_with_no_flags_it_shows_the_table_and_writes_nothing(self):
         self.enable()
         before = self.snapshot()
-        with patch.object(commands, "_interactive", lambda: True):
-            out = self.share("pick", "dana")
+        out = self.share("pick", "dana", code=3)  # no terminal: the table, and nothing changes
         self.assertIn("agt share pick: what goes where. Nothing was changed.", out)
         self.assertIn("dana", out)
+        with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", lambda prompt: "q"):
+            self.assertIn("Nothing was changed.", self.share("pick", "dana"))  # a person quits the grid
         out = self.share("pick", "--json", code=3)
         answer = json.loads(out)
         self.assertEqual(answer["error"], "needs_choice")

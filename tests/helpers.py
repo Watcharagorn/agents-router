@@ -1,4 +1,5 @@
 import atexit
+import io
 import json
 import os
 from pathlib import Path
@@ -159,6 +160,9 @@ class ShareHome(unittest.TestCase):
             "FAKE_HOST_LOG": str(self.root / "host-log.jsonl"),
         })
         self._env.start()
+        # Nothing a test runs may wait for typing: a prompt it reaches gets end-of-input.
+        self._stdin = patch("sys.stdin", io.StringIO(""))
+        self._stdin.start()
         # agt share's run lock goes in the temp folder; keep it inside this test's folder too.
         (self.root / "tmp").mkdir()
         self._tempdir = patch.object(tempfile, "tempdir", str(self.root / "tmp"))
@@ -170,6 +174,7 @@ class ShareHome(unittest.TestCase):
 
     def tearDown(self):
         self._tempdir.stop()
+        self._stdin.stop()
         self._env.stop()
         self._temp.cleanup()
 
