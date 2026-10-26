@@ -290,7 +290,7 @@ class UpdateTests(SetupBase):
         self.log.unlink()
         code, out = self.run_update()
         self.assertEqual(code, 0, out)
-        self.assertIn("agt: reinstalled from GitHub", out)
+        self.assertIn("agt: reinstalled with `", out)
         changing = [(c["kind"], c["argv"]) for c in self.calls() if "list" not in c["argv"]]
         self.assertEqual(changing, [
             ("claude", ["plugin", "marketplace", "update", "agents-router"]),

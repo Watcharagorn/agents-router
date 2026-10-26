@@ -190,6 +190,19 @@ class RunTests(WatchBase):
         (self.claude / "skills" / "ask-simply" / "notes.md").write_text("more", encoding="utf-8")
         self.assertNotEqual(self.watch(), "nothing moved")
 
+    def test_claudes_synced_skills_never_wake_a_sync(self):
+        synced = self.claude / "skills" / "synced" / "from-claude-ai"
+        synced.mkdir()
+        (synced / "manifest.json").write_text('{"lastUpdated": 1}', encoding="utf-8")
+        self.enable()
+        self.watch()
+        self.assertEqual(self.watch(), "nothing moved")
+        (synced / "manifest.json").write_text('{"lastUpdated": 2}', encoding="utf-8")  # Claude Code rewrites it often
+        self.skill(self.lab / "skills" / "synced" / "from-claude-ai", "notes")
+        self.assertEqual(self.watch(), "nothing moved")
+        self.skill(self.lab, "plan-trip")  # a real skill still wakes one
+        self.assertNotEqual(self.watch(), "nothing moved")
+
     def test_a_busy_run_leaves_the_work_to_the_next(self):
         self.enable()
         folders = [self.claude, self.lab, self.user / ".codex", self.user / ".kiro"]

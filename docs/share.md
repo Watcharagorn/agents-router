@@ -135,6 +135,9 @@ Servers are compared on what every CLI shares: the command, its arguments, `env`
 Some servers don't go everywhere:
 
 - **A server with a secret written into it** (a token in `env`, a header or an argument, or a password in a URL) stays in the CLIs that have it. Use a `${VAR}` reference instead, and it shares.
+- **A server that signs in through a `headersHelper` command** stays in the Claude folders that have it. That setting belongs to Claude Code alone, and agt never runs it.
+- **A server set up for one CLI** stays where it is. That's one whose `env` sets the CLI's own folder (`CODEX_HOME`, `CLAUDE_CONFIG_DIR` or `KIRO_HOME`), or whose `command` or `cwd` is a relative path. The servers the Codex app adds are like this.
+- **A server turned off everywhere it is** (`enabled = false` in Codex, `"disabled": true` in Kiro or Antigravity) isn't copied. One that's on in another CLI still goes from there, and stays off where you turned it off.
 - **Codex** passes variables only by name, so a server whose `env` gives one variable another's value (`"API_TOKEN": "${OTHER}"`) doesn't go there. Neither does an SSE server.
 - **Antigravity** doesn't expand `${VAR}` in its settings, so a server that needs one doesn't go there. Neither does an SSE server.
 - **Kiro** asks you once before it passes a `${VAR}` value to a server.
@@ -253,7 +256,7 @@ Turning sharing on also sets up what runs it without you:
 | A save entry | when Claude Code writes or edits a file inside a shared folder, so the change spreads within seconds | each Claude folder's `settings.json` |
 | A catch-up | when agt's MCP server starts in any CLI | |
 
-Each of these syncs only when something moved since the last sync, never waits for another run, and never runs inside agt's workers. A run that changes nothing isn't logged. They all call `~/.agents-router/bin/agt-run`, a small launcher that records which Python and install agt runs from, so they don't depend on `PATH`. `agt setup`, `agt update` and an MCP server start rewrite it when agt moves.
+Each of these syncs only when something moved since the last sync, never waits for another run, and never runs inside agt's workers. Changes inside `skills/synced` don't count, since agt never shares it and Claude Code rewrites it often. A run that changes nothing isn't logged. They all call `~/.agents-router/bin/agt-run`, a small launcher that records which Python and install agt runs from, so they don't depend on `PATH`. `agt setup`, `agt update` and an MCP server start rewrite it when agt moves.
 
 At a session start, Claude Code gets one line when there's something to say: what arrived in that folder since your last session there, and what waits for you (a conflict, say, with the command that fixes it). Nothing at all otherwise. A session that's already open doesn't load agents or skills that arrive later; that's how every CLI works. The watcher also posts a macOS notification for a new conflict, an item waiting to be deleted, a frozen folder or a write that keeps failing, at most once an hour.
 

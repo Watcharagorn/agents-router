@@ -512,8 +512,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     update_parser = sub.add_parser(
-        "update", help="Reinstall agt from GitHub and update the plugin in every host that has it.",
-        description="Reinstalls the agt package with the tool that installed it (pipx, uv or pip) and updates "
+        "update", help="Reinstall agt from the source you installed it from, and update the plugin in every host that has it.",
+        description="Reinstalls the agt package with the tool that installed it (pipx, uv or pip), from the same "
+        "source (GitHub, or the folder or archive you installed from), and updates "
         "the agents-router plugin through each host's own terminal commands.",
     )
     update_parser.add_argument("--host", action="append", choices=("claude", "codex", "antigravity", "auto"),

@@ -20,12 +20,16 @@ read raw and never expanded. Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers` become references in that shape, and back. A CLI's other
 keys for a server (Kiro's `disabled`, Codex's timeouts) stay as they are.
 
-Never copied: agt's own server; a server with a literal secret (a credential
-in `env`, a header, an argument or the URL), which stays where it is; a
-server that renames a variable (`"A": "${B}"`) to Codex, which can only pass
-variables through by name; a server that needs `${VAR}` to Antigravity, which
-doesn't expand them. Picks in `[share.targets]` (`"mcp/<name>" = { only =
-[...] }`) keep a server where you say.
+Never copied: agt's own server. These stay where they are: a server with a
+literal secret (a credential in `env`, a header, an argument or the URL); one
+that signs in through Claude's `headersHelper` command; one set up for its
+own CLI (its `env` sets `CODEX_HOME` or another CLI's folder variable, or its
+`command` or `cwd` is a relative path, like the Codex app's servers); and one
+turned off everywhere it is. Not copied to Codex: a server that renames a
+variable (`"A": "${B}"`), since Codex can only pass variables through by name.
+Not copied to Antigravity: a server that needs `${VAR}`, which it doesn't
+expand. Picks in `[share.targets]` (`"mcp/<name>" = { only = [...] }`) keep a
+server where you say.
 """
 
 from __future__ import annotations
@@ -54,6 +58,8 @@ CODEX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SHAPE_KEYS = {"type", "command", "args", "env", "cwd", "url", "headers", "serverUrl", "httpUrl"}
 CODEX_SHAPE_KEYS = {"command", "args", "env", "env_vars", "cwd", "url", "http_headers", "env_http_headers",
                     "bearer_token_env_var"}
+# A CLI's own folder variable: a server that sets it is set up for that CLI (the Codex app's `node_repl`).
+HOME_VARIABLES = {"CODEX_HOME": "Codex", "CLAUDE_CONFIG_DIR": "Claude Code", "KIRO_HOME": "Kiro"}
 
 
 # One shape -------------------------------------------------------------------------------
@@ -175,6 +181,20 @@ def secret(server: dict[str, Any]) -> str | None:
     return _secret_in_args(server.get("args", []))
 
 
+def tied(server: dict[str, Any]) -> str | None:
+    """Why this server only works in the CLI that has it (so it's never copied), or None."""
+
+    for key in server.get("env", {}):
+        if key in HOME_VARIABLES:
+            return f"its env sets {key}, so it's set up for {HOME_VARIABLES[key]}"
+    cwd, command = str(server.get("cwd", "")), str(server.get("command", ""))
+    if cwd and not os.path.isabs(cwd):
+        return "its cwd is a relative path, which only its own CLI resolves"
+    if "/" in command and not os.path.isabs(command) and not cwd:
+        return "its command is a relative path, which only its own CLI resolves"
+    return None
+
+
 def blocked(server: dict[str, Any], cli: str) -> str | None:
     """Why this server can't go to this CLI, or None."""
 
@@ -224,8 +244,8 @@ def _raw(provider: providers.Provider, path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def read(provider: providers.Provider) -> tuple[dict[str, dict[str, Any]], str | None]:
-    """The provider's user servers in the one shape, and a problem when its file can't be read."""
+def _entries(provider: providers.Provider) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """The provider's user servers as its file has them (agt's own left out), and a problem when it can't be read."""
 
     path = config_file(provider)
     if path is None or not path.exists():
@@ -234,14 +254,23 @@ def read(provider: providers.Provider) -> tuple[dict[str, dict[str, Any]], str |
         raw = _raw(provider, path)
     except (OSError, ValueError) as exc:  # TOML and JSON decode errors are ValueErrors
         return {}, f"{path}: can't be read ({exc})"
-    found = {}
-    for name, entry in raw.items():
-        if not isinstance(name, str) or _is_self(name, entry if isinstance(entry, dict) else {}):
-            continue
-        server = _from_codex(entry) if provider.cli == "codex" else normalize(entry)
-        if server is not None:
-            found[name] = server
-    return found, None
+    return {name: entry for name, entry in raw.items()
+            if isinstance(name, str) and isinstance(entry, dict) and not _is_self(name, entry)}, None
+
+
+def _shape(provider: providers.Provider, entry: dict[str, Any]) -> dict[str, Any] | None:
+    return _from_codex(entry) if provider.cli == "codex" else normalize(entry)
+
+
+def _turned_off(provider: providers.Provider, entry: dict[str, Any]) -> bool:
+    return entry.get("enabled") is False if provider.cli == "codex" else entry.get("disabled") is True
+
+
+def read(provider: providers.Provider) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """The provider's user servers in the one shape, and a problem when its file can't be read."""
+
+    entries, problem = _entries(provider)
+    return {name: server for name, entry in entries.items() if (server := _shape(provider, entry)) is not None}, problem
 
 
 def fingerprint(path: Path) -> str:
@@ -376,13 +405,22 @@ def build(included: list[providers.Provider], current: State, options: Any, *, l
                 later={provider.label for provider in included if provider.cli in later})
     servers: dict[str, Server] = {}
     unreadable = set()
+    helpers: dict[str, set[str]] = {}  # name -> the Claude folders where it signs in through a headersHelper
+    off: dict[str, set[str]] = {}  # name -> the CLIs where it's turned off
     for provider in included:
-        found, problem = read(provider)
+        entries, problem = _entries(provider)
         if problem:
             plan.problems.append(problem)
             unreadable.add(provider.label)  # nothing is written there, and its servers aren't missing
-        for name, server in found.items():
+        for name, entry in entries.items():
+            server = _shape(provider, entry)
+            if server is None:
+                continue
             servers.setdefault(name, Server(name)).copies[provider.label] = server
+            if provider.cli == "claude" and entry.get("headersHelper"):
+                helpers.setdefault(name, set()).add(provider.label)
+            if _turned_off(provider, entry):
+                off.setdefault(name, set()).add(provider.label)
     for name in sorted(servers):
         item = servers[name]
         plan.servers.append(item)
@@ -393,6 +431,13 @@ def build(included: list[providers.Provider], current: State, options: Any, *, l
         reason = next((secret(server) for server in item.copies.values() if secret(server)), None)
         if reason:
             item.held = f"a literal secret: {reason}"
+        elif name in helpers:
+            item.held = "it signs in through a headersHelper command, which only Claude Code runs"
+        elif set(item.copies) <= off.get(name, set()):
+            item.held = f"it's turned off in {', '.join(sorted(item.copies))}"
+        else:
+            item.held = next((why for server in item.copies.values() if (why := tied(server))), None)
+        if item.held:
             item.decision = engine.Decision(engine.NOTHING, reason=item.held)
             continue
         allowed = set(options.only[key]) if key in options.only else set(plan.by_label)
@@ -494,9 +539,12 @@ def _claude(provider: providers.Provider, name: str, entry: dict[str, Any] | Non
 
     path = config_file(provider)
     try:
-        there = path is not None and path.exists() and name in _raw(provider, path)
+        old = _raw(provider, path).get(name) if path is not None and path.exists() else None
+        there = old is not None
     except (OSError, ValueError):
-        there = True  # let `claude mcp remove` say
+        old, there = None, True  # let `claude mcp remove` say
+    if entry is not None and isinstance(old, dict):  # its own keys, such as `oauth`, stay
+        entry = {**{key: value for key, value in old.items() if key not in SHAPE_KEYS}, **entry}
     if there:
         result = run("remove", "--scope", "user", name)
         if result.returncode != 0:

@@ -133,7 +133,7 @@ KEYS: dict[str, Key] = {key.name: key for key in [
         share_settings.INSTRUCTIONS, user_only=True, applies=SYNC),
     Key("share.worktrees", "choice", "A listed repo's worktrees share by themselves (auto), or by `agt share repo add .`.",
         share_settings.WORKTREES, user_only=True, applies=SYNC),
-    Key("share.mcp", "bool", "Share your user MCP servers between your CLIs (one with a secret written into it stays put).",
+    Key("share.mcp", "bool", "Share your user MCP servers between your CLIs (one with a secret written into it, or set up for one CLI, stays put).",
         user_only=True, applies=SYNC),
     Key("share.hooks", "bool", "List your hooks for sharing; each copy runs only after you approve it for that CLI.",
         user_only=True, applies=SYNC),

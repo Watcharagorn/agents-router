@@ -162,6 +162,56 @@ class McpTests(ItemBase):
 
         return FLAGS
 
+    def test_servers_set_up_for_their_own_cli_stay_where_they_are(self):
+        data = json.loads(self.claude_json.read_text())
+        data["mcpServers"]["tracker"] = {"type": "http", "url": "https://mcp.example.com/mcp", "headersHelper": "tracker-cli headers"}
+        self.claude_json.write_text(json.dumps(data))
+        codex = self.user / ".codex" / "config.toml"  # like the Codex app's own servers
+        codex.write_text(codex.read_text() + (
+            '\n[mcp_servers.repl]\ncommand = "/Applications/Example.app/Contents/Resources/repl"\nargs = []\n\n'
+            f'[mcp_servers.repl.env]\nCODEX_HOME = {json.dumps(str(self.user / ".codex"))}\n\n'
+            '[mcp_servers.screen]\ncommand = "./Screen.app/Contents/MacOS/screen"\nargs = ["mcp"]\ncwd = "."\n\n'
+            '[mcp_servers.paused]\ncommand = "paused-mcp"\nargs = []\nenabled = false\n'))
+        proposal = json.loads(self.share("enable", "--mcp", "on", "--dry-run", "--json", "--resolve", "gamma-apikey=skip",
+                                         *self.flags()))
+        staying = proposal["mcp"]["staying"]
+        self.assertIn("headersHelper", staying["tracker"])
+        self.assertIn("CODEX_HOME", staying["repl"])
+        self.assertIn("relative path", staying["screen"])
+        self.assertIn("turned off in codex", staying["paused"])
+        self.enable("--mcp", "on")
+        for label in ("claude-lab", "kiro"):
+            self.assertEqual(set(self.servers(label)), {"notes"}, label)
+        self.assertEqual(set(self.servers("claude")), {"notes", "tracker", "agents-router"})
+        self.assertEqual(set(self.servers("codex")), {"notes", "repl", "screen", "paused"})
+        self.assertFalse(tomllib.loads(codex.read_text())["mcp_servers"]["paused"]["enabled"])
+
+    def test_a_server_turned_off_in_one_cli_still_goes_from_where_its_on(self):
+        codex = self.user / ".codex" / "config.toml"
+        codex.write_text(codex.read_text() + '\n[mcp_servers.notes]\ncommand = "npx"\nargs = ["-y", "notes-mcp"]\n'
+                                              'env_vars = ["NOTES_TOKEN"]\nenabled = false\n\n'
+                                              '[mcp_servers.notes.env]\nMODE = "fast"\n')
+        self.enable("--mcp", "on")
+        self.assertEqual(self.servers("kiro").get("notes"), NOTES)
+        self.assertFalse(tomllib.loads(codex.read_text())["mcp_servers"]["notes"]["enabled"])  # still off where you turned it off
+
+    def test_claude_keeps_its_own_keys_when_an_edit_arrives(self):
+        data = json.loads(self.claude_json.read_text())
+        data["mcpServers"]["docs"] = {"type": "http", "url": "https://docs.example.com/mcp"}
+        self.claude_json.write_text(json.dumps(data))
+        self.enable("--mcp", "on")
+        lab = self.lab / ".claude.json"
+        data = json.loads(lab.read_text())
+        data["mcpServers"]["docs"]["oauth"] = {"clientId": "docs-app", "callbackPort": 8765}
+        lab.write_text(json.dumps(data))
+        kiro = self.user / ".kiro" / "settings" / "mcp.json"
+        data = json.loads(kiro.read_text())
+        data["mcpServers"]["docs"]["url"] = "https://docs.example.com/v2/mcp"
+        kiro.write_text(json.dumps(data))
+        self.share("sync")
+        entry = json.loads(lab.read_text())["mcpServers"]["docs"]
+        self.assertEqual((entry["url"], entry["oauth"]), ("https://docs.example.com/v2/mcp", {"clientId": "docs-app", "callbackPort": 8765}))
+
     def test_different_servers_are_a_conflict_until_you_pick_one(self):
         (self.user / ".codex" / "config.toml").write_text('[mcp_servers.notes]\ncommand = "notes-mcp"\nargs = []\n')
         proposal = json.loads(self.share("enable", "--mcp", "on", "--dry-run", "--json", "--resolve", "gamma-apikey=skip",

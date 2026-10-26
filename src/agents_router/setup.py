@@ -729,7 +729,7 @@ def update_package(report: Report) -> None:
     if code != 0:
         report.failed.append(f"agt: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
         return
-    report.done.append(f"agt: reinstalled from GitHub with `{shown}`")
+    report.done.append(f"agt: reinstalled with `{shown}`")  # from its install source, which isn't always GitHub
 
 
 def _update_steps(host: str, state: dict[str, Any]) -> list[list[str]]:

@@ -38,7 +38,7 @@ SWITCHES = {
     "widen": ("Codex agents get every tool (Codex can't limit an agent's tools)", True),
     "rules": ("Delegation rules: which models to use, in each Claude folder and Codex's AGENTS.md", False),
     "codex_session": ("Codex's session line (Codex asks you to trust it once in /hooks)", False),
-    "mcp": ("MCP servers: your CLIs share their user MCP servers (one with a secret written into it stays put)", False),
+    "mcp": ("MCP servers: your CLIs share their user MCP servers (one with a secret written into it, or set up for one CLI, stays put)", False),
 }
 
 

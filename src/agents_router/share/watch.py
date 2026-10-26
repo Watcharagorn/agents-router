@@ -42,7 +42,7 @@ from typing import Any
 
 from agents_router import fsutil, synclog
 from agents_router.config import load_config
-from agents_router.share import apply, attention, engine, providers, scope, settings, state, triggers
+from agents_router.share import apply, attention, engine, exclude, providers, scope, settings, state, triggers
 from agents_router.share import plan as planner
 
 STALE_AFTER = 600  # a watcher that hasn't run for 10 minutes is stopped
@@ -95,8 +95,8 @@ def signature(included: list[providers.Provider], extra: list[Path] | None = Non
                 except OSError:
                     continue
                 for entry in entries:
-                    if entry.name.startswith("."):
-                        continue
+                    if entry.name.startswith(".") or (kind == "skills" and entry.name in exclude.NOT_SHARED_SKILLS):
+                        continue  # Claude Code rewrites skills/synced's manifest often, and agt never shares it
                     add(entry)
                     real = os.path.realpath(entry)
                     if real != str(entry):
