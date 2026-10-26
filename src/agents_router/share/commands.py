@@ -39,7 +39,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agents_router import hosts, synclog
 from agents_router.config import default_primary, load_config
@@ -361,9 +361,15 @@ def _plan(args: argparse.Namespace, current: state.State, saved: settings.Settin
     options = _options(args, {provider.label for provider in included}, saved, resolve, keep_copies)
     plan = planner.build(config, rows, included, options, current, own=own)
     mode = getattr(args, "instructions", None) or (saved.instructions if saved is not None else "off")
-    if mode != "off":
+    root = scope.current().root
+    if mode != "off" and root is None:
         plan.instructions = instructions.build(included, mode, current,
                                                prefer=getattr(options, "instructions_from", None))
+    if root is not None:  # a repo's instructions are its AGENTS.md; Claude Code reads it through a CLAUDE.md import
+        plan.claude_import = instructions.claude_import(
+            root, mode != "off" and any(provider.cli == "claude" for provider in included), current)
+        if plan.claude_import is not None and plan.claude_import.action == "release":
+            plan.notices.append(f"{plan.claude_import.note}; agt no longer looks after it")
     if _mcp_on(args, saved) and not scope.current().project:
         later = frozenset({"claude"}) if getattr(args, "trigger", "command") in MCP_LATER_TRIGGERS else frozenset()
         plan.mcp = mcp.build(included, current, options, later=later)
@@ -478,10 +484,17 @@ def _repo_lines(entry: dict[str, Any], title: str) -> list[str]:
     with scope.use(target):
         if "result" not in entry:
             changes = [f"  {change.action} {change.kind}/{change.name} in {', '.join(change.labels)}: {short(change.path)}"
-                       for change in plan.changes]
-            return [f"In {name}: {len(plan.changes)} change{'s' if len(plan.changes) != 1 else ''}, "
+                       for change in plan.changes] + _import_lines(plan)
+            return [f"In {name}: {len(changes)} change{'s' if len(changes) != 1 else ''}, "
                     f"{len(plan.conflicts)} conflict{'s' if len(plan.conflicts) != 1 else ''}.", *changes]
         return _report_lines(plan, entry["result"], None, f"{title} in {name}", None)
+
+
+def _import_lines(plan: planner.Plan) -> list[str]:
+    change = plan.claude_import
+    if change is None or change.action not in ("make", "remove"):
+        return []
+    return [f"  {'copy' if change.action == 'make' else 'remove'} CLAUDE.md holding @AGENTS.md: {short(change.path)}"]
 
 
 def _repo_json(entry: dict[str, Any]) -> dict[str, Any]:
@@ -492,7 +505,8 @@ def _repo_json(entry: dict[str, Any]) -> dict[str, Any]:
     plan = entry["plan"]
     with scope.use(target):
         if "result" not in entry:
-            return {**data, "changes": len(plan.changes), "conflicts": [item.name for item in plan.conflicts]}
+            return {**data, "changes": len(plan.changes) + len(_import_lines(plan)),
+                    "conflicts": [item.name for item in plan.conflicts]}
         return {**data, **_report_json(plan, entry["result"], None, None)}
 
 
@@ -519,6 +533,7 @@ def _report_json(plan: planner.Plan, result: apply.Result, saved_at: Path | None
         "settings": str(saved_at) if saved_at else None,
         "backups": str(state.share_dir() / "backups" / result.run) if any(o.backup for o in result.written) else None,
         "git_exclude": [{"file": str(path), "lines": lines} for path, lines in result.excluded],
+        "git_exclude_kept": [{"file": str(path), "lines": lines} for path, lines in result.unlisted],
     }
 
 
@@ -553,6 +568,9 @@ def _report_lines(plan: planner.Plan, result: apply.Result, saved_at: Path | Non
         lines += ["", "Notes:"] + [f"  {note}" for note in notes]
     for path, changed in result.excluded:
         lines.append(f"\nListed {len(changed)} of agt's copies in {short(path)}, so that repo's `git status` doesn't show them.")
+    for path, changed in result.unlisted:
+        lines.append(f"\nTook {len(changed)} cop{'y' if len(changed) == 1 else 'ies'} you kept out of {short(path)}, "
+                     "so that repo's `git status` shows them now.")
     if saved_at:
         lines.append(f"\nSaved your answers in {short(saved_at)}.")
     if any(outcome.backup for outcome in result.written):
@@ -834,14 +852,15 @@ def _sync(args: argparse.Namespace) -> int:
     return _run_sync(args, saved, "agt share sync")
 
 
-def _sync_scope(args: argparse.Namespace, target: scope.Scope, command: str) -> dict[str, Any]:
-    """One repo's sync (or dry run): its plan and result, or why it was left alone."""
+def _sync_scope(args: argparse.Namespace, target: scope.Scope, command: str,
+                user: settings.Settings | None = None) -> dict[str, Any]:
+    """One repo's sync (or dry run): its plan and result, or why it was left alone. `user`: your new settings, not yet saved."""
 
     with scope.use(target):
         why = scope.busy(target.root)
         if why:
             return {"scope": target, "skipped": f"git is in the middle of a {why} there, so agt catches up afterwards"}
-        saved = settings.load()
+        saved = settings.load(user=user)
         if getattr(args, "dry_run", False):
             return {"scope": target, "plan": _plan(args, state.load(), saved)}
         included = _folders(load_config(), None, False, saved)[1]
@@ -867,12 +886,15 @@ def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, 
               save: bool = False, notes: list[str] | None = None) -> int:
     """A whole sync from these settings: `sync`, and `cli add` / `kinds add`, which `save` theirs first. Listed repos too."""
 
-    if scope.current().project:
-        repos = []
-    else:
-        repos = [_sync_scope(argparse.Namespace(json=args.json, dry_run=getattr(args, "dry_run", False)), target, command)
-                 for target in _repo_scopes(saved)]
+    def repo_runs(dry_run: bool) -> list[dict[str, Any]]:
+        if scope.current().project:
+            return []
+        # `cli add` and `kinds add` reach the repos at once, with the settings they save.
+        return [_sync_scope(argparse.Namespace(json=args.json, dry_run=dry_run), target, command, saved if save else None)
+                for target in _repo_scopes(saved)]
+
     if getattr(args, "dry_run", False):
+        repos = repo_runs(True)
         plan = _plan(args, state.load(), saved)
         if args.json:
             _print({**planner.proposal(plan, command, saves=False), "repos": [_repo_json(entry) for entry in repos]})
@@ -896,6 +918,7 @@ def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, 
         result.replayed = replayed
         saved_at = _after_renames(args, saved, current, result) or saved_at
         _remember(plan, current, result)
+    repos = repo_runs(False)  # after your folders, so no repo gets ahead of the settings saved above
     if save:
         notes = (notes or []) + _refresh_triggers(saved, plan.included)
     _report(plan, result, saved_at, args.json, title=command, notes=notes, repos=repos)
@@ -1813,10 +1836,22 @@ def _mv(args: argparse.Namespace) -> int:
 TURN_OFF = ("cli-remove", "kinds-remove", "disable")
 
 
+@dataclasses.dataclass
+class _Part:
+    """Where one turn-off reaches: your user folders, or a listed repo, with what it turns off there."""
+
+    target: scope.Scope
+    saved: settings.Settings
+    kinds: set[str]
+    labels: set[str]
+    change: Callable[[settings.Settings, state.State], None]
+    left: list[planner.Left] = dataclasses.field(default_factory=list)
+
+
 def _left_lines(left: list[planner.Left]) -> list[str]:
     lines = []
     agt = [entry for entry in left if entry.status == "agt"]
-    for kind in planner.KINDS:
+    for kind in (*planner.KINDS, "instructions"):
         found = sorted({entry.item.name for entry in agt if entry.item.kind == kind})
         if found:
             lines.append(f"  {kind}: {', '.join(found)}")
@@ -1827,25 +1862,83 @@ def _left_lines(left: list[planner.Left]) -> list[str]:
     return lines
 
 
+def _stays_lines(left: list[planner.Left], choice: str) -> list[str]:
+    """What stays, for the report: your originals, entries a CLI still sharing reads, and a kept `CLAUDE.md` import.
+    (Copies kept as your own files are in the plan, and the report lists them from there.)"""
+
+    return [f"{entry.item.name} in {', '.join(entry.labels)}: "
+            + (planner.KEPT if entry.status == "agt" else entry.note)
+            for entry in left if entry.status in ("original", "shared")
+            or (entry.item.kind == "instructions" and choice == "keep")]
+
+
+def _parts_lines(parts: list[_Part], user: _Part) -> list[str]:
+    lines = _left_lines(user.left)
+    for part in parts:
+        if part is not user and part.left:
+            lines += [f"In {part.target.name}:", *(f"  {line}" for line in _left_lines(part.left))]
+    return lines
+
+
+def _import_left(part: _Part, current: state.State) -> list[planner.Left]:
+    """agt's `CLAUDE.md` holding `@AGENTS.md` in a repo, when the turn-off takes Claude Code out of it for every kind."""
+
+    root = part.target.root
+    if root is None or "claude" not in part.labels or not set(part.saved.kinds) <= part.kinds:
+        return []
+    path = instructions.turn_off_import(root, current)
+    return [planner.Left(planner.Item("instructions", "CLAUDE.md"), ["claude"], path, "agt", "agt made it")] if path else []
+
+
+def _survey(args: argparse.Namespace, part: _Part) -> None:
+    """What the turn-off leaves behind in this part, before anything is written."""
+
+    with scope.use(part.target):
+        current = state.load()
+        plan = _plan(args, current, part.saved)
+        _no_rename_pending(plan)
+        part.left = planner.leave(plan, current, part.kinds, part.labels) + _import_left(part, current)
+
+
+def _repo_parts(saved: settings.Settings,
+                repos: Callable[[settings.Settings], tuple[set[str], set[str], Callable]] | None) -> list[_Part]:
+    if repos is None or scope.current().project:
+        return []
+    found = []
+    for target in _repo_scopes(saved):
+        with scope.use(target):
+            inner = settings.load()
+        kinds, labels, change = repos(inner)
+        if kinds and labels:
+            found.append(_Part(target, inner, kinds, labels, change))
+    return found
+
+
 def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str], labels: set[str], op: str,
-              what: str, retry: str, change, done) -> int:
+              what: str, retry: str, change, done, repos=None) -> int:
     """Turn off some kinds in some CLIs. `change(saved, current)` makes the settings and state change afterwards.
 
     The copies agt made there, unchanged since the last sync, stay as your own files or go to the backups:
     `--keep-copies` / `--remove-copies`, or the question in a terminal. An agent without either gets
     `needs_choice`. Nothing in the settings changes until every removal worked.
+
+    `repos(inner)` gives, from a listed repo's settings, the kinds and labels the turn-off reaches there and the
+    change to that repo's state: a CLI or kind your folders stop sharing leaves the repos too. One answer covers
+    every repo, and the repos go first, while their settings still include what's being turned off.
     """
 
-    current = state.load()
-    plan = _plan(args, current, saved)
-    _no_rename_pending(plan)
-    left = planner.leave(plan, current, kinds, labels)
+    user = _Part(scope.current(), saved, kinds, labels, change)
+    parts = [*_repo_parts(saved, repos), user]
+    for part in parts:
+        _survey(args, part)
+    left = [entry for part in parts for entry in part.left]
     agt = [entry for entry in left if entry.status == "agt"]
     choice = "remove" if getattr(args, "remove_copies", False) else "keep" if getattr(args, "keep_copies", False) or not agt else None
     ask = (f"Turning off {what} leaves {len(agt)} cop{'y' if len(agt) == 1 else 'ies'} agt made there. "
            "Keep them as your own files, or remove them (with a backup)?")
     copies = [{"kind": entry.item.kind, "name": entry.item.name, "labels": entry.labels, "path": str(entry.path),
-               "status": entry.status, "note": entry.note} for entry in left]
+               "status": entry.status, "note": entry.note, **({"repo": str(part.target.root)} if part.target.project else {})}
+              for part in parts for entry in part.left]
     if args.dry_run:
         if args.json:
             _print({"dry_run": True, "turn_off": what, "copies": copies,
@@ -1853,11 +1946,15 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
         else:
             print("\n".join([f"{retry.split(' --')[0]}: dry run, nothing was changed.",
                              f"Turning off {what} leaves {len(agt)} copies agt made there:" if agt else
-                             f"agt made no copies there; turning off {what} removes nothing.", *_left_lines(left)]))
+                             f"agt made no copies there; turning off {what} removes nothing.", *_parts_lines(parts, user)]))
         return 0
+    busy = [(part, why) for part in parts if part is not user and part.left and (why := scope.busy(part.target.root))]
+    if busy:
+        raise ValueError(f"git is in the middle of a {busy[0][1]} in {busy[0][0].target.name}; finish it there, "
+                         "then run this again")
     if choice is None:
         if _interactive():
-            print("\n".join([f"Turning off {what} leaves these copies agt made:", *_left_lines(left)]))
+            print("\n".join([f"Turning off {what} leaves these copies agt made:", *_parts_lines(parts, user)]))
             while choice is None:
                 try:
                     answer = input("Keep them as your own files, or remove them (with a backup)? k / r, q to quit: ").strip().lower()
@@ -1874,53 +1971,79 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
                     {"value": "--remove-copies", "means": "the copies go to the backups"}], "copies": copies,
                     "retry": f"{retry} --keep-copies | --remove-copies"})
             else:
-                print("\n".join(["Nothing was changed: " + ask[0].lower() + ask[1:], *_left_lines(left),
+                print("\n".join(["Nothing was changed: " + ask[0].lower() + ask[1:], *_parts_lines(parts, user),
                                  f"Answer with `{retry} --keep-copies` or `{retry} --remove-copies`."]))
             return 3
     if apply.in_worker():
         print(IN_WORKER)
         return 2
-    included = _folders(load_config(), None, False, saved)[1]
-    with apply.lock([provider.folder for provider in included]):
-        current = state.load()
-        replayed = apply.replay(current)
-        plan = _plan(args, current, saved)
-        _no_rename_pending(plan)
-        left = planner.leave(plan, current, kinds, labels)
-        off = planner.turn_off_plan(plan, left, choice == "remove")
-        if op == "disable" and choice == "remove" and plan.mcp is not None:
-            off.mcp = mcp.removal_only(plan.mcp, {server.name: mcp.agt_made(server, current) for server in plan.mcp.servers})
-        copies = [{"item": entry.item.key, "labels": entry.labels, "path": str(entry.path), "status": entry.status}
-                  for entry in left]
-        result = apply.apply(off, current, op=op, command=retry.split(" --")[0],
-                             log={"turned_off": what, "answer": choice, "copies": copies})
-        result.replayed = replayed
-        saved_at = None
-        if not result.failed:
-            change(saved, current)
-            state.save(current)
-            saved_at = settings.save(saved)
-            after = _plan(args, current, saved) if saved.enabled else None
-            if after is not None:
-                attention.save(after, current)
+    title = retry.split(" --")[0]
+    repo_entries: list[dict[str, Any]] = []
+    for part in parts:  # the repos first, so a failure there leaves your settings as they were
+        off, result, saved_at = _turn_off_writes(args, part, op, what, title, choice)
+        if part is not user:
+            off.notices += _stays_lines(part.left, choice)
+        if part is user:
+            break
+        repo_entries.append({"scope": part.target, "plan": off, "result": result})
+        if result.failed:
+            message = (f"Nothing else changed: a removal failed in {part.target.name}, so {what} still shares. "
+                       "Run it again to finish.")
+            if args.json:
+                _print({"failed": True, "notes": [message], "repos": [_repo_json(entry) for entry in repo_entries]})
             else:
-                attention.path().unlink(missing_ok=True)
-    kept = [f"{entry.item.name} in {', '.join(entry.labels)}: "
-            + ("kept as your own file; agt no longer updates it" if entry.status == "agt" else entry.note)
-            for entry in left if entry.status != "agt" or choice == "keep"]
+                print("\n".join([*(line for entry in repo_entries for line in [*_repo_lines(entry, title), ""]), message]))
+            return 1
     notes = ([done(choice == "remove")] if not result.failed else
-             [f"Nothing else changed: a removal failed, so {what} still shares. Run it again to finish."]) + kept
+             [f"Nothing else changed: a removal failed, so {what} still shares. Run it again to finish."])
+    notes += _stays_lines(user.left, choice)
     if not result.failed:
         notes += _refresh_triggers(saved)
-    _report(off, result, saved_at, args.json, title=retry.split(" --")[0], notes=notes)
+    _report(off, result, saved_at, args.json, title=title, notes=notes, repos=repo_entries)
     return 1 if result.failed else 0
 
 
-def _drop_label(saved: settings.Settings, current: state.State, label: str) -> None:
-    """A CLI that stops sharing: its folder, your picks for it, and its place in every state record go.
+def _turn_off_writes(args: argparse.Namespace, part: _Part, op: str, what: str, command: str,
+                     choice: str) -> tuple[planner.Plan, apply.Result, Path | None]:
+    """One part's writes under its own lock: agt's copies removed or kept, then its settings and state change."""
 
-    Copies kept as your own files stay `released`, so if the CLI comes back they aren't mistaken for originals.
-    """
+    with scope.use(part.target):
+        saved = part.saved
+        included = _folders(load_config(), None, False, saved)[1]
+        with apply.lock([provider.folder for provider in included]):
+            current = state.load()
+            replayed = apply.replay(current)
+            plan = _plan(args, current, saved)
+            _no_rename_pending(plan)
+            part.left = planner.leave(plan, current, part.kinds, part.labels)
+            off = planner.turn_off_plan(plan, part.left, choice == "remove")
+            for entry in _import_left(part, current):
+                off.claude_import = instructions.Import(entry.path, choice if choice == "remove" else "release",
+                                                        f"sharing {what} stopped")
+                part.left.append(entry)
+            if op == "disable" and choice == "remove" and plan.mcp is not None:
+                off.mcp = mcp.removal_only(plan.mcp, {server.name: mcp.agt_made(server, current) for server in plan.mcp.servers})
+            copies = [{"item": entry.item.key, "labels": entry.labels, "path": str(entry.path), "status": entry.status}
+                      for entry in part.left]
+            result = apply.apply(off, current, op=op, command=command,
+                                 log={"turned_off": what, "answer": choice, "copies": copies})
+            result.replayed = replayed
+            saved_at = None
+            if not result.failed:
+                part.change(saved, current)
+                state.save(current)
+                # A repo's picks stay as they are: its `.agt/settings.toml` may be committed.
+                saved_at = None if part.target.project else settings.save(saved)
+                after = _plan(args, current, saved) if saved.enabled else None
+                if after is not None:
+                    attention.save(after, current)
+                else:
+                    attention.path().unlink(missing_ok=True)
+    return off, result, saved_at
+
+
+def _drop_label(saved: settings.Settings, current: state.State, label: str) -> None:
+    """A CLI that stops sharing: its folder, your picks for it, and its place in every state record go."""
 
     saved.folders = [folder for folder in saved.folders if folder.label != label]
     for chosen in (saved.not_in, saved.only):
@@ -1930,6 +2053,15 @@ def _drop_label(saved: settings.Settings, current: state.State, label: str) -> N
                 del chosen[key]
                 if chosen is saved.only:
                     saved.off.add(key)  # it was only in that CLI: now it's in none, so it isn't shared
+    _drop_records(current, label)
+
+
+def _drop_records(current: state.State, label: str) -> None:
+    """A CLI's place in every state record goes (in a repo, its CLI name).
+
+    Copies kept as your own files stay `released`, so if the CLI comes back they aren't mistaken for originals.
+    """
+
     for record in current.items.values():
         record.get("copies", {}).pop(label, None)
         for field_name in ("made", "stopped"):
@@ -1964,17 +2096,13 @@ def _disable(args: argparse.Namespace) -> int:
         saved.enabled = False
         _put_back_replaced(current)
 
-    repos = _repo_scopes(saved)
+    def in_repo(inner: settings.Settings):
+        return set(inner.kinds), {folder.label for folder in inner.folders}, lambda saved, current: setattr(saved, "enabled", False)
+
     hooks.remove_all(_folders(load_config(), None, False, saved)[1])
-    code = _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
-                     lambda removed: "agt share is off; `agt share enable` turns it on again and fills the copies again.")
-    for target in repos if code == 0 else []:
-        with scope.use(target):
-            inner = settings.load()
-            code = max(code, _turn_off(args, inner, set(inner.kinds), {folder.label for folder in inner.folders}, "disable",
-                                       f"sharing in {target.name}", "agt share disable --remove-copies",
-                                       lambda saved, current: None, lambda removed: f"{target.name}: agt's copies are gone too."))
-    return code
+    return _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
+                     lambda removed: "agt share is off; `agt share enable` turns it on again and fills the copies again.",
+                     repos=in_repo)
 
 
 def _put_back_replaced(current: state.State) -> None:
@@ -2034,11 +2162,19 @@ def _cli(args: argparse.Namespace) -> int:
         if len(labels) == 1:
             raise ValueError(f"{args.label} is the last folder sharing; `agt share disable` turns sharing off")
         folder = next(entry for entry in saved.folders if entry.label == args.label)
+        # Repos share between one folder per CLI, so they lose this CLI only with its last folder.
+        leaves = not any(entry.cli == folder.cli for entry in saved.folders if entry.label != args.label)
+
+        def in_repo(inner: settings.Settings):
+            return (set(inner.kinds), {entry.label for entry in inner.folders if entry.cli == folder.cli},
+                    lambda saved, current: _drop_records(current, folder.cli))
+
         return _turn_off(args, saved, set(saved.kinds), {args.label}, "cli-remove", args.label,
                          f"agt share cli remove {args.label}", lambda saved, current: _drop_label(saved, current, args.label),
                          lambda removed: f"{args.label} doesn't share any more; `agt share cli add {folder.cli} "
                          f"{short(folder.path)}` shares it again" + (" and fills it." if removed else
-                                                                     ", and the copies you kept stay your own files."))
+                                                                     ", and the copies you kept stay your own files."),
+                         repos=in_repo if leaves else None)
     cli = "antigravity" if args.cli == "agy" else args.cli
     if args.path:
         folder = Path(args.path).expanduser().absolute()
@@ -2201,11 +2337,21 @@ def _kinds_command(args: argparse.Namespace) -> int:
             saved.instructions = "block"
             return _run_sync(args, saved, "agt share kinds add", save=True, notes=[
                 "Instructions share agt's block of each CLI's instruction file; `agt share adopt` adds the block to a file."])
+        if apply.in_worker():
+            print(IN_WORKER)
+            return 2
         saved.instructions = "off"
         at = settings.save(saved)
-        _print({"instructions": "off", "settings": str(at)} if args.json else
-               "agt share: instructions don't share any more; every instruction file keeps its text.")
-        return 0
+        # A repo's CLAUDE.md that only points Claude Code at its AGENTS.md is agt's, and goes now.
+        repos = [_sync_scope(argparse.Namespace(json=args.json, dry_run=False), target, "agt share kinds remove")
+                 for target in _repo_scopes(saved)]
+        message = "agt share: instructions don't share any more; every instruction file keeps its text."
+        if args.json:
+            _print({"instructions": "off", "settings": str(at), "repos": [_repo_json(entry) for entry in repos]})
+        else:
+            print("\n".join([message, *(line for entry in repos if entry.get("skipped") or entry["result"].outcomes
+                                        for line in ["", *_repo_lines(entry, "agt share kinds remove")])]))
+        return 1 if any(entry.get("result") and entry["result"].failed for entry in repos) else 0
     if kind in LATER_KINDS:
         raise ValueError(f"sharing {kind} comes in a later phase; this build shares agents and skills")
     if kind == plugins.KIND:
@@ -2229,10 +2375,14 @@ def _kinds_command(args: argparse.Namespace) -> int:
     def change(saved: settings.Settings, current: state.State) -> None:
         saved.kinds = tuple(entry for entry in saved.kinds if entry != kind)
 
+    def in_repo(inner: settings.Settings):
+        return {kind}, {folder.label for folder in inner.folders}, change
+
     labels = {folder.label for folder in saved.folders}
     return _turn_off(args, saved, {kind}, labels, "kinds-remove", kind, f"agt share kinds remove {kind}", change,
                      lambda removed: f"{kind} don't share any more; `agt share kinds add {kind}` shares them again"
-                     + (" and fills the copies." if removed else ", and the copies you kept stay your own files."))
+                     + (" and fills the copies." if removed else ", and the copies you kept stay your own files."),
+                     repos=in_repo)
 
 
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:

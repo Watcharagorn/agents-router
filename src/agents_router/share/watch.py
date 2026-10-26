@@ -152,8 +152,9 @@ def included_folders(saved: settings.Settings) -> list[providers.Provider]:
 
 
 def watched_files(saved: settings.Settings, included: list[providers.Provider]) -> list[Path]:
-    """Files whose change starts a run besides the folders: your settings (and a repo's), the instruction files,
-    and the MCP server files (for `.claude.json`, only its servers count: Claude rewrites it all the time)."""
+    """Files whose change starts a run besides the folders: your settings (and a repo's), the instruction files
+    (in a repo, its `AGENTS.md` and `CLAUDE.md`), and the MCP server files (for `.claude.json`, only its servers
+    count: Claude rewrites it all the time)."""
 
     from agents_router.share import hooks, instructions, mcp
 
@@ -161,7 +162,8 @@ def watched_files(saved: settings.Settings, included: list[providers.Provider]) 
     with scope.use(scope.USER):
         files = [settings.path()]
     if current.project:
-        return [*files, current.settings_file]
+        return [*files, current.settings_file,
+                *(instructions.import_watched(current.root) if saved.instructions != "off" else [])]
     return [*files, *(instructions.signature_files(included) if saved.instructions != "off" else []),
             *(mcp.watched_files(included) if saved.mcp else []), *(hooks.watched_files(included) if saved.hooks else [])]
 

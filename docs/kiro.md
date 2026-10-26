@@ -18,6 +18,8 @@ agt doctor --runtime kiro
 
 That runs `kiro-cli --version` and `kiro-cli whoami --format json`, which make no model request.
 
+`agt setup` checks the login too, when you have a `~/.kiro` folder and `kiro-cli` is installed: if nobody is logged in, it lists `kiro-cli login` under "Still needed from you". It never logs in for you.
+
 ## One account
 
 Kiro keeps its login in its own data store, not in `~/.kiro`, so agt can't keep a second login apart in another folder. Kiro jobs run on your one login, and `agt accounts add --runtime kiro` is refused.

@@ -1,10 +1,11 @@
-"""Stand-in for the plugin and login-status commands of `claude`, `codex` and `agy`.
+"""Stand-in for the plugin and login-status commands of `claude`, `codex` and `agy`, and `kiro-cli whoami`.
 
-The first argument picks the CLI (claude, codex or agy). State lives in a JSON file
+The first argument picks the CLI (claude, codex, agy or kiro). State lives in a JSON file
 in the CLI's config folder: CLAUDE_CONFIG_DIR, CODEX_HOME, or FAKE_AGY_HOME for agy.
 A file named `logged_in` in that folder means the folder is logged in.
 
   FAKE_HOST_FAIL   a subcommand that exits 1 (e.g. "install", "add" or "add-json")
+  FAKE_HOST_KIRO_LOGGED_OUT   `kiro-cli whoami` says nobody is logged in (Kiro keeps its login outside ~/.kiro)
 
 `claude mcp add-json|remove --scope user` edit `mcpServers` in `.claude.json`.
   FAKE_HOST_LOG    file to append each argv to, one JSON list per line
@@ -25,7 +26,8 @@ def main():
     # Unset, each CLI's own default under HOME (a throwaway folder in the tests), never the working directory.
     folder = Path({"claude": os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude",
                    "codex": os.environ.get("CODEX_HOME") or Path.home() / ".codex",
-                   "agy": os.environ.get("FAKE_AGY_HOME") or Path.home() / ".gemini"}[kind])
+                   "agy": os.environ.get("FAKE_AGY_HOME") or Path.home() / ".gemini",
+                   "kiro": Path.home() / ".kiro"}[kind])
     log = os.environ.get("FAKE_HOST_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as handle:
@@ -49,6 +51,12 @@ def main():
             return 0
         print("Not logged in")
         return 1
+    if kind == "kiro" and argv[:1] == ["whoami"]:
+        if os.environ.get("FAKE_HOST_KIRO_LOGGED_OUT"):
+            print("Not logged in. Run kiro-cli login to sign in.", file=sys.stderr)
+            return 1
+        print(json.dumps({"accountType": "BuilderId"}))
+        return 0
     if kind == "claude" and argv[:1] == ["mcp"]:
         return claude_mcp(argv[1:])
     if argv[:1] != ["plugin"]:

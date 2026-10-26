@@ -67,6 +67,7 @@ class Result:
     outcomes: list[Outcome] = field(default_factory=list)
     replayed: list[str] = field(default_factory=list)
     excluded: list[tuple[Path, list[str]]] = field(default_factory=list)  # git exclude files changed
+    unlisted: list[tuple[Path, list[str]]] = field(default_factory=list)  # ... that let go of copies kept as your own files
     renamed: list[tuple[str, str]] = field(default_factory=list)  # (old key, new key) of the renames that went through
 
     @property
@@ -680,12 +681,18 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
         rotate = False
     if plan.hooks is not None:
         result.outcomes += _apply_hooks(plan)
+    if plan.claude_import is not None:
+        result.outcomes += _apply_import(plan.claude_import, current, result.run, made, removed, released)
+        save_state(current, rotate=rotate)
+        rotate = False
     if rotate:
         save_state(current)  # a first run with nothing to write still starts the state
     if made:
         result.excluded = gitexclude.update(made)
-    if removed or released:
-        result.excluded += gitexclude.update(removed + released, remove=True)
+    if removed:
+        gitexclude.update(removed, remove=True)  # the copies are in the backups now
+    if released:
+        result.unlisted = gitexclude.update(released, remove=True)
     write_manifest(result, op, records)
     journal_path().unlink(missing_ok=True)
     _log(plan, result, command or f"agt share {op}", started, log, trigger)
@@ -710,6 +717,50 @@ def _apply_mcp(plan: planner.Plan, current: State, run: str) -> list[Outcome]:
     return [Outcome(mcp.KIND, written.name, [written.label], written.action, written.path, written.ok,
                     written.message, written.backup)
             for written in mcp.apply(plan.mcp, current, run)]
+
+
+def _apply_import(change, current: State, run: str, made: list[Path], removed: list[Path],
+                  released: list[Path]) -> list[Outcome]:
+    """A listed repo's `CLAUDE.md` holding `@AGENTS.md`: made (never over a file that appeared), or taken away
+    into the backups while it still holds only that line, or left to you. Its line in `info/exclude` follows."""
+
+    from agents_router.share import instructions
+
+    path, key = change.path, instructions.IMPORT_KEY
+    outcome = lambda action, ok, message="", backup=None: Outcome("instructions", "CLAUDE.md", ["claude"], action, path,
+                                                                  ok, message, backup)
+    if change.action in ("release", "forget"):
+        current.items.pop(key, None)
+        released.append(path)
+        return []
+    if change.action == "make":
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return [outcome("copy", False, f"{SKIPPED}a CLAUDE.md appeared meanwhile")]
+        except OSError as exc:
+            return [outcome("copy", False, f"couldn't write it ({exc}); the next run tries again")]
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(instructions.IMPORT_TEXT)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if not instructions.is_import(path):
+            return [outcome("copy", False, "it doesn't read back as written; the next run looks again")]
+        current.items[key] = {"path": str(path)}
+        made.append(path)
+        return [outcome("copy", True, change.note)]
+    if not instructions.is_import(path):
+        return [outcome("remove", False, f"{SKIPPED}CLAUDE.md changed while agt was working")]
+    backup = _backup_folder(run, "claude") / "CLAUDE.md"
+    if os.path.lexists(backup):
+        return [outcome("remove", False, f"{SKIPPED}{backup} is already there")]
+    try:
+        shutil.move(str(path), str(backup))
+    except OSError as exc:
+        return [outcome("remove", False, f"couldn't move it ({exc}); the next run tries again")]
+    current.items.pop(key, None)
+    removed.append(path)
+    return [outcome("remove", True, change.note, backup)]
 
 
 def _apply_hooks(plan: planner.Plan) -> list[Outcome]:

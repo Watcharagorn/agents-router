@@ -506,6 +506,21 @@ def _check_primary_login(config: Config, host: str, report: Report) -> None:
         report.add_todo(f"{LABELS[host]} reports no login for {runtime_config.primary}. If you use it there, {how}.")
 
 
+def _check_kiro_login(config: Config, report: Report) -> None:
+    """Kiro isn't a host, but agt runs Kiro jobs. When you use Kiro (its `~/.kiro` folder is there) and its CLI is
+    installed, a missing login is one more thing for you to do. `kiro-cli whoami` only reads; agt never logs in."""
+
+    runtime_config = config.runtime("kiro")
+    if not runtime_config.primary.is_dir():
+        return
+    adapter = get_runtime("kiro")
+    if adapter.find_binary(runtime_config) is None:
+        return
+    if not (adapter.auth_status(runtime_config, runtime_config.primary_account()) or {}).get("loggedIn"):
+        report.add_todo("Kiro CLI reports no login. If you want agt to run Kiro jobs, run `kiro-cli login`; if a job "
+                        "still fails with a login error, set `KIRO_API_KEY` in the environment agt runs in.")
+
+
 def _check_agt_on_path(report: Report) -> None:
     if shutil.which("agt"):
         return
@@ -555,6 +570,7 @@ def run_setup(config: Config, hosts: list[str], accounts: list[str], dry_run: bo
         install_plugin(config, host, report, claude_route)
         _check_primary_login(config, host, report)
     setup_accounts(config, accounts, report)
+    _check_kiro_login(config, report)
     _check_agt_on_path(report)
     if "antigravity" in hosts:
         report.add_todo("If you haven't signed in to Antigravity yet, run `agy` once and sign in.")

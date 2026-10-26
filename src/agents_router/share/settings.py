@@ -106,12 +106,15 @@ def parse_auto_copy(value: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(kinds))
 
 
-def load(location: Path | None = None) -> Settings:
+def load(location: Path | None = None, *, user: Settings | None = None) -> Settings:
+    """The `[share]` settings. In a repo's scope, `user` stands in for your saved user choices (a command's
+    new ones, before it saves them)."""
+
     from agents_router.share import scope
 
     current = scope.current()
     if location is None and current.project:
-        return _load_project(current)
+        return _load_project(current, user)
     location = location or path()
     try:
         text = location.read_text(encoding="utf-8")
@@ -241,16 +244,18 @@ def render(settings: Settings) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _load_project(current) -> Settings:
+def _load_project(current, user: Settings | None = None) -> Settings:
     """A repo's settings: your user choices, its own CLI folders, and the picks in its `.agt/settings.toml`."""
 
     from agents_router.share import scope
 
-    with scope.use(scope.USER):
-        user = load()
+    if user is None:
+        with scope.use(scope.USER):
+            user = load()
     clis = list(dict.fromkeys(folder.cli for folder in user.folders))
     result = Settings(enabled=user.enabled, kinds=user.kinds, tool_widening=user.tool_widening, auto_copy=user.auto_copy,
-                      folders=[Folder(cli, scope.project_folder(cli, current.root), cli) for cli in clis])
+                      folders=[Folder(cli, scope.project_folder(cli, current.root), cli) for cli in clis],
+                      instructions=user.instructions)
     location = current.settings_file
     try:
         data = tomllib.loads(location.read_text(encoding="utf-8")).get("share", {})

@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from test_share_items import ItemBase
 from test_share_sync import age
@@ -150,6 +151,165 @@ class ProjectTests(ItemBase):
         self.assertFalse((self.repo / ".kiro" / "agents" / "builder.json").exists())
         self.assertTrue((self.repo / ".claude" / "agents" / "builder.md").exists())
         self.assertEqual(scope.listed(), [])
+
+    def repo_files(self):
+        return {str(path): os.readlink(path) if path.is_symlink() else ("dir" if path.is_dir() else path.read_bytes())
+                for path in sorted(self.repo.rglob("*")) if ".git" not in path.relative_to(self.repo).parts}
+
+    def exclude(self):
+        return (self.repo / ".git" / "info" / "exclude").read_text()
+
+    def test_cli_remove_takes_that_cli_out_of_listed_repos_too(self):
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        kiro = self.repo / ".kiro" / "agents" / "builder.json"
+        self.assertTrue(kiro.exists())
+        out = self.share("cli", "remove", "kiro", "--remove-copies")
+        self.assertIn("app", out)
+        self.assertFalse(kiro.exists())
+        self.assertFalse(os.path.lexists(self.repo / ".kiro" / "skills" / "release-notes"))
+        self.assertNotIn("/.kiro/", self.exclude())
+        self.assertTrue((self.repo / ".claude" / "agents" / "builder.md").exists())
+        self.assertTrue(list((self.agt_home / "state" / "share" / "projects").rglob("builder.json")))  # backed up
+        self.share("sync")
+        self.assertFalse(kiro.exists())  # it doesn't come back
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_cli_add_fills_listed_repos_at_once(self):
+        self.enable()
+        self.share("cli", "remove", "kiro", "--remove-copies")
+        self.share("repo", "add", str(self.repo))
+        kiro = self.repo / ".kiro" / "agents" / "builder.json"
+        self.assertFalse(kiro.exists())
+        self.share("cli", "add", "kiro")
+        self.assertTrue(kiro.exists())  # not at the next sync: now
+
+    def test_removing_one_of_two_claude_folders_leaves_repos_alone(self):
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        before = self.repo_files()
+        self.share("cli", "remove", "claude-lab", "--remove-copies")
+        self.assertEqual(self.repo_files(), before)  # the repo's Claude folder still shares, through ~/.claude
+
+    def test_kinds_remove_takes_the_kind_out_of_listed_repos_too(self):
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        self.share("kinds", "remove", "skills", "--remove-copies")
+        self.assertFalse(os.path.lexists(self.repo / ".kiro" / "skills" / "release-notes"))
+        self.assertFalse(os.path.lexists(self.repo / ".agents" / "skills" / "release-notes"))
+        self.assertTrue((self.repo / ".claude" / "skills" / "release-notes" / "SKILL.md").exists())  # your original
+        self.assertTrue((self.repo / ".kiro" / "agents" / "builder.json").exists())  # agents still share
+
+    def test_one_answer_covers_your_folders_and_the_repos(self):
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        for name in ("dana", "day-plan"):  # then Codex holds no copy of yours that agt made
+            self.share("rm", name)
+        out = json.loads(self.share("cli", "remove", "codex", "--json", code=3))
+        self.assertEqual(out["error"], "needs_choice")
+        self.assertIn(os.path.realpath(self.repo), {entry.get("repo") for entry in out["copies"]})
+        builder = self.repo / ".codex" / "agents" / "builder.toml"
+        self.assertTrue(builder.exists())
+        self.share("cli", "remove", "codex", "--keep-copies")
+        self.assertTrue(builder.exists())  # kept as your own file
+        self.assertNotIn("/.codex/agents/builder.toml", self.exclude())
+
+    def test_a_repo_in_the_middle_of_a_merge_stops_a_turn_off(self):
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        (self.repo / ".git" / "MERGE_HEAD").write_text("0" * 40 + "\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.share("cli", "remove", "kiro", "--remove-copies", code=2)
+        self.assertIn("middle of a merge", err.getvalue())
+        self.assertTrue((self.repo / ".kiro" / "agents" / "builder.json").exists())
+        self.assertIn("kiro", [folder.label for folder in settings.load().folders])  # nothing changed
+
+    def agents_md(self, text="Use tabs.\n"):
+        (self.repo / "AGENTS.md").write_text(text, encoding="utf-8")
+        self.git("add", "AGENTS.md")
+        self.git("commit", "-qm", "agents md")
+
+    def test_a_repo_with_only_agents_md_gets_a_claude_md_that_imports_it(self):
+        self.agents_md()
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        claude_md = self.repo / "CLAUDE.md"
+        self.assertFalse(claude_md.exists())  # instructions don't share yet
+        self.share("kinds", "add", "instructions")
+        self.assertEqual(claude_md.read_text(encoding="utf-8"), "@AGENTS.md\n")
+        self.assertIn("/CLAUDE.md", self.exclude())
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.share("sync")
+        self.assertEqual(claude_md.read_text(encoding="utf-8"), "@AGENTS.md\n")
+        self.git("rm", "-q", "AGENTS.md")  # a branch without AGENTS.md
+        self.git("commit", "-qm", "no agents md")
+        self.share("sync")
+        self.assertFalse(claude_md.exists())
+        self.assertTrue(list((self.agt_home / "state" / "share" / "projects").rglob("CLAUDE.md")))  # backed up
+        self.git("checkout", "-q", "HEAD~1")
+        self.share("sync")
+        self.assertTrue(claude_md.exists())  # and back with it
+        out = self.share("kinds", "remove", "instructions")
+        self.assertFalse(claude_md.exists())
+        self.assertNotIn("/CLAUDE.md", self.exclude())
+        self.assertIn("CLAUDE.md", out)
+
+    def test_turning_instructions_off_in_a_worker_writes_nothing(self):
+        self.agents_md()
+        self.enable("--instructions", "block")
+        self.share("repo", "add", str(self.repo))
+        with patch.dict(os.environ, {"AGT_DEPTH": "1"}):
+            self.share("kinds", "remove", "instructions", code=2)
+        self.assertTrue((self.repo / "CLAUDE.md").exists())
+        self.assertEqual(settings.load().instructions, "block")
+
+    def test_a_claude_md_of_the_repos_own_is_left_alone(self):
+        self.agents_md()
+        self.enable("--instructions", "block")
+        (self.repo / ".claude" / "CLAUDE.md").write_text("Claude's own.\n", encoding="utf-8")
+        self.share("repo", "add", str(self.repo))
+        self.assertFalse((self.repo / "CLAUDE.md").exists())
+        (self.repo / ".claude" / "CLAUDE.md").unlink()
+        (self.repo / "CLAUDE.md").write_text("Mine.\n", encoding="utf-8")
+        self.share("sync")
+        self.assertEqual((self.repo / "CLAUDE.md").read_text(encoding="utf-8"), "Mine.\n")
+        self.assertNotIn("CLAUDE.md", self.exclude())
+
+    def test_an_edited_import_is_yours(self):
+        self.agents_md()
+        self.enable("--instructions", "block")
+        self.share("repo", "add", str(self.repo))
+        claude_md = self.repo / "CLAUDE.md"
+        claude_md.write_text("@AGENTS.md\n\nAlso: run the linter.\n", encoding="utf-8")
+        out = self.share("sync")
+        self.assertIn("it's yours now", out)
+        self.assertNotIn("/CLAUDE.md", self.exclude())
+        self.share("kinds", "remove", "instructions")
+        self.assertTrue(claude_md.exists())
+
+    def test_repo_remove_keeps_or_removes_the_import(self):
+        self.agents_md()
+        self.enable("--instructions", "block")
+        self.share("repo", "add", str(self.repo))
+        self.share("repo", "remove", str(self.repo), "--keep-copies")
+        self.assertTrue((self.repo / "CLAUDE.md").exists())
+        self.assertNotIn("/CLAUDE.md", self.exclude())
+        (self.repo / "CLAUDE.md").unlink()
+        self.share("repo", "add", str(self.repo))
+        self.assertTrue((self.repo / "CLAUDE.md").exists())
+        self.share("repo", "remove", str(self.repo), "--remove-copies")
+        self.assertFalse((self.repo / "CLAUDE.md").exists())
+
+    def test_the_watcher_sees_an_agents_md_added_later(self):
+        self.enable("--instructions", "block")
+        self.share("repo", "add", str(self.repo))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            watch.run_once()
+            watch.run_once()
+        (self.repo / "AGENTS.md").write_text("Use tabs.\n", encoding="utf-8")
+        watch.background_sync("watcher")
+        self.assertTrue((self.repo / "CLAUDE.md").exists())
 
     def test_what_agt_refuses_to_list(self):
         self.enable()

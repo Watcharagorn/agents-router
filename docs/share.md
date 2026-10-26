@@ -83,6 +83,8 @@ agt share repo remove ~/code/app --keep-copies
 - **Branches.** A copy agt made that's gone (after `git clean -X`, say) is made again. When a checkout or pull removes an original git has, its copies go to the backups and come back with it; one that holds an edit not yet written back stays. When a branch has no `.claude/agents` folder at all, the copies stay as they are until it's back.
 - **During a merge, rebase or cherry-pick,** agt leaves the repo alone and catches up afterwards.
 - **Picks** for a repo's items are saved in its `.agt/settings.toml`, under `[share.targets]`. Inside a listed repo, `agt share pick`, `resolve`, `rm`, `mv` and `undo` act on that repo's item when it has one; `--repo <path>` names the repo from anywhere.
+- **Instructions.** A repo's instructions are its `AGENTS.md`, which Codex, Antigravity and Kiro read already. While [instructions](#sharing-instructions) share, a repo with `AGENTS.md` and no `CLAUDE.md` (at its root or in `.claude/`) gets a `CLAUDE.md` holding `@AGENTS.md`, so Claude Code reads it too. Like other copies, it goes in `.git/info/exclude`. agt takes it away when `AGENTS.md` goes, or instructions stop sharing, as long as it still holds only that line; once you add to it, it's yours.
+- **The CLIs and kinds a repo shares** are yours: a repo shares between one folder per CLI that your user folders share, and the kinds you share. `cli add` and `kinds add` reach every listed repo at once, and `cli remove` and `kinds remove` take that CLI or kind out of them too, with the same answer about agt's copies (see [Turning things off](#turning-things-off)).
 
 `agt share sync` and `status` cover every listed repo, with one line per repo, and so does the background watcher. Each repo keeps its own state and backups under `~/.agents-router/state/share/projects/`.
 
@@ -109,7 +111,7 @@ A file takes part once it has the markers. `agt share adopt codex kiro` adds an 
 
 An edit to the block in any file reaches the others; different edits are a conflict, and `agt share resolve instructions --prefer <label>` picks the version that wins. Claude's `@path` imports stay in their Claude file and never go to the other CLIs, and agt's own [delegation rules](delegation.md) block is never copied. Every write backs the file up first and keeps its mode and hard links.
 
-`--instructions whole` (or `agt config set share.instructions whole`) shares whole files instead, and makes a missing one. `agt share kinds remove instructions` stops sharing them; every file keeps its text.
+`--instructions whole` (or `agt config set share.instructions whole`) shares whole files instead, and makes a missing one. `agt share kinds remove instructions` stops sharing them; every file keeps its text, and the `CLAUDE.md` files agt made in [listed repos](#repos) to point Claude Code at their `AGENTS.md` go to the backups.
 
 ## Sharing MCP servers
 
@@ -287,7 +289,7 @@ agt share disable                       # stop sharing; every copy stays, the wa
 agt share disable --remove-copies       # also remove the copies agt made
 ```
 
-Turning off a CLI or a kind asks what happens to the copies agt made there: they stay as your own files and agt stops updating them (`--keep-copies`), or they go to the backups (`--remove-copies`). Without either, a terminal asks, and an agent gets the question back (exit 3). Copies that hold an edit not yet shared, and your originals, stay either way. `disable --remove-copies` also puts back any skill folder of yours that `resolve` replaced with a link. `agt share enable` turns sharing on again with your saved answers.
+Turning off a CLI or a kind asks what happens to the copies agt made there: they stay as your own files and agt stops updating them (`--keep-copies`), or they go to the backups (`--remove-copies`). Without either, a terminal asks, and an agent gets the question back (exit 3). The answer covers your [listed repos](#repos) too: a kind you stop sharing leaves them, and so does a CLI whose last folder stops sharing (with two Claude folders, removing one leaves the repos as they are). While git is in the middle of a merge or rebase in one of them, nothing changes until it's finished. Copies that hold an edit not yet shared, and your originals, stay either way. `disable --remove-copies` also puts back any skill folder of yours that `resolve` replaced with a link. `agt share enable` turns sharing on again with your saved answers.
 
 A turn-off that arrives by editing the settings file has nobody to answer, so agt keeps the copies, stops updating them and lists each one in the [log](configuration.md#the-log).
 

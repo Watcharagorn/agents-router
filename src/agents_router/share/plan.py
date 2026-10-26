@@ -132,6 +132,7 @@ class Plan:
     instructions: Any = None  # the instruction files' plan (instructions.Plan) when they share
     mcp: Any = None  # the MCP servers' plan (mcp.Plan) when they share
     hooks: Any = None  # the hooks' plan (hooks.Plan) when they share
+    claude_import: Any = None  # a listed repo's `CLAUDE.md` holding `@AGENTS.md` (instructions.Import), when it changes
 
     @property
     def conflicts(self) -> list[Item]:
@@ -681,6 +682,9 @@ def leave(plan: Plan, state: State, kinds: set[str], labels: set[str]) -> list[L
     return found
 
 
+KEPT = "kept as your own file; agt no longer updates it"
+
+
 def turn_off_plan(plan: Plan, left: list[Left], remove: bool) -> Plan:
     """The writes for a turn-off: agt's unchanged copies removed (or kept), edited ones kept as your own files."""
 
@@ -694,9 +698,10 @@ def turn_off_plan(plan: Plan, left: list[Left], remove: bool) -> Plan:
                         decision=engine.Decision("turn-off", reason="turned off"))
             items[item.key] = item
         how = "remove" if remove and entry.status == "agt" else "release"
+        note = KEPT if how == "release" and entry.status == "agt" else entry.note
         for label in entry.labels:
             item.drops[label] = how
-            item.cells[label] = Cell(REMOVE if how == "remove" else RELEASED, entry.note)
+            item.cells[label] = Cell(REMOVE if how == "remove" else RELEASED, note)
     chosen = list(items.values())
     return Plan(plan.included, plan.rows, chosen, [change for item in chosen for change in changes_for(item, plan.included)],
                 [], plan.options)

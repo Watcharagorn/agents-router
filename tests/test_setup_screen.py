@@ -43,6 +43,12 @@ class SetupScreenTests(ItemBase):
         self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").exists())
         self.assertTrue((self.user / "Library" / "LaunchAgents" / f"{triggers.LABEL}.plist").exists())
 
+    def test_kiro_without_a_login_is_still_needed(self):
+        self.assertNotIn("kiro-cli login", self.setup("--dry-run"))
+        with patch.dict("os.environ", {"FAKE_HOST_KIRO_LOGGED_OUT": "1"}):
+            proposal = json.loads(self.setup("--dry-run", "--json", "--resolve", "gamma-apikey=skip"))
+        self.assertTrue(any("kiro-cli login" in line for line in proposal["still_needed"]), proposal["still_needed"])
+
     def test_a_conflict_is_asked_before_anything_is_written(self):
         proposal = json.loads(self.setup("--dry-run", "--json"))
         self.assertEqual([ask["id"] for ask in proposal["needs_answer"]], ["resolve:gamma-apikey"])

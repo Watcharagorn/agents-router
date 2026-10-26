@@ -23,12 +23,19 @@ It's one item, `instructions`, in agt share's state, decided by the same
 edits are a conflict (`agt share resolve instructions --prefer <label>`), and
 an empty block is filled from the others. Writes back the file up first, keep
 its mode and hard links, change only the block's bytes, and are read back.
+
+In a listed repo, instructions are the repo's own `AGENTS.md`, which Codex,
+Antigravity and Kiro read already. When the repo has only `AGENTS.md`, agt
+makes a `CLAUDE.md` holding `@AGENTS.md`, so Claude Code reads it too
+(`claude_import`). It goes in the repo's `.git/info/exclude`, and agt takes it
+away when `AGENTS.md` goes, as long as it still holds only that line.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import os
 from pathlib import Path
 import re
 import time
@@ -351,3 +358,68 @@ def attention(plan: Plan) -> list[dict[str, Any]]:
 
 def signature_files(included: list[providers.Provider]) -> list[Path]:
     return [path for path in (file_for(provider) for provider in included) if path is not None]
+
+
+# A repo with only AGENTS.md ------------------------------------------------------
+
+IMPORT_KEY = "instructions/claude-import"
+IMPORT_TEXT = "@AGENTS.md\n"
+
+
+@dataclass
+class Import:
+    """What a listed repo's `CLAUDE.md` import needs this run."""
+
+    path: Path
+    action: str  # "make"; "remove" (agt's, still only the import, not wanted now); "release" (yours now); "forget"
+    note: str = ""
+
+
+def is_import(path: Path) -> bool:
+    """Whether the file holds only `@AGENTS.md`, as agt writes it (a link never counts)."""
+
+    if os.path.islink(path) or not path.is_file():
+        return False
+    try:
+        return path.read_text(encoding="utf-8").strip() == IMPORT_TEXT.strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def claude_import(root: Path, wanted: bool, current: State) -> Import | None:
+    """The import's change in this repo, or None. `wanted`: instructions share, and so does Claude Code here.
+
+    agt makes `CLAUDE.md` only when the repo has `AGENTS.md` and no `CLAUDE.md` of its own, at the root or in
+    `.claude/`. agt's file goes when `AGENTS.md` does (a branch without it) or it isn't wanted, while it still
+    holds only the import; once you edit it, it's yours. One that disappeared is made again, like a cleaned copy.
+    """
+
+    path = root / "CLAUDE.md"
+    agents = (root / "AGENTS.md").is_file()
+    room = not os.path.lexists(path) and not os.path.lexists(root / ".claude" / "CLAUDE.md")
+    if current.items.get(IMPORT_KEY):
+        if os.path.lexists(path):
+            if not is_import(path):
+                return Import(path, "release", "CLAUDE.md changed since agt made it, so it's yours now")
+            if not wanted or not agents:
+                return Import(path, "remove", "AGENTS.md is gone" if wanted else "instructions don't share here now")
+            return None
+        if wanted and agents and room:
+            return Import(path, "make", "holds @AGENTS.md, so Claude Code reads AGENTS.md")
+        return Import(path, "forget")
+    if wanted and agents and room:
+        return Import(path, "make", "holds @AGENTS.md, so Claude Code reads AGENTS.md")
+    return None
+
+
+def turn_off_import(root: Path, current: State) -> Path | None:
+    """agt's import in this repo, still only `@AGENTS.md`, for a turn-off to keep or remove."""
+
+    path = root / "CLAUDE.md"
+    return path if current.items.get(IMPORT_KEY) and is_import(path) else None
+
+
+def import_watched(root: Path) -> list[Path]:
+    """The files whose change can make or take away the import."""
+
+    return [root / "AGENTS.md", root / "CLAUDE.md", root / ".claude" / "CLAUDE.md"]
