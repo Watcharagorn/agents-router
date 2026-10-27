@@ -1,6 +1,6 @@
 {
   "name": "agents-router",
-  "description": "Agents Router: run subagents in other agent CLIs under your own accounts, with one shared setup.",
+  "description": "Agents Router: keep agents, skills and MCP servers in sync between Claude Code, Codex, Kiro and Antigravity, and run subagents in those CLIs under your own accounts.",
   "owner": {
     "name": "Watcharagorn",
     "url": "https://github.com/Watcharagorn"
@@ -9,7 +9,7 @@
     {
       "name": "agents-router",
       "source": "./",
-      "description": "Subagents in other agent CLIs under your own accounts, with one shared setup across all of them."
+      "description": "Agents, skills and MCP servers in sync across Claude Code, Codex, Kiro and Antigravity, and subagents in those CLIs under your own accounts."
     }
   ]
 }

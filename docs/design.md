@@ -1,6 +1,6 @@
 # Design and build plan
 
-Updated 2026-10-14. Based on the research in [docs/research/](research/). The Claude Code, Codex and Antigravity runtimes (core, account pool, shared setup, failover, messages, plugin hooks) are implemented in v0.1 and were tested live on Windows; CI runs the suite on Windows, macOS and Linux. Items marked "Verified" were checked against a real `claude` 2.1.295.
+Updated 2026-10-14. Based on the research in [docs/research/](README.md#design-and-research). The Claude Code, Codex and Antigravity runtimes (core, account pool, shared setup, failover, messages, plugin hooks) are implemented in v0.1 and were tested live on Windows; CI runs the suite on Windows, macOS and Linux. Items marked "Verified" were checked against a real `claude` 2.1.295.
 
 ## Goals
 

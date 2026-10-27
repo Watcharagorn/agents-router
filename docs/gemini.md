@@ -1,4 +1,4 @@
-# Gemini through Antigravity CLI
+# Gemini subagents through Antigravity CLI
 
 Agents Router runs Gemini (and the other models Antigravity offers) through Google's Antigravity CLI, `agy`, with `runtime: "antigravity"`.
 

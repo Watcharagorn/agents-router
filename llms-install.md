@@ -1,6 +1,6 @@
 # Installing Agents Router (for AI agents)
 
-Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer and has no dependencies.
+Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and runs subagents in those CLIs on your own accounts. Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer and has no dependencies.
 
 1. Install the `agt` command:
 
@@ -8,7 +8,7 @@ Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigrav
    uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
    ```
 
-   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal. Check with `agt --version`.
+   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal. Check with `agt --version`. Agents Router isn't on PyPI; don't `pip install agt`, which is a different project.
 
 2. Ask the user whether they have other account folders, then run setup's dry run with one `--account` per folder they name:
 

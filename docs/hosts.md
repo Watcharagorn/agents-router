@@ -1,4 +1,4 @@
-# Using Agents Router from each host
+# Using Agents Router from Claude Code, Codex, Antigravity or any MCP client
 
 The host is the CLI your main session runs in. Agents Router is one MCP server, packaged as a plugin for Claude Code, Codex and Antigravity. Every host gets the same tools and the same skill. What differs is how you install it and how long a single tool call may wait.
 
@@ -35,7 +35,7 @@ If there is no `claude` command (the Claude desktop app often doesn't put one on
 
 Claude Code installs the plugin from there on its next start. `agt setup --claude-route settings` takes this route on purpose.
 
-You get the MCP server, three agent types that show jobs in the agent list (`agents-router:agt-claude`, `-codex` and `-antigravity`; see [Claude Code](claude-code.md#subagents-in-the-agent-list)), the `agents-router` skill, `/agents-router:delegate` and two hooks that call `agt` (so `agt` must be on PATH). The hooks wake an idle session when a subagent finishes or asks a question, and list uncollected results after a resume or compact; see [Claude Code](claude-code.md#messages-and-wake-ups). A `subagent_wait` call that runs longer than about two minutes moves to the background on its own (Claude Code 2.1.212+), and Claude gets a notification when it returns, so waiting doesn't block the session.
+You get the MCP server, four agent types that show jobs in the agent list (`agents-router:agt-claude`, `-codex`, `-antigravity` and `-kiro`; see [Claude Code](claude-code.md#subagents-in-the-agent-list)), the `agents-router` skill, `/agents-router:delegate` and two hooks that call `agt` (so `agt` must be on PATH). The hooks wake an idle session when a subagent finishes or asks a question, and list uncollected results after a resume or compact; see [Claude Code](claude-code.md#messages-and-wake-ups). A `subagent_wait` call that runs longer than about two minutes moves to the background on its own (Claude Code 2.1.212+), and Claude gets a notification when it returns, so waiting doesn't block the session.
 
 ## Codex
 
@@ -117,4 +117,4 @@ Copy the whole `skills/agents-router/` folder into the client's skills if it sup
 
 ## Which subagent CLI runs the work
 
-That's chosen per job with `runtime` (`claude`, `codex` or `antigravity`), independent of the host. A Codex session can start Claude Code subagents and the other way round. A subagent in a different CLI than its host gets a short note naming the host's instruction files and skill folders, so it can follow the same conventions without anything being copied.
+That's chosen per job with `runtime` (`claude`, `codex`, `antigravity` or `kiro`), independent of the host. A Codex session can start Claude Code subagents and the other way round. A subagent in a different CLI than its host gets a short note naming the host's instruction files and skill folders, so it can follow the same conventions without anything being copied. Each runtime has its own guide: [Claude Code](claude-code.md), [Codex](codex.md), [Gemini through Antigravity](gemini.md) and [Kiro](kiro.md).

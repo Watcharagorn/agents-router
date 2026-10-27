@@ -1,5 +1,7 @@
 # Antigravity adapter: setup on Windows
 
+Superseded: the core Antigravity runtime replaces this adapter; see [Gemini through Antigravity](../gemini.md).
+
 This sets up the Antigravity (AGY) adapter as a local MCP server. The repository doesn't ship AGY, account credentials or any secrets; you create those on your own machine.
 
 Before you start, check the [provider terms](../research/provider-terms.md). Google's Antigravity FAQ says consumer plans don't support running `agy` inside third-party coding agents. A headless flag existing doesn't settle whether your account may be used this way.
