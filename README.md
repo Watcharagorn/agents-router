@@ -7,152 +7,261 @@ Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 
-Agents Router (the `agt` command) does two jobs for people who use more than one coding-agent CLI or more than one account:
-
-- **It keeps your setup the same in every CLI.** Write an agent or a skill in Claude Code and `agt share` puts it in Codex, Kiro and Antigravity too, each in that CLI's own format, and keeps the copies in sync when you edit one. When you turn them on, it also shares your instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`), your MCP servers and the hooks you approve, and installs your plugins between Claude Code and Codex.
-- **It gives your main session subagents in other CLIs and accounts.** From Claude Code, Codex or Antigravity, start a subagent that is a real Claude Code, Codex, Antigravity (Gemini) or Kiro session running in the background under your own login. Extra accounts of a CLI use the MCP servers, skills, plugins and instructions you already set up, so nothing is configured twice, and when an account runs out of quota the work moves to the next one.
-
-It installs as a plugin in Claude Code, Codex and Antigravity, and works as a plain MCP server in any other MCP client. It isn't an API proxy or a model router: every subagent is the vendor's own CLI with your own login. It needs only Python 3.11 or newer: pure standard library, with its own small MCP server.
-
 ```mermaid
 flowchart LR
-    host["Your main session<br/>Claude Code · Codex · Antigravity"]
-    core["Agents Router<br/>jobs · accounts · messages"]
-    shared[("Your setup<br/>MCP servers · skills<br/>plugins · instructions")]
-    w1["Claude Code<br/>account 2"]
-    w2["Claude Code<br/>account 3"]
-    w3["Codex<br/>account 1"]
-    w4["Antigravity<br/>Gemini"]
-    w5["Kiro CLI"]
-
-    host -- "start · wait · message" --> core
-    core --> w1 & w2 & w3 & w4 & w5
-    shared -. "one shared pool" .-> w1 & w2 & w3
+    main["Your main session<br/>Claude Code · Codex · Antigravity"]
+    agt{{"Agents Router<br/>agt"}}
+    subgraph jobs["Subagents on your accounts"]
+        direction TB
+        w1["Claude Code<br/>your accounts"]
+        w2["Codex CLI<br/>your accounts"]
+        w3["Antigravity<br/>Gemini"]
+        w4["Kiro CLI"]
+    end
+    subgraph cfg["Your CLI folders, kept in sync"]
+        direction TB
+        f1["~/.claude"]
+        f2["~/.codex"]
+        f3["~/.gemini"]
+        f4["~/.kiro"]
+    end
+    main -- "start · wait · message" --> agt
+    agt -- "runs" --> jobs
+    agt -. "agt share" .-> cfg
 ```
+
+| | |
+|---|---|
+| **What it is** | A command (`agt`), a plugin for Claude Code, Codex and Antigravity, and an MCP server for any other client |
+| **What it isn't** | An API proxy or model router: every subagent is the vendor's own CLI with your own login |
+| **Needs** | Python 3.11 or newer, standard library only (git to install) |
+| **Tested live** | Windows, with Claude Code 2.1.299, Codex 0.162.1 and Antigravity 1.4.0 |
 
 ## Install
 
-1. Install the `agt` command with [uv](https://docs.astral.sh/uv/getting-started/installation/) (on a Mac, `brew install uv`):
+| Step | Command |
+|---|---|
+| 1. Install `agt` | `uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router` |
+| 2. Set up every installed CLI | `agt setup` |
+| Later: update everything | `agt update` |
 
-   ```bash
-   uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
-   ```
+- **No uv yet:** [install it](https://docs.astral.sh/uv/getting-started/installation/) (`brew install uv` on a Mac), or use pipx: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git.
+- **Not on PyPI:** the PyPI package named `agt` is a different project.
+- **`agt` not found:** run `uv tool update-shell` (or `pipx ensurepath`) and open a new terminal.
+- **What `agt setup` does:** installs the plugin in each installed CLI, registers the logged-in account folders you name with `--account`, suggests what to share, and lists what's left for you. Enter applies it; `--dry-run` only shows it.
 
-   `--managed-python` gives `agt` a Python of its own, so a system Python upgrade can't break it. pipx works too: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't found afterwards, run `uv tool update-shell` (or `pipx ensurepath`) and open a new terminal. Agents Router isn't on PyPI; the PyPI package named `agt` is a different project.
+<details>
+<summary>Install the plugin by hand</summary>
 
-2. Add the plugin to the CLI you work in:
+| Host | Command |
+|---|---|
+| Claude Code | `/plugin install agents-router --marketplace Watcharagorn/agents-router` in a session, or `claude plugin install agents-router --marketplace Watcharagorn/agents-router` |
+| Codex | `agt setup --host codex` (the plugin and native relay agents) |
+| Antigravity | `agy plugin install https://github.com/Watcharagorn/agents-router`; `agt setup --host antigravity` adds the native relay agents |
+| Any MCP client | Server command `agt`, argument `mcp` |
 
-   | Host | Command |
-   |---|---|
-   | Claude Code | `/plugin install agents-router --marketplace Watcharagorn/agents-router` in a session, or `claude plugin install agents-router --marketplace Watcharagorn/agents-router` in a terminal |
-   | Codex | `agt setup --host codex` installs the plugin and native relay agents |
-   | Antigravity | `agy plugin install https://github.com/Watcharagorn/agents-router` |
-   | Any MCP client | Server command `agt` with argument `mcp` |
+Per host details: [docs/hosts.md](docs/hosts.md).
 
-   Or run `agt setup`: it does this step for every installed CLI, registers the logged-in account folders you name with `--account`, suggests what to share, and ends with what you still have to do. In a terminal it's one screen, and Enter does all of it. See [For AI agents](#for-ai-agents) for the dry run an agent uses.
-
-Details per host are in [docs/hosts.md](docs/hosts.md). To update later, run `agt update`.
+</details>
 
 ## Quick start
 
-Hand a task to a subagent. Ask your main session in plain words ("have Codex review this branch"), or use `/agents-router:delegate <task>` in Claude Code. The subagent runs in the background and its result comes back to your session. From a terminal:
-
-```bash
-agt run --runtime codex --access read "Review the diff on this branch"
-```
-
-Share your agents and skills between your CLIs:
-
-```bash
-agt share enable --dry-run   # what sharing would do; writes nothing
-agt share enable             # the same plan on one screen; Enter applies it
-agt share status             # what's in sync and what waits for you
-```
-
-Add your other accounts, each with the CLI's own login:
-
-```bash
-agt accounts add max-2
-agt accounts add plus-2 --runtime codex
-agt doctor --live            # one tiny job per Claude account; uses a little quota
-agt doctor --live --runtime codex
-```
-
-## Features
-
-### Share your setup between Claude Code, Codex, Kiro and Antigravity
-
-- **Agents and skills.** `agt share` copies them between Claude Code, Codex, Antigravity and Kiro, in each CLI's own format, and keeps them in sync when you edit one. A repo's own agents and skills (`.claude/agents`, `.kiro/agents` and the like) can share between that repo's CLI folders too.
-- **Instruction files.** One marked block of `CLAUDE.md`, Codex's `AGENTS.md`, Antigravity's `GEMINI.md` and Kiro's steering file stays the same everywhere; the rest of each file stays that CLI's own.
-- **MCP servers.** A user MCP server you add in one CLI reaches the others' settings. A server with a secret written into it stays in its CLI.
-- **Hooks.** Claude Code, Codex and Antigravity hooks go to another CLI only after you approve each one there, because a hook runs commands on your machine.
-- **Plugins.** A plugin you install in Claude Code or Codex is installed in your other Claude Code and Codex folders with that CLI's own commands. One the other CLI would load only part of waits for your yes.
-- **Backups.** Anything sharing replaces or removes is backed up first, and `agt share undo` puts back what the last change to an agent or skill replaced.
-
-Instructions, MCP servers, hooks and plugins are off until you turn them on. See [Sharing agents and skills](docs/share.md).
-
-### Subagents in Claude Code, Codex, Antigravity and Kiro
-
-- **Subagents that feel built in.** Start one, keep working, and get the result back when it's done. In Claude Code they appear in the agent list like native subagents, colored and labeled with the model and task, and you can open one to watch each step and its reasoning as the worker goes. `agt setup --host codex` and `agt setup --host antigravity` install native relay agents in Codex and Antigravity too. Those relays run Claude Code, Codex and Antigravity workers; from those hosts, start Kiro jobs with the MCP tools. See [host support](docs/hosts.md#codex) for the app checks still due.
-- **Wake-ups.** Claude Code's hooks wake an idle session when a subagent finishes or asks a question, and list any uncollected results after you resume.
-- **Two-way messages.** A subagent can send progress notes or ask a question and wait for the answer; you can send it follow-ups while it works, and each message is delivered once. This works for Claude Code and Codex workers, for Gemini workers only with `max_jobs_per_account = 1`, and not yet for Kiro.
-- **Mixing CLIs.** A Claude Code session can hand a task to Codex, Gemini (through Antigravity) or Kiro. Codex and Gemini subagents get your Claude MCP servers, and every subagent in another CLI is told where your instructions and skills live.
-- **Delegation rules.** Optional: preview a template with model tiers with `agt rules`, then choose whether to install it. See [Delegation rules](docs/delegation.md).
-
-### Multiple accounts, one setup, switching at usage limits
-
-- **One setup for every account.** Your MCP servers, skills, plugins, agents, `CLAUDE.md`, project memory and settings are shared from your normal config folder to each extra account of that CLI through links and launch flags, not copied. Only the login differs per account. See [How the shared setup works](#how-the-shared-setup-works).
-- **Automatic account switching.** Claude Code and Codex report each account's 5-hour and weekly usage, and new work goes to the account with the most room. If a Claude, Codex or Gemini account hits its limit mid-task, the job continues on the next account (a Claude conversation moves with its transcript). Failover is on by default and can be turned off per CLI.
-- **Limits you choose.** Plan presets and extra caps are opt-in. By default there's no cap on jobs per account; set `max_jobs_per_account` to run at most that many workers per account and queue the rest. `usage_ceiling = 0.95` blocks new starts on accounts with known usage at or above 95%. Set a plan or extra caps to refuse starts that would go over them, with one line that says what to do instead.
-- **More parallel jobs only on the user's word.** `override=<their words>` (relay or MCP) or `--override "..."` (`agt run` / `agt start`) bypasses agt's caps and queueing; real usage-limit cooldowns, model and effort restrictions, login, depth and access still apply. See [configuration](docs/configuration.md#a-user-authorized-override).
-
-### Safety
-
-- **Permission modes.** `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Gemini workers, which have none on Windows, run behind a review gate of fixed rules plus a separate reviewer model, and `edit` jobs inside Antigravity's sandbox. Kiro `edit` jobs may read and write files but get no shell; use `full` for commands. Skipping permissions is an explicit choice per job.
-- **No tokens touched.** Every model call comes from the vendor's own CLI with your own login. Nothing reads, copies or forwards credentials.
+| I want to | Do this | Guide |
+|---|---|---|
+| Hand a task to Codex | Ask your session: "have Codex review this branch" | [Codex](docs/codex.md) |
+| Run a subagent from a terminal | `agt run --runtime codex --access read "Review the diff on this branch"` | [Hosts](docs/hosts.md) |
+| Delegate from Claude Code | `/agents-router:delegate <task>` | [Claude Code](docs/claude-code.md) |
+| See what sharing would do | `agt share enable --dry-run` | [Sharing](docs/share.md#turning-it-on) |
+| Turn sharing on | `agt share enable`, then Enter | [Sharing](docs/share.md#turning-it-on) |
+| Check what's in sync | `agt share status` | [Sharing](docs/share.md#everyday-use) |
+| Add a Claude account | `agt accounts add max-2` | [Claude Code](docs/claude-code.md#2-add-your-other-accounts) |
+| Add a Codex account | `agt accounts add plus-2 --runtime codex` | [Codex](docs/codex.md#extra-accounts) |
+| Test every account | `agt doctor --live --runtime <runtime>` (one tiny job each; uses a little quota) | [Claude Code](docs/claude-code.md#3-check) |
+| Preview delegation rules | `agt rules` | [Delegation rules](docs/delegation.md) |
 
 ## Supported CLIs
 
-| CLI | As your main session | As a subagent | What `agt share` shares | Guide |
-|---|---|---|---|---|
-| Claude Code | Plugin, relay agents in the agent list | Works (`claude -p`) | Agents, skills, instructions, MCP servers, hooks, plugins | [Claude Code](docs/claude-code.md) |
-| Codex CLI | Plugin and native relay agents | Works (`codex exec`) | Agents, skills, instructions, MCP servers, hooks, plugins | [Codex](docs/codex.md) |
-| Antigravity (`agy`, Gemini) | Plugin and native relay agents | Works; extra accounts at your own risk | Agents, skills, instructions, MCP servers, hooks | [Gemini](docs/gemini.md) |
-| Kiro CLI | | New: built from Kiro's docs, not yet run live; one account | Agents, skills, instructions (not yet checked with the CLI), MCP servers | [Kiro](docs/kiro.md) |
-| Any other MCP client | MCP server (`agt mcp`) | | | [Hosts](docs/hosts.md#any-other-mcp-client) |
-| Cursor, Gemini CLI, Copilot, OpenCode, others | | Not supported yet (researched) | | [CLI comparison](docs/research/cli-permissions-and-headless.md) |
+| | Claude Code | Codex CLI | Antigravity (Gemini) | Kiro CLI |
+|---|:-:|:-:|:-:|:-:|
+| **Main session (host)** | Plugin, relay agents in the agent list | Plugin, native relay agents | Plugin, native relay agents | — |
+| **Subagent** | ✓ `claude -p` | ✓ `codex exec` | ✓ `agy` | New, not run live yet |
+| **Progress notes and questions to the parent** | ✓ | ✓ | With an account cap of 1 (`max_jobs_per_account = 1` under `[antigravity]`) | — |
+| **Extra accounts** | ✓ | ✓ | At your own risk | One account |
+| **Switches account at a usage limit** | ✓ | ✓ | ✓ | — |
+| **Shares agents and skills** | ✓ | ✓ | ✓ | ✓ |
+| **Shares instructions** | ✓ | ✓ | ✓ | ✓ (not yet checked with the CLI) |
+| **Shares MCP servers** | ✓ | ✓ | ✓ | ✓ |
+| **Shares hooks** | ✓ | ✓ | ✓ | — |
+| **Shares plugins** | ✓ | ✓ | — | — |
+| **Guide** | [Claude Code](docs/claude-code.md) | [Codex](docs/codex.md) | [Gemini](docs/gemini.md) | [Kiro](docs/kiro.md) |
 
-Tested live on Windows with Claude Code 2.1.299, Codex 0.162.1 and Antigravity 1.4.0; the test suite also runs on macOS and Linux in CI.
+- **Any other MCP client:** host only, through `agt mcp` ([hosts](docs/hosts.md#any-other-mcp-client)).
+- **Cursor, Gemini CLI, Copilot, OpenCode and others:** not supported as subagents yet; as hosts they work through `agt mcp` ([CLI comparison](docs/research/cli-permissions-and-headless.md)).
+
+## Share your setup between Claude Code, Codex, Kiro and Antigravity
+
+```mermaid
+flowchart LR
+    edit["You edit an agent or skill<br/>in any CLI"] --> share{{"agt share"}}
+    share --> fmt["Written in each CLI's own format<br/>.md · .toml · .json"]
+    share --> bak[("Backup of anything<br/>it replaces")]
+    fmt --> all["Claude Code · Codex · Antigravity · Kiro"]
+```
+
+| Kind | Turn on with | Note |
+|---|---|---|
+| Agents and skills | `agt share enable` | Edits in any CLI reach the others |
+| A repo's own agents and skills | `agt share repo add <path>` | Shares between that repo's CLI folders (`.claude/agents`, `.kiro/agents` …) |
+| Instructions | `agt share kinds add instructions`, then `agt share adopt` | One marked block; the rest of each file stays that CLI's own |
+| MCP servers | `agt share kinds add mcp` | A server with a secret written into it stays in its CLI |
+| Hooks | `agt share kinds add hooks` | Each hook goes to a CLI only after you approve it there |
+| Plugins | `agt share kinds add plugins` | Claude Code and Codex; one the other CLI would load only partly waits for your yes |
+
+`agt share undo` restores what the last change to an agent or skill replaced. Full guide: [Sharing agents and skills](docs/share.md).
+
+## Subagents in Claude Code, Codex, Antigravity and Kiro
+
+```mermaid
+sequenceDiagram
+    participant M as Main session
+    participant A as agt
+    participant W1 as Worker CLI · account 2
+    participant W2 as Worker CLI · account 3
+    M->>A: start task (runtime, model, access)
+    A->>W1: run on an account with room
+    W1-->>A: progress note or question
+    A-->>M: passes it on
+    M->>A: answer or follow-up
+    A->>W1: delivered once
+    Note over W1: usage limit reached
+    A->>W2: job continues on the next account
+    W2-->>A: result
+    A-->>M: result
+```
+
+| Where the main session runs | How it starts a subagent |
+|---|---|
+| Claude Code | Relay agents `agents-router:agt-claude`, `-codex`, `-antigravity`, `-kiro`, or `/agents-router:delegate <task>` |
+| Codex | Native `spawn_agent` with `agt-claude`, `agt-codex` or `agt-antigravity` |
+| Antigravity | Native `invoke_subagent` with `agt-claude`, `agt-codex` or `agt-antigravity` |
+| Any MCP client | `subagent_start`, `subagent_wait`, `subagent_message`, `subagent_result` |
+| A terminal | `agt run` (waits for the result) or `agt start` (background) |
+
+- **Claude Code:** each relay shows in the agent list with the model and task; open it to watch the worker's steps. Hooks wake an idle session when a subagent finishes or asks something.
+- **Other CLIs:** a subagent in a different CLI from its host gets a note naming your instruction files and skill folders. Codex and Gemini subagents started from Claude Code also get that session's MCP servers.
+- **Kiro from Codex or Antigravity:** start Kiro jobs with the MCP tools.
+- **Codex and Antigravity relays:** their app views still need checks ([hosts](docs/hosts.md#codex)).
+
+## Multiple accounts, one setup, switching at usage limits
+
+| | Claude Code | Codex | Antigravity |
+|---|---|---|---|
+| **Picks** | Lowest recent usage with a free slot | Ranked by 5-hour and weekly usage, like Claude | Least recently used, not cooling down |
+| **At a usage limit** | Cools down; the job continues on the next account with its transcript | Cools down until the reported reset; the job starts again on the next account with the partial output | Cools down; the job starts again on the next account with the partial output |
+| **Turn switching off** | `failover = "off"` under `[claude]` | `failover = "off"` under `[codex]` | `failover = "off"` under `[antigravity]` |
+
+Switching applies to subagent jobs; your main session stays on its own account. A job pinned with `account` never switches.
+
+## How the shared setup works
+
+Your normal config folder (`~/.claude`, `~/.codex`) is the one pool. Each extra account's folder holds only its login, state and session history, and is pointed at the pool before every run:
+
+| From your config folder | Reaches each extra account as |
+|---|---|
+| `agents/`, `commands/` | One link to your folder |
+| Skills | One link per skill |
+| `CLAUDE.md`, `AGENTS.md` | Hard links: the same file on disk |
+| Project memory | A link to your main project memory |
+| Settings, MCP servers, plugins | Launch flags (`--settings`, `--mcp-config`, `--plugin-dir`), minus anything that would pick a different login |
+| Codex `config.toml` | Written into the account folder, which keeps its own trust and notice tables |
+
+- **Your folders are never rewritten** by this. Only `agt share`, once on, writes into them: copies of your agents and skills and, for the kinds you turn on, the instruction block, MCP server entries, approved hook entries and plugin installs, with a backup of anything it replaces.
+- **Not shared:** tools built into the Claude desktop app (its browser or terminal panes) belong to the app, so CLI workers can't have them.
+- **Check it:** `agt doctor --live` starts a tiny job on each account and compares what each one loaded.
+
+## Limits
+
+| Setting | Default | What it does |
+|---|---|---|
+| `max_jobs` | No cap | Subagents running at once on this machine |
+| `max_jobs_per_account` | No cap | Workers at once per account; extra jobs wait |
+| `usage_ceiling` | `0.95` | No new jobs on an account at or above 95% of a usage window it reports |
+| `failover` | `"on-limit"` | Continue on the next account at a usage limit |
+| `plan` | Not set | Plan preset caps; `"auto"` reads a Claude account's plan from its login |
+| `max_depth` | `1` | Workers can't start subagents of their own |
+
+- **Change a setting:** `agt config set <key> <value>`; per-CLI keys take the CLI first, e.g. `agt config set claude.max_jobs_per_account 1` ([configuration](docs/configuration.md#agt-config)).
+- **More jobs at once:** `override=<the user's own words>` (relay or MCP) or `--override "..."` (`agt run`, `agt start`) lifts agt's caps and queueing for one start. Cooldowns after real usage limits, model and effort limits, login, depth and access still apply ([details](docs/configuration.md#a-user-authorized-override)).
+
+## Safety
+
+| Access | Claude Code | Codex | Antigravity | Kiro |
+|---|---|---|---|---|
+| `read` | Read-only tools and shell commands; a hook blocks writes and secret paths | Read-only sandbox | Plan mode behind the review gate | Read and search files |
+| `edit` | Claude Code's auto mode | Workspace-write sandbox with Codex's auto-review | Edits in the project, commands in agy's sandbox, behind the review gate | Read and write files; no shell (use `full` for commands) |
+| `full` | Skips permission checks | Bypasses approvals and sandbox | No gate, no sandbox | Trusts all tools |
+
+- **`full`:** an explicit choice per job, only when you ask for it.
+- **Logins:** every model call comes from the vendor's own CLI. agt never reads, copies or forwards your CLI logins.
+- **Gemini review gate:** fixed rules plus a separate reviewer model ([how it works](docs/gemini.md#safety)).
 
 ## FAQ
 
-### How do I share skills and agents between Claude Code and Codex?
+<details>
+<summary><b>How do I share skills and agents between Claude Code and Codex?</b></summary>
 
-Run `agt share enable` (add `--dry-run` first to see the plan). It copies your agents and skills between Claude Code, Codex, Kiro and Antigravity, each in that CLI's own format, and an edit in any of them reaches the others. Anything it replaces is backed up first. See [Sharing agents and skills](docs/share.md).
+`agt share enable` (`--dry-run` first to see the plan). Agents and skills are then copied between Claude Code, Codex, Kiro and Antigravity in each CLI's own format, and an edit in any of them reaches the others. See [Sharing agents and skills](docs/share.md).
 
-### Can Claude Code run Codex as a subagent?
+</details>
 
-Yes. Ask your session in plain words ("have Codex review this branch"), or run `agt run --runtime codex --access read "<task>"`. The worker is the official `codex exec` with your own login. It runs in the background and its result comes back to your session. Gemini (through Antigravity CLI, `agy`) works the same way. Kiro CLI support is new and hasn't been run live yet. See [Codex](docs/codex.md).
+<details>
+<summary><b>Can Claude Code run Codex as a subagent?</b></summary>
 
-### How do I keep CLAUDE.md and AGENTS.md in sync?
+Yes. Ask your session ("have Codex review this branch") or run `agt run --runtime codex --access read "<task>"`. The worker is the official `codex exec` with your login; its result comes back to your session. Gemini (through Antigravity CLI, `agy`) works the same way; Kiro CLI support hasn't been run live yet. See [Codex](docs/codex.md).
 
-Run `agt share kinds add instructions`, then `agt share adopt` to add agt's marked block to your user-level `CLAUDE.md`, Codex's `AGENTS.md`, Antigravity's `GEMINI.md` and Kiro's steering file (`--wrap` puts a file's own text inside the block). The block then stays the same in all of them; the rest of each file stays that CLI's own. See [Sharing instructions](docs/share.md#sharing-instructions).
+</details>
 
-### How do I share MCP servers between Claude Code, Codex and Kiro?
+<details>
+<summary><b>How do I keep CLAUDE.md and AGENTS.md in sync?</b></summary>
 
-Run `agt share kinds add mcp`. After that, a user MCP server you add in one CLI reaches the others' settings, with a few exceptions per CLI that the guide lists (Antigravity, for one, doesn't take a server that needs a `${VAR}` value). A server with a secret written into it stays where it is; with a `${VAR}` reference instead, it can share. See [Sharing MCP servers](docs/share.md#sharing-mcp-servers).
+`agt share kinds add instructions`, then `agt share adopt` adds agt's marked block to your user-level `CLAUDE.md`, Codex's `AGENTS.md`, Antigravity's `GEMINI.md` and Kiro's steering file (`--wrap` puts a file's own text inside it). The block stays the same everywhere; the rest of each file stays that CLI's own. See [Sharing instructions](docs/share.md#sharing-instructions).
 
-### How do I use multiple Claude Code accounts?
+</details>
 
-Each extra account is its own config folder with its own login. `agt accounts add max-2` adds one and opens its login. Your MCP servers, skills, plugins and `CLAUDE.md` reach it through links and launch flags, not copies, and `agt launch` opens an interactive session on the account with the most room left. See [Claude Code](docs/claude-code.md).
+<details>
+<summary><b>How do I share MCP servers between Claude Code, Codex and Kiro?</b></summary>
 
-### Does it switch accounts when one hits its usage limit?
+`agt share kinds add mcp`. A user MCP server you add in one CLI then reaches the others' settings, with a few exceptions per CLI (Antigravity, for one, doesn't take a server that needs a `${VAR}` value). A server with a secret written into it stays put; with a `${VAR}` reference instead, it can share. See [Sharing MCP servers](docs/share.md#sharing-mcp-servers).
 
-For subagent jobs, yes. If a Claude, Codex or Gemini account hits its limit mid-task, the job continues on the next account, and a Claude conversation moves with its transcript. Your main session stays on its own account. `failover = "off"` turns switching off. Extra Antigravity accounts are at your own risk: Google's FAQ says consumer plans don't support automated account switching. Kiro uses one account. See [Provider terms and your accounts](#provider-terms-and-your-accounts).
+</details>
 
-### How is it different from account switchers and config-sync tools?
+<details>
+<summary><b>How do I use multiple Claude Code accounts?</b></summary>
 
-Account switchers such as claude-swap, ccs and caam work within one CLI. Config-sync tools such as rulesync and ruler turn one canonical config into each CLI's files. OpenAI's codex-plugin-cc runs Codex from Claude Code. Agents Router keeps your own files in sync in both directions across CLIs, runs subagents across them and pools your accounts, in one tool. See [prior art](docs/research/prior-art.md) and [how other projects share setups](docs/research/lifecycle-and-sharing.md).
+Each extra account is its own config folder with its own login: `agt accounts add max-2` adds one and opens its login. Your MCP servers, skills, plugins and `CLAUDE.md` reach it through links and launch flags, not copies ([how](#how-the-shared-setup-works)). `agt launch` opens an interactive session on the account with the most room left. See [Claude Code](docs/claude-code.md).
+
+</details>
+
+<details>
+<summary><b>Does it switch accounts when one hits its usage limit?</b></summary>
+
+For subagent jobs, yes: a Claude, Codex or Gemini job continues on the next account, and a Claude conversation moves with its transcript. Your main session stays on its own account, and `failover = "off"` turns switching off. Extra Antigravity accounts are at your own risk; Kiro uses one account. See [Provider terms and your accounts](#provider-terms-and-your-accounts).
+
+</details>
+
+<details>
+<summary><b>How is it different from account switchers and config-sync tools?</b></summary>
+
+| Tool type | Examples | Scope |
+|---|---|---|
+| Account switchers | claude-swap, ccs, caam | Accounts within one CLI |
+| Config-sync tools | rulesync, ruler | One canonical config written into each CLI's files |
+| Cross-CLI plugin | OpenAI's codex-plugin-cc | Runs Codex from Claude Code |
+| Agents Router | | Your own files kept in sync in both directions across CLIs, subagents across them, and a pool of your accounts |
+
+See [prior art](docs/research/prior-art.md) and [how other projects share setups](docs/research/lifecycle-and-sharing.md).
+
+</details>
 
 ## Documentation
 
@@ -167,7 +276,7 @@ Account switchers such as claude-swap, ccs and caam work within one CLI. Config-
 | [Design](docs/design.md) | Architecture, decisions and what was verified |
 | [Research](docs/README.md#design-and-research) | CLI comparison, prior art, multi-account tools, provider terms |
 
-All guides are listed in the [docs index](docs/README.md).
+All guides: [docs index](docs/README.md).
 
 ## For AI agents
 
@@ -180,52 +289,73 @@ other account folders, sharing my agents and skills between my CLIs, or delegati
 rules, and tell me exactly what I still have to do myself.
 ```
 
-If you're the agent, do this. No slash commands are needed.
+<details>
+<summary><b>Steps for the agent</b> (no slash commands needed)</summary>
 
-1. Install the `agt` command and check it with `agt --version`:
+1. **Install `agt`** and check it with `agt --version`:
 
    ```bash
    uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
    ```
 
-   Without uv, use `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal.
+   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal.
 
-2. Run setup's dry run. Ask the user whether they have other account folders (a second Claude login in `~/.claude-2`, say), and add one `--account` per folder they name; folders that are already logged in need no new login:
+2. **Dry run.** Ask the user whether they have other account folders (a second Claude login in `~/.claude-2`, say) and add one `--account` per folder they name. Folders that are already logged in need no new login.
 
    ```bash
    agt setup --dry-run --json --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
    ```
 
-   It returns one proposal: `plugin` (the hosts it installs into), `share` (the user's agents and skills, and which CLI each goes to), `repos` (repos with their own agents or skills), `switches` (worktrees, auto copy, tool widening, delegation rules, Codex's session line), `needs_answer` (items whose copies differ), `still_needed` and `command`.
+   | Key in the proposal | Holds |
+   |---|---|
+   | `plugin` | The hosts it installs into |
+   | `share` | The user's agents and skills, and which CLI each goes to |
+   | `repos` | Repos with their own agents or skills |
+   | `switches` | Worktrees, auto copy, tool widening, MCP servers, plugins, delegation rules, Codex's session line |
+   | `needs_answer` | Items whose copies differ |
+   | `still_needed`, `command` | What's left for the user, and the command to apply it |
 
-3. Show the user the share table and the switches, and ask once: as suggested, change some, or the plugin only. With their answers, run the dry run again with them as flags (`--resolve <item>=<label>`, `--skip <item>@<label>`, `--only <item>=<label>[,<label>]`, `--projects <paths>|none`, `--rules on`, `--codex-session-line on`, or `--share off`). Then run the newest proposal's `command` exactly as given; it ends in `--yes --if-plan <id>`, which refuses if anything changed meanwhile.
+3. **Ask once.** Show the share table and the switches: as suggested, change some, or the plugin only. Run the dry run again with the answers as flags, then run the newest proposal's `command` exactly as given. It includes `--yes --if-plan <id>`, which refuses if anything changed meanwhile.
 
-   `agt setup` installs the plugin into each installed host with the host's own terminal commands, registers and syncs the account folders, turns sharing on, and ends with what the user still has to do. It skips anything already in place, so running it twice is safe. It never starts a login and never reads credential files. Use `--host claude`, `--host codex` or `--host antigravity` to limit it. In a terminal, a person runs plain `agt setup` and gets the same proposal as one screen: Enter does all of it. See [For agents](docs/share.md#for-agents) in the share guide.
+   | The user wants | Flag |
+   |---|---|
+   | One version of an item whose copies differ | `--resolve <item>=<label>` |
+   | An item kept out of one CLI | `--skip <item>@<label>` |
+   | An item only in some CLIs | `--only <item>=<label>[,<label>]` |
+   | Only some repos, or none | `--projects <paths>` or `--projects none` |
+   | MCP servers shared | `--mcp on` |
+   | Plugins shared | `--plugins on` |
+   | New items wait for a pick | `--auto-copy off` |
+   | Worktrees join only by command | `--worktrees command` |
+   | No Codex agents that would get every tool | `--tool-widening skip` |
+   | Delegation rules installed | `--rules on` |
+   | Codex's session line | `--codex-session-line on` |
+   | The plugin only | `--share off` |
 
-4. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier, keeps work projects with the home vendor, and sets helper limits. Personal projects can try another CLI first and fall back to the home model when there is no room.
+   `agt setup` installs the plugin into each installed host with the host's own terminal commands, registers and syncs the account folders, turns sharing on, and ends with what the user still has to do. Running it twice is safe. It never starts a login and never reads credential files. `--host claude`, `--host codex` or `--host antigravity` limits it. See [For agents](docs/share.md#for-agents) in the share guide.
 
-   Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, preview and install with their choices; otherwise skip it. For example:
+4. **Offer the [delegation rules](docs/delegation.md).** They set models per tier, keep work projects with the home vendor, and set helper limits; personal projects can try another CLI first and fall back to the home model. Ask whether the user wants them and which home and try-first models per tier, then preview and install with their choices. Ask for work folders if they want `--work-folder`. Nothing installs these rules without `--install`.
 
    ```bash
    agt rules --show --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
    agt rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
    ```
 
-   Use the user's models and the host they want. Ask for work folders if the user wants to list them with `--work-folder`. Nothing installs these rules without `--install`.
+5. **Show the "Still needed from you" list.** Typical items: browser logins for accounts that aren't logged in (`agt accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code), and putting `agt` on PATH.
 
-5. Show the user the "Still needed from you" list from the output. Typical items: browser logins for accounts that aren't logged in (`agt accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code) so the plugin loads, and putting `agt` on PATH.
+6. **Check** with `agt doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`, `kiro`; no model calls). Plain `agt doctor` checks Claude only; `--live` runs one tiny job per account and uses a little quota.
 
-6. Run `agt doctor --runtime <runtime>` for each runtime you set up (`claude`, `codex`, `antigravity`; no model calls). Plain `agt doctor` checks Claude only. Adding `--live` runs one tiny job per account in that runtime and uses a little quota.
+**If `agt setup` fails for a host**, run its commands yourself:
 
-If `agt setup` fails for a host, these are the commands it runs, so you can run them yourself:
+| Host | Install | Update |
+|---|---|---|
+| Claude Code | `claude plugin marketplace add Watcharagorn/agents-router`, then `claude plugin install agents-router@agents-router` | `claude plugin marketplace update agents-router`, then `claude plugin update agents-router@agents-router` |
+| Codex | `codex plugin marketplace add Watcharagorn/agents-router`, then `codex plugin add agents-router@agents-router` | `codex plugin marketplace upgrade agents-router`, then `codex plugin add agents-router@agents-router` |
+| Antigravity | `agy plugin install https://github.com/Watcharagorn/agents-router` | The same command again |
 
-| Host | Commands |
-|---|---|
-| Claude Code | `claude plugin marketplace add Watcharagorn/agents-router` then `claude plugin install agents-router@agents-router` |
-| Codex | `codex plugin marketplace add Watcharagorn/agents-router` then `codex plugin add agents-router@agents-router` |
-| Antigravity | `agy plugin install https://github.com/Watcharagorn/agents-router` |
+These install the plugin only; `agt setup --host codex` or `--host antigravity` adds the native relay agents.
 
-When the `claude` command can't be found (common with the Claude desktop app) or the plugin commands fail, `agt setup` declares the plugin in Claude Code's `settings.json` instead (`~/.claude/settings.json`, or the one in `$CLAUDE_CONFIG_DIR`). It keeps every other key and saves a backup next to the file. Claude Code installs the plugin on its next start, so the user has to restart it. `agt setup --claude-route settings` takes this route directly. By hand, merge this into the file:
+**Without a `claude` command** (common with the Claude desktop app), or when the plugin commands fail, `agt setup` declares the plugin in Claude Code's `settings.json` (`~/.claude/settings.json`, or the one in `$CLAUDE_CONFIG_DIR`), keeping every other key and saving a backup. Claude Code installs it on its next start, so the user restarts it. `agt setup --claude-route settings` takes this route directly. By hand, merge:
 
 ```json
 {
@@ -236,29 +366,35 @@ When the `claude` command can't be found (common with the Claude desktop app) or
 }
 ```
 
-To update later, run `agt update` (`--dry-run` shows the plan first). It reinstalls `agt` with the tool that installed it (pipx, uv or pip), from where you installed it (GitHub, or a folder or archive), and updates the plugin in every host that has it, then lists the restarts. On Windows it prints the package command for you to run instead, because `agt` can't replace itself while running. By hand: `uv tool install --force git+https://github.com/Watcharagorn/agents-router` (or `pipx install --force` with the same URL), then `claude plugin marketplace update agents-router` and `claude plugin update agents-router@agents-router`, `codex plugin marketplace upgrade agents-router` and `codex plugin add agents-router@agents-router`, or `agy plugin install https://github.com/Watcharagorn/agents-router` again.
+**Updating:** `agt update` (`--dry-run` first) reinstalls `agt` with the tool and source that installed it, updates the plugin in every host that has it, and lists the restarts. On Windows it prints the package command for you to run, because `agt` can't replace itself while running. The package by hand: `uv tool install --force git+https://github.com/Watcharagorn/agents-router` (or `pipx install --force` with the same URL).
 
-To register an account folder by hand: `agt accounts add <name> --home <folder> --no-login`. This defaults to Claude; add `--runtime codex` or `--runtime antigravity` for those accounts. For a new account, omit `--no-login` to open that runtime's login, which the user completes in the browser.
+**Registering an account folder by hand:** `agt accounts add <name> --home <folder> --no-login` (Claude by default; add `--runtime codex` or `--runtime antigravity`). Leave out `--no-login` for a new account; the user completes the login in the browser.
 
-Never read or copy credential files, and never edit files inside `~/.agents-router/homes/`; `agt` manages those folders. Change agt's settings with `agt config set`, never by editing a limit or safety key by hand; raising a limit or loosening safety takes `--user-said "<the user's words>"` (see [configuration](docs/configuration.md#agt-config)). Only the user can authorize more parallel jobs: never set `override` on your own judgment; use it only when the user asked for more jobs in this conversation, or confirmed after you warned them and told them how much of the 5-hour window is left. More for agents working in this repository is in [AGENTS.md](AGENTS.md).
+| Never | Instead |
+|---|---|
+| Read or copy credential files | Leave logins to the vendor's CLI |
+| Edit files inside `~/.agents-router/homes/` | `agt` manages those folders |
+| Edit a limit or safety key by hand | `agt config set`; raising a limit or loosening safety takes `--user-said "<the user's words>"` ([configuration](docs/configuration.md#agt-config)) |
+| Set `override` on your own judgment | Use it only when the user asked for more jobs in this conversation, or confirmed after you warned them and told them how much of the 5-hour window is left |
 
-## How the shared setup works
+More for agents working in this repository: [AGENTS.md](AGENTS.md).
 
-Your normal config folder (`~/.claude`, `~/.codex`) is the one pool. Each extra account gets its own folder that holds only its login, state and session history. Before every run Agents Router points that folder at the pool:
-
-- folders such as `agents/` and `commands/` become one link to yours, and each skill is linked by name;
-- `CLAUDE.md` and `AGENTS.md` are hard links to your files, so it's the same file on disk;
-- project memory is linked to your main project memory;
-- your settings, MCP servers and plugins are passed to the worker as launch flags (`--settings`, `--mcp-config`, `--plugin-dir`), minus anything that would pick a different login;
-- for Codex, your `config.toml` is written into the account folder, which keeps its own trust and notice tables.
-
-Sharing between accounts never moves or rewrites anything in your own folders. Only `agt share`, once you turn it on, writes into them: copies of your agents and skills and, for the kinds you turn on, the instruction block, MCP server entries, approved hook entries and plugin installs, with a backup of anything it replaces. One limit: tools built into the Claude desktop app itself (its browser or terminal panes, for example) belong to the app, not to your config, so CLI workers can't have them. Everything in your config folders and plugins is shared. `agt doctor --live` starts a tiny job on each account and compares exactly what each one loaded.
+</details>
 
 ## Provider terms and your accounts
 
-All of this runs through each vendor's official CLI with your own login: the same thing you'd get by opening a terminal and typing the task yourself. Anthropic documents running several accounts side by side with separate config folders, and OpenAI ships its own plugin that runs Codex from Claude Code. Google's Antigravity FAQ rules out wrapping `agy` on consumer plans and automating account rotation, so the Antigravity runtime uses your one signed-in account unless you add more yourself. Extra accounts are marked use at your own risk; once added, they're used the same way as for Claude and Codex, and `failover = "off"` turns switching off. The details and quotes are in [provider terms](docs/research/provider-terms.md); each vendor's terms apply to your accounts.
+| Vendor | What it publishes | What agt does |
+|---|---|---|
+| Anthropic | Documents running several accounts side by side with separate config folders | Uses your extra Claude accounts that way |
+| OpenAI | Ships its own plugin that runs Codex from Claude Code | Runs `codex exec` with your login |
+| Google | The Antigravity FAQ rules out wrapping `agy` on consumer plans and automating account rotation | Uses your one signed-in account; accounts you add are at your own risk, and `failover = "off"` turns switching off |
+
+Details and quotes: [provider terms](docs/research/provider-terms.md). Each vendor's terms apply to your accounts.
 
 ## Repository layout
+
+<details>
+<summary>Folders and what they hold</summary>
 
 ```text
 src/agents_router/      Core: jobs, account pool, shared setup, messages, settings, MCP server, agt CLI
@@ -276,16 +412,18 @@ adapters/antigravity/   The original standalone AGY server (superseded)
 docs/                   Guides, design and research
 ```
 
+</details>
+
 ## Contributing
 
-Issues and pull requests are welcome. Run the tests before sending a change:
+Issues and pull requests are welcome. Run the tests before sending a change (with `PYTHONPATH=src`, or after `pip install -e .`):
 
 ```bash
 python -m unittest discover -s tests -t tests
 ```
 
-Set `PYTHONPATH` to `src` (or install with `pip install -e .`) first. New runtime adapters should keep the vendor's binary unmodified, leave authentication to it, and default to its safer permission mode.
+New runtime adapters keep the vendor's binary unmodified, leave authentication to it, and default to its safer permission mode.
 
 ## License and credit
 
-Agents Router is by [Watcharagorn](https://github.com/Watcharagorn). Based on [CLI Subagents](https://github.com/lunati228/CLI-Subagents) by [lunati](https://github.com/lunati228). Licensed under [Apache-2.0](LICENSE). If you redistribute it or build on it, keep the [NOTICE](NOTICE) file. To cite the project, use [CITATION.cff](CITATION.cff).
+By [Watcharagorn](https://github.com/Watcharagorn), based on [CLI Subagents](https://github.com/lunati228/CLI-Subagents) by [lunati](https://github.com/lunati228). Licensed under [Apache-2.0](LICENSE); keep the [NOTICE](NOTICE) file when you redistribute or build on it. To cite it: [CITATION.cff](CITATION.cff).
