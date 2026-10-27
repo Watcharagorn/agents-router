@@ -11,8 +11,8 @@ run plans again, finds nothing to do, and saves it.
 
 - `share watch --once` (the LaunchAgent, every 60 s): a run, then the
   heartbeat (`state/share/heartbeat.json`), then a macOS notification for new
-  urgent items (conflicts, deletes waiting, a frozen folder, a failing write),
-  at most once an hour, unless `notify = false`.
+  urgent items (conflicts, deletes waiting, a frozen folder, a failing write, a
+  plugin waiting for your answer), at most once an hour, unless `notify = false`.
 - `share session` (SessionStart in Claude, and in Codex when you turn it on):
   restarts a stopped watcher, catches up for up to 3 s (the rest goes on in
   the background), and prints one line when there's something to say: what
@@ -48,7 +48,7 @@ from agents_router.share import plan as planner
 STALE_AFTER = 600  # a watcher that hasn't run for 10 minutes is stopped
 NOTIFY_EVERY = 3600
 SESSION_BUDGET = 3.0
-URGENT = ("conflict", "delete", "frozen", "failing")
+URGENT = ("conflict", "delete", "frozen", "failing", "plugin")
 ARRIVED = ("copy", "link", "update", "relink", "rename", "rename-folder", "rename-link")
 TRIGGERS = ("command", "watcher", "session", "save", "mcp-start")
 
@@ -153,10 +153,10 @@ def included_folders(saved: settings.Settings) -> list[providers.Provider]:
 
 def watched_files(saved: settings.Settings, included: list[providers.Provider]) -> list[Path]:
     """Files whose change starts a run besides the folders: your settings (and a repo's), the instruction files
-    (in a repo, its `AGENTS.md` and `CLAUDE.md`), and the MCP server files (for `.claude.json`, only its servers
-    count: Claude rewrites it all the time)."""
+    (in a repo, its `AGENTS.md` and `CLAUDE.md`), and the MCP server, hook and plugin files (for `.claude.json`,
+    only its servers count: Claude rewrites it all the time)."""
 
-    from agents_router.share import hooks, instructions, mcp
+    from agents_router.share import hooks, instructions, mcp, plugins
 
     current = scope.current()
     with scope.use(scope.USER):
@@ -165,7 +165,8 @@ def watched_files(saved: settings.Settings, included: list[providers.Provider]) 
         return [*files, current.settings_file,
                 *(instructions.import_watched(current.root) if saved.instructions != "off" else [])]
     return [*files, *(instructions.signature_files(included) if saved.instructions != "off" else []),
-            *(mcp.watched_files(included) if saved.mcp else []), *(hooks.watched_files(included) if saved.hooks else [])]
+            *(mcp.watched_files(included) if saved.mcp else []), *(hooks.watched_files(included) if saved.hooks else []),
+            *(plugins.watched_files(included) if saved.plugins else [])]
 
 
 def repo_scopes(saved: settings.Settings) -> list[scope.Scope]:
@@ -373,7 +374,8 @@ def _summary(entries: list[dict[str, Any]]) -> str:
     for entry in entries:
         counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
     words = {"conflict": ("conflict", "conflicts"), "delete": ("item waiting to be deleted", "items waiting to be deleted"),
-             "frozen": ("frozen folder", "frozen folders"), "failing": ("write that keeps failing", "writes that keep failing")}
+             "frozen": ("frozen folder", "frozen folders"), "failing": ("write that keeps failing", "writes that keep failing"),
+             "plugin": ("plugin waiting for your answer", "plugins waiting for your answer")}
     parts = [f"{count} {words[kind][count != 1]}" for kind, count in counts.items() if kind in words]
     return "agt share needs you: " + ", ".join(parts) + ". `agt share status` shows them."
 

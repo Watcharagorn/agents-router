@@ -96,6 +96,10 @@ def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
         from agents_router.share import hooks
 
         found += hooks.attention(plan.hooks)
+    if plan.plugins is not None:
+        from agents_router.share import plugins
+
+        found += plugins.attention(plan.plugins)
     return found
 
 

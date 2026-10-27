@@ -39,6 +39,7 @@ SWITCHES = {
     "rules": ("Delegation rules: which models to use, in each Claude folder and Codex's AGENTS.md", False),
     "codex_session": ("Codex's session line (Codex asks you to trust it once in /hooks)", False),
     "mcp": ("MCP servers: your CLIs share their user MCP servers (one with a secret written into it, or set up for one CLI, stays put)", False),
+    "plugins": ("Plugins: your Claude Code and Codex plugins install in each other's folders (one a CLI would load only part of waits for your answer)", False),
 }
 
 
@@ -53,6 +54,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--codex-session-line", choices=("on", "off"), help="agt's session entry in Codex (off by default).")
     parser.add_argument("--worktrees", choices=settings.WORKTREES, help="How a listed repo's worktrees join (auto by default).")
     parser.add_argument("--mcp", choices=("on", "off"), help="Share your user MCP servers too (off by default).")
+    parser.add_argument("--plugins", choices=("on", "off"), help="Install your plugins in your other Claude Code and Codex "
+                                                                  "folders too (off by default).")
     parser.add_argument("--resolve", action="append", default=[], metavar="ITEM=LABEL|skip")
     parser.add_argument("--skip", action="append", default=[], metavar="ITEM@LABEL")
     parser.add_argument("--only", action="append", default=[], metavar="ITEM=LABEL[,LABEL]")
@@ -78,6 +81,7 @@ def _switches(args: argparse.Namespace, saved: settings.Settings, plan: planner.
         "rules": args.rules == "on",
         "codex_session": args.codex_session_line == "on" if args.codex_session_line else saved.codex_session,
         "mcp": plan.mcp is not None,
+        "plugins": plan.plugins is not None,
     }
 
 
@@ -92,6 +96,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     saved = settings.load()
     sargs = _share_args(args)
     sargs.mcp = args.mcp or ("on" if saved.mcp else "off")
+    sargs.plugins = args.plugins or ("on" if saved.plugins else "off")
     plan = share._plan(sargs, state.load(), saved)
     repos = share._project_choice(sargs, saved)
     screen.update(saved=saved, sargs=sargs, plan=plan, repos=repos, switches=_switches(args, saved, plan))
@@ -116,6 +121,7 @@ def command_line(args: argparse.Namespace, screen: dict[str, Any]) -> str:
         parts += ["--rules", "on" if switches["rules"] else "off",
                   "--codex-session-line", "on" if switches["codex_session"] else "off",
                   "--mcp", "on" if switches["mcp"] else "off",
+                  "--plugins", "on" if switches["plugins"] else "off",
                   "--worktrees", "auto" if switches["worktrees"] else "command",
                   "--auto-copy", "on" if switches["auto_copy"] else "off",
                   "--tool-widening", "allow-if-shell" if switches["widen"] else "skip",
@@ -215,6 +221,7 @@ def edit(args: argparse.Namespace, screen: dict[str, Any]) -> None:
     args.rules = "on" if "rules" in checked else "off"
     args.codex_session_line = "on" if "codex_session" in checked else "off"
     args.mcp = "on" if "mcp" in checked else "off"
+    args.plugins = "on" if "plugins" in checked else "off"
     args.worktrees = "auto" if "worktrees" in checked else "command"
     args.auto_copy = "on" if "auto_copy" in checked else "off"
     args.tool_widening = "allow-if-shell" if "widen" in checked else "skip"

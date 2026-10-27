@@ -11,7 +11,7 @@ It covers your user folders today:
 | Antigravity | `~/.gemini` | `config/agents/<name>.md` | `antigravity-cli/skills/<name>/` |
 | Kiro | `~/.kiro` | `agents/<name>.json` | `skills/<name>/` |
 
-It can share [your instruction files](#sharing-instructions), [your MCP servers](#sharing-mcp-servers) and [your hooks](#sharing-hooks) too, when you turn them on, [offer your plugins](#plugins) to your other CLIs, and share [a repo's own agents and skills](#repos) between that repo's CLI folders. Commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
+It can share [your instruction files](#sharing-instructions), [your MCP servers](#sharing-mcp-servers), [your hooks](#sharing-hooks) and [your plugins](#sharing-plugins) too, when you turn them on, and share [a repo's own agents and skills](#repos) between that repo's CLI folders. Commands come later. Sharing the extra accounts of one CLI is a separate thing that needs no setup: see [How the shared setup works](../README.md#how-the-shared-setup-works).
 
 ## Turning it on
 
@@ -178,9 +178,39 @@ A copy is one entry at the end of the other CLI's hooks file that calls `agt sha
 
 agt keeps its entries' places in each hooks file, since Codex trusts hooks by their position: Codex asks you to trust a new copy once in `/hooks`. agt's own hooks and Antigravity's review gate are never shared, and hooks share between your user folders only, not repos. `agt share kinds remove hooks` (or `agt share disable`) takes every copy out; your approvals stay for next time.
 
-## Plugins
+## Sharing plugins
 
-Claude Code and Codex install the same plugin packages. `agt share plugins` lists each plugin that's on in one of them and that the other could install from the same marketplace, with the commands it would run:
+Plugins are off unless you turn them on: `agt share kinds add plugins`, or `--plugins on` with `enable` or `agt setup`. Turning them on first shows what it would install. In a terminal it asks before installing anything; without one it exits 3 until you add `--yes`, and `--dry-run` only shows the plan. Once on, a plugin you install in one of your Claude Code or Codex folders is installed in the others, with that CLI's own commands: `claude plugin marketplace add` and `claude plugin install`, or `codex plugin marketplace add` and `codex plugin add`. agt then checks `plugin list` shows it.
+
+Each plugin is an item named `plugins/<name>@<marketplace>`:
+
+- Uninstalling a copy agt installed stops the plugin going to that CLI. Uninstalling the one you installed leaves agt's copies until `agt share rm plugins/<id>` uninstalls them too.
+- Turning a plugin on or off stays each CLI's own choice. A plugin that's off in every CLI that has it doesn't go anywhere.
+- A plugin installed only for a project (project or local scope) isn't shared, and `agt share status` lists it.
+- `agt share pick plugins/<id>` shows what each folder would do with it. `--not-in <label>` keeps it out of that folder, and uninstalls agt's copy there unless you add `--keep-copies`.
+
+Before a plugin goes to a folder, agt checks that the CLI can add the plugin's marketplace and load its parts. Then one of three things happens:
+
+- **It goes.** The next sync installs it. The session hook and a save leave installs to the background watcher, because an install clones a repo. A plugin's server that may log in with OAuth needs that login once in each CLI, and the sync says so.
+- **It stays put**, and the sync's report and `agt share status` say why. Either the CLI can't add the marketplace, or the CLI would load nothing of the plugin (a Claude Code mod in Codex, say), or the plugin comes with Codex (`openai-bundled`, for example). Kiro and Antigravity install no plugins.
+- **It waits for your answer**, because installing it there would leave parts out or run its hooks without asking, or because it's already installed there for a project. The sync's report and `agt share status` list it with the commands that answer it, and the watcher sends a notification. `agt share pick plugins/<id> --in <label>` installs it as it is now. Your yes holds that list of gaps, so a later version that adds to them asks again. `--not-in <label>` keeps it out.
+
+What each CLI loads from the other's plugins (checked against Claude Code 2.1 and Codex 0.164):
+
+| Part | Claude Code | Codex |
+|---|---|---|
+| Skills | yes | yes |
+| Commands | yes | yes, as skills |
+| Agents, interface mods (`modules` in `hooks/hooks.json`), LSP servers, output styles, monitors, themes, channels, install settings (`userConfig`) | yes | no: waits for your answer |
+| Hooks | yes, without asking: waits for your answer when the plugin comes from Codex | yes, and Codex asks you before running them |
+| MCP servers | expands `${CLAUDE_PLUGIN_ROOT}`, and starts them in your session's folder: a server with a relative `cwd`, or one that needs a `CODEX_*` variable, waits for your answer | doesn't expand `${CLAUDE_PLUGIN_ROOT}`, so a server that uses it waits for your answer, as does one that signs in through `headersHelper` or that [MCP sharing](#sharing-mcp-servers) wouldn't send to Codex (an SSE server, say); starts them in the plugin's folder |
+| Apps (`.app.json`) | no: waits for your answer | yes |
+
+Marketplaces: Claude Code adds one from a folder, a Git URL or a GitHub repo that has `.claude-plugin/marketplace.json`. Codex adds one from a folder or a Git repo that has that file or its own `.agents/plugins/marketplace.json`. Codex can't add a Claude marketplace that's only a URL to a `marketplace.json` file. A marketplace that has only Codex's file can't go to Claude Code.
+
+agt reads Claude Code's `plugins/installed_plugins.json`, `known_marketplaces.json` and `enabledPlugins`, and Codex's `[plugins."<id>"]` and `[marketplaces]` tables in `config.toml` with the files in `plugins/cache`. agt's own plugin is left to `agt setup`. When an install fails, `agt share status` says so, and agt doesn't try it again until the plugin's version changes. `agt share pick plugins/<id> --in <label>` or `agt share plugins apply <id>:<label>` tries again now. A Claude Code plugin file agt can't read (one Claude Code is in the middle of writing, say) leaves that folder out of the run, so it never reads as plugins you uninstalled. `agt share plugins apply` takes the same lock as a sync, and what it installs counts as agt's copy. `agt share undo` doesn't cover plugins. Plugins share between your user folders only, not repos. `agt share kinds remove plugins` stops sharing them; every CLI keeps what it has, unless you add `--remove-copies` to uninstall the ones agt installed. Restart a CLI that got a plugin (or run `/reload-plugins` in Claude Code) to load it.
+
+With plugins off, `agt share plugins` lists what another CLI could install, and `agt share plugins apply` installs the ones you say yes to:
 
 ```
 agt share plugins
@@ -188,9 +218,7 @@ agt share plugins apply                              # asks about each one, in a
 agt share plugins apply formatter@tools:codex --yes  # installs the ones you name
 ```
 
-Nothing is installed on its own: not by a sync, not by the watcher. In a terminal, `apply` asks about each plugin (`x` means "never offer it again", saved as `"plugins/<id>" = "off"` under `[share.targets]`). Without a terminal, it lists them and exits 3 until you name them with `--yes`. agt runs each CLI's own commands (`claude plugin marketplace add`, `claude plugin install`, `codex plugin marketplace add`, `codex plugin add`) for that folder, then checks `plugin list` shows the plugin.
-
-agt reads Claude Code's `enabledPlugins` with `plugins/installed_plugins.json` and `known_marketplaces.json`, and Codex's `[plugins."<id>"]` and `[marketplaces]` tables in `config.toml`. A plugin turned off on purpose in a CLI is never installed there, a plugin installed only for a project isn't offered user-wide, and agt's own plugin is left to `agt setup`. When an install fails, agt doesn't offer it again until the plugin's version changes, unless you name it. Antigravity and Kiro aren't offered plugins yet.
+In a terminal, `apply` asks about each plugin, with the parts it would leave out (`x` means "never offer it again", saved as `"plugins/<id>" = "off"` under `[share.targets]`). Without a terminal, it lists them and exits 3 until you name them with `--yes`.
 
 ## What a copy holds
 
@@ -258,7 +286,7 @@ Turning sharing on also sets up what runs it without you:
 
 Each of these syncs only when something moved since the last sync, never waits for another run, and never runs inside agt's workers. Changes inside `skills/synced` don't count, since agt never shares it and Claude Code rewrites it often. A run that changes nothing isn't logged. They all call `~/.agents-router/bin/agt-run`, a small launcher that records which Python and install agt runs from, so they don't depend on `PATH`. `agt setup`, `agt update` and an MCP server start rewrite it when agt moves.
 
-At a session start, Claude Code gets one line when there's something to say: what arrived in that folder since your last session there, and what waits for you (a conflict, say, with the command that fixes it). Nothing at all otherwise. A session that's already open doesn't load agents or skills that arrive later; that's how every CLI works. The watcher also posts a macOS notification for a new conflict, an item waiting to be deleted, a frozen folder or a write that keeps failing, at most once an hour.
+At a session start, Claude Code gets one line when there's something to say: what arrived in that folder since your last session there, and what waits for you (a conflict, say, with the command that fixes it). Nothing at all otherwise. A session that's already open doesn't load agents or skills that arrive later; that's how every CLI works. The watcher also posts a macOS notification for a new conflict, an item waiting to be deleted, a frozen folder, a write that keeps failing or a plugin waiting for your answer, at most once an hour.
 
 agt adds its entries after yours and never changes your own; it backs `settings.json` up to `~/.agents-router/state/share/backups/hooks/` first. A Codex session entry is off by default, because Codex asks you to trust each hook in `/hooks`: `agt config set share.codex_session true` adds one to `~/.codex/hooks.json`. Other switches: `agt config set share.push_on_save false` drops the save entry, `share.watcher false` removes the watcher, and `share.notify false` stops the notifications. Each takes effect at once. `agt share disable` removes all of it.
 
@@ -322,6 +350,8 @@ Every run that writes is one line in agt's log, with each write and backup: see 
 | A file agt can't read | you fix it | |
 | A copy agt couldn't write in the last 3 runs | you fix it | |
 | An instruction file without agt's block, while instructions share | you choose | `agt share adopt <label>` |
+| A plugin waiting for your answer before it goes to a folder | you choose | `agt share pick plugins/<id> --in <label>` or `--not-in <label>` |
+| A plugin install that failed | you fix it, or keep it out | `agt share pick plugins/<id> --in <label>` (tries again) or `--not-in <label>` |
 | The background watcher stopped | an agent can do it | `agt doctor --fix` |
 
 The same list is in `agt share status --json` (`attention`, each entry with `kind`, `item`, `who`, `message` and `fix`) and in `~/.agents-router/state/share/attention.json`, which each writing run updates.
@@ -361,6 +391,10 @@ path = "/Users/you/.claude-work"
 "skills/release-notes" = { only = ["claude", "codex"] }
 "skills/old-notes" = "off"            # not shared: every copy stays as it is
 "mcp/notes" = { only = ["claude"] }   # an MCP server stays in that Claude folder
+"plugins/deck@tools" = { not_in = ["codex"] }
+
+[share.plugin_approvals]               # your yes to a plugin that waited for it, per folder
+"deck@tools" = { codex = "3f2a9c1e7b04" }
 ```
 
 `agt share settings` lists each setting, where it comes from and the command that changes it. Some are plain values: `agt config set share.auto_copy off`, `share.tool_widening skip`, and the switches `share.watcher`, `share.push_on_save`, `share.notify` and `share.codex_session` (true or false). The others change with the commands above, because changing them makes or removes copies. See [Configuration](configuration.md).

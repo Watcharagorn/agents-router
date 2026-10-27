@@ -323,6 +323,7 @@ These keys take effect at once; the switches set what runs sharing without you (
 | `share.worktrees` | `auto` | A listed repo's worktrees share by themselves, or wait for `agt share repo add .` (`command`) |
 | `share.mcp` | `false` | Share your user MCP servers between your CLIs; see [Sharing MCP servers](share.md#sharing-mcp-servers) |
 | `share.hooks` | `false` | List your hooks for sharing; each copy runs only after you approve it for that CLI. See [Sharing hooks](share.md#sharing-hooks) |
+| `share.plugins` | `false` | Install your plugins in your other Claude Code and Codex folders, where they fit. It changes with `agt share kinds add plugins` (which shows what it would install first) and `kinds remove plugins`. See [Sharing plugins](share.md#sharing-plugins) |
 | `share.watcher` | `true` | The background watcher (macOS): a sync every minute and when a shared folder changes |
 | `share.push_on_save` | `true` | Claude Code's save entry: a save inside a shared folder spreads within seconds |
 | `share.notify` | `true` | macOS notifications for conflicts and other urgent items, at most once an hour |

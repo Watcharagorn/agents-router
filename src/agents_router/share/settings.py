@@ -50,7 +50,7 @@ from agents_router import config, levels
 from agents_router.share import codex_toml, model, toolmap
 
 KINDS = ("agents", "skills")
-TARGET_KINDS = (*KINDS, "mcp", "plugins")  # what `[share.targets]` keys name: items, MCP servers, plugins never offered
+TARGET_KINDS = (*KINDS, "mcp", "plugins")  # what `[share.targets]` keys name: items, MCP servers and plugins
 # On/off switches for the background side (see triggers.py), with their defaults. Saved only when they differ.
 SWITCHES = {"watcher": True, "push_on_save": True, "notify": True, "codex_session": False}
 INSTRUCTIONS = ("off", "block", "whole")  # see instructions.py
@@ -87,6 +87,8 @@ class Settings:
     mcp: bool = False
     hooks: bool = False
     hook_approvals: dict[str, dict[str, str]] = field(default_factory=dict)  # hook name -> label -> identity prefix
+    plugins: bool = False
+    plugin_approvals: dict[str, dict[str, str]] = field(default_factory=dict)  # plugin id -> label -> what you said yes to
 
 
 def path() -> Path:
@@ -144,11 +146,20 @@ def _labels(key: str, value: Any) -> list[str]:
     return list(value)
 
 
+def _approvals(data: dict[str, Any], key: str, what: str) -> dict[str, dict[str, str]]:
+    approvals = data.get(key, {})
+    if not isinstance(approvals, dict) or not all(
+            isinstance(entry, dict) and all(isinstance(label, str) and isinstance(short, str) and short
+                                            for label, short in entry.items()) for entry in approvals.values()):
+        raise ValueError(f'{key} must be a table of "<{what}>" = {{ <label> = "<hash>" }}')
+    return {name: dict(entry) for name, entry in approvals.items()}
+
+
 def _settings(data: Any) -> Settings:
     if not isinstance(data, dict):
         raise ValueError("must be a table")
     known = {"enabled", "kinds", "tool_widening", "auto_copy", "folders", "targets", "instructions", "worktrees", "mcp",
-             "hooks", "hook_approvals", *SWITCHES}
+             "hooks", "hook_approvals", "plugins", "plugin_approvals", *SWITCHES}
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown key {unknown[0]}")
@@ -177,18 +188,15 @@ def _settings(data: Any) -> Settings:
     worktrees = data.get("worktrees", "auto")
     if worktrees not in WORKTREES:
         raise ValueError(f"worktrees must be {' or '.join(WORKTREES)}")
-    mcp, hooks = data.get("mcp", False), data.get("hooks", False)
-    if not isinstance(mcp, bool) or not isinstance(hooks, bool):
-        raise ValueError(f"{'mcp' if not isinstance(mcp, bool) else 'hooks'} must be true or false")
-    approvals = data.get("hook_approvals", {})
-    if not isinstance(approvals, dict) or not all(
-            isinstance(entry, dict) and all(isinstance(label, str) and isinstance(short, str) and short
-                                            for label, short in entry.items()) for entry in approvals.values()):
-        raise ValueError('hook_approvals must be a table of "<hook>" = { <label> = "<hash>" }')
+    for name in ("mcp", "hooks", "plugins"):
+        if not isinstance(data.get(name, False), bool):
+            raise ValueError(f"{name} must be true or false")
+    approvals, plugin_approvals = _approvals(data, "hook_approvals", "hook"), _approvals(data, "plugin_approvals", "plugin")
     result = Settings(enabled=enabled, kinds=tuple(kinds), tool_widening=widening,
                       auto_copy=parse_auto_copy(data.get("auto_copy", True)), folders=folders, instructions=mode,
-                      worktrees=worktrees, mcp=mcp, hooks=hooks,
-                      hook_approvals={name: dict(entry) for name, entry in approvals.items()}, **switches)
+                      worktrees=worktrees, mcp=data.get("mcp", False), hooks=data.get("hooks", False),
+                      hook_approvals=approvals, plugins=data.get("plugins", False), plugin_approvals=plugin_approvals,
+                      **switches)
     targets = data.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError("targets must be a table")
@@ -223,6 +231,8 @@ def render(settings: Settings) -> str:
         lines.append("mcp = true")
     if settings.hooks:
         lines.append("hooks = true")
+    if settings.plugins:
+        lines.append("plugins = true")
     for folder in settings.folders:
         lines += ["", "[[share.folders]]", f"cli = {value(folder.cli)}", f"label = {value(folder.label)}",
                   f"path = {value(str(folder.path))}"]
@@ -236,11 +246,12 @@ def render(settings: Settings) -> str:
             parts = [f"{field_name} = {value(sorted(chosen[key]))}" for field_name, chosen in
                      (("not_in", settings.not_in), ("only", settings.only)) if key in chosen]
             lines.append(f"{json.dumps(key)} = {{ {', '.join(parts)} }}")
-    approved = {name: entry for name, entry in sorted(settings.hook_approvals.items()) if entry}
-    if approved:
-        lines += ["", "[share.hook_approvals]"]
-        lines += [f"{json.dumps(name)} = {{ {', '.join(f'{json.dumps(label)} = {value(short)}' for label, short in sorted(entry.items()))} }}"
-                  for name, entry in approved.items()]
+    for table, approvals in (("hook_approvals", settings.hook_approvals), ("plugin_approvals", settings.plugin_approvals)):
+        approved = {name: entry for name, entry in sorted(approvals.items()) if entry}
+        if approved:
+            lines += ["", f"[share.{table}]"]
+            lines += [f"{json.dumps(name)} = {{ {', '.join(f'{json.dumps(label)} = {value(short)}' for label, short in sorted(entry.items()))} }}"
+                      for name, entry in approved.items()]
     return "\n".join(lines) + "\n"
 
 

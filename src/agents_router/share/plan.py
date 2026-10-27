@@ -132,6 +132,7 @@ class Plan:
     instructions: Any = None  # the instruction files' plan (instructions.Plan) when they share
     mcp: Any = None  # the MCP servers' plan (mcp.Plan) when they share
     hooks: Any = None  # the hooks' plan (hooks.Plan) when they share
+    plugins: Any = None  # the plugins' plan (plugins.Plan) when they share
     claude_import: Any = None  # a listed repo's `CLAUDE.md` holding `@AGENTS.md` (instructions.Import), when it changes
 
     @property
@@ -184,6 +185,8 @@ class Plan:
             content["mcp"] = self.mcp.digest_content()
         if self.hooks is not None:
             content["hooks"] = self.hooks.digest_content()
+        if self.plugins is not None:
+            content["plugins"] = self.plugins.digest_content()
         return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -1032,11 +1035,14 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
         lines += ["", plan.mcp.summary()]
     if plan.hooks is not None:
         lines += ["", plan.hooks.summary()]
+    if plan.plugins is not None:
+        lines += ["", plan.plugins.summary()]
     count = len(plan.changes)
     lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
                   f"{'s' if len(plan.folders_changed) != 1 else ''}."]
     extra = (plan.instructions is not None and (plan.instructions.writes or plan.instructions.conflict)) or \
-        (plan.mcp is not None and (plan.mcp.writes or plan.mcp.conflicts))
+        (plan.mcp is not None and (plan.mcp.writes or plan.mcp.conflicts)) or \
+        (plan.plugins is not None and plan.plugins.writes)
     if (count or plan.conflicts or saving or extra) and command:
         lines.append(f"Plan {plan.digest}. To apply it:")
         lines.append(f"  {command}")
@@ -1086,6 +1092,15 @@ def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:
                        "approved": sorted(copy.label for copy in plan.hooks.copies if copy.hook is hook and not copy.waiting),
                        "changed_since_approved": sorted(copy.label for copy in plan.hooks.copies if copy.hook is hook and copy.waiting)}
                       for hook in plan.hooks.hooks]},
+        "plugins": None if plan.plugins is None else {
+            "summary": plan.plugins.summary(),
+            "installs": [{"plugin": entry.id, "label": label, "from": entry.sources[label]} for entry, label in plan.plugins.writes],
+            "waiting_for_answer": [{"plugin": entry.id, "label": label, "why": entry.asks[label],
+                                    "approve": f"agt share pick {entry.key} --in {label}",
+                                    "keep_out": f"agt share pick {entry.key} --not-in {label}"}
+                                   for entry, label in plan.plugins.waiting],
+            "staying": {entry.id: entry.held for entry in plan.plugins.entries if entry.held},
+            "not_in": {entry.id: entry.stays for entry in plan.plugins.entries if entry.stays and not entry.held}},
         "folders": [{"label": row.provider.label, "cli": row.provider.cli, "path": str(row.provider.folder),
                      "used": row.provider.label in {p.label for p in plan.included}, "suggested": row.suggested,
                      "reason": row.reason, "holds": row.holds} for row in plan.rows],

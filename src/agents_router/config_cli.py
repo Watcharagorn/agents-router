@@ -137,6 +137,8 @@ KEYS: dict[str, Key] = {key.name: key for key in [
         user_only=True, applies=SYNC),
     Key("share.hooks", "bool", "List your hooks for sharing; each copy runs only after you approve it for that CLI.",
         user_only=True, applies=SYNC),
+    Key("share.plugins", "fixed", "Install your plugins in your other Claude Code and Codex folders, where they fit.",
+        changed_by="agt share kinds add|remove plugins (it shows what it would install first)", applies=SYNC),
     Key("share.watcher", "bool", "The background watcher (macOS): a sync every minute and when a shared folder changes.",
         user_only=True, applies=AT_ONCE),
     Key("share.push_on_save", "bool", "A save in Claude Code inside a shared folder spreads within seconds.",

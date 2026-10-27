@@ -4,7 +4,7 @@ The first argument picks the CLI (claude, codex, agy or kiro). State lives in a 
 in the CLI's config folder: CLAUDE_CONFIG_DIR, CODEX_HOME, or FAKE_AGY_HOME for agy.
 A file named `logged_in` in that folder means the folder is logged in.
 
-  FAKE_HOST_FAIL   a subcommand that exits 1 (e.g. "install", "add" or "add-json")
+  FAKE_HOST_FAIL   a subcommand that exits 1 (e.g. "install", "add", "uninstall", "remove" or "add-json")
   FAKE_HOST_KIRO_LOGGED_OUT   `kiro-cli whoami` says nobody is logged in (Kiro keeps its login outside ~/.kiro)
 
 `claude mcp add-json|remove --scope user` edit `mcpServers` in `.claude.json`.
@@ -75,6 +75,8 @@ def main():
         name = "agents-router" if sub[2] == REPO else Path(sub[2].rstrip("/")).name.removesuffix(".git")
         if name not in state["marketplaces"]:
             state["marketplaces"].append(name)
+            if name != "agents-router":
+                record_marketplace(kind, folder, name, sub[2])
         save()
         print(f"Added marketplace {name}")
         return 0
@@ -109,6 +111,16 @@ def main():
         save()
         print("Installed")
         return 0
+    if sub[:1] in (["uninstall"], ["remove"]):
+        target = sub[1]
+        if target not in state["plugins"]:
+            print(f"Plugin {target} is not installed", file=sys.stderr)
+            return 1
+        del state["plugins"][target]
+        record_uninstall(kind, folder, target)
+        save()
+        print("Uninstalled")
+        return 0
     if sub[:1] == ["enable"]:
         key = sub[1]
         if key not in state["plugins"]:
@@ -118,6 +130,45 @@ def main():
         return 0
     print(f"fake {kind}: unsupported {argv}", file=sys.stderr)
     return 2
+
+
+def record_marketplace(kind, folder, name, source):
+    """Where Claude Code and Codex note a marketplace you added."""
+
+    if kind == "claude":
+        known = folder / "plugins" / "known_marketplaces.json"
+        known.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(known.read_text(encoding="utf-8")) if known.exists() else {}
+        data[name] = {"source": {"source": "directory", "path": source} if source.startswith("/") else
+                      {"source": "github", "repo": source}}
+        known.write_text(json.dumps(data), encoding="utf-8")
+    elif kind == "codex":
+        config = folder / "config.toml"
+        text = config.read_text(encoding="utf-8") if config.exists() else ""
+        kind_name = "local" if source.startswith("/") else "git"
+        config.write_text(text + f'\n[marketplaces.{name}]\nsource_type = "{kind_name}"\nsource = {json.dumps(source)}\n',
+                          encoding="utf-8")
+
+
+def record_uninstall(kind, folder, plugin_id):
+    if kind == "claude":
+        settings = folder / "settings.json"
+        data = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+        data.get("enabledPlugins", {}).pop(plugin_id, None)
+        settings.write_text(json.dumps(data), encoding="utf-8")
+        installed = folder / "plugins" / "installed_plugins.json"
+        known = json.loads(installed.read_text(encoding="utf-8")) if installed.exists() else {"version": 2, "plugins": {}}
+        known["plugins"].pop(plugin_id, None)
+        installed.write_text(json.dumps(known), encoding="utf-8")
+    elif kind == "codex":
+        config = folder / "config.toml"
+        lines, skipping = [], False
+        for line in (config.read_text(encoding="utf-8") if config.exists() else "").splitlines():
+            if line.startswith("["):
+                skipping = line == f'[plugins."{plugin_id}"]'
+            if not skipping:
+                lines.append(line)
+        config.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def record_install(kind, folder, plugin_id):
@@ -137,6 +188,8 @@ def record_install(kind, folder, plugin_id):
         config = folder / "config.toml"
         text = config.read_text(encoding="utf-8") if config.exists() else ""
         config.write_text(text + f'\n[plugins."{plugin_id}"]\nenabled = true\n', encoding="utf-8")
+        name, _, market = plugin_id.partition("@")
+        (folder / "plugins" / "cache" / market / name / "1.0.0" / "skills").mkdir(parents=True, exist_ok=True)
 
 
 def claude_mcp(argv):

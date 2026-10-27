@@ -27,9 +27,10 @@ class SetupScreenTests(ItemBase):
         self.assertEqual(set(proposal["plugin"]), {"planned", "already", "failed", "notes"})
         self.assertIn("dana", [item["name"] for item in proposal["share"]["items"]])
         self.assertEqual(proposal["needs_answer"], [])
-        self.assertEqual(set(proposal["switches"]), {"worktrees", "auto_copy", "widen", "rules", "codex_session", "mcp"})
+        self.assertEqual(set(proposal["switches"]), {"worktrees", "auto_copy", "widen", "rules", "codex_session", "mcp", "plugins"})
         self.assertFalse(proposal["switches"]["rules"]["on"])
         self.assertFalse(proposal["switches"]["mcp"]["on"])  # MCP servers share only when you say
+        self.assertFalse(proposal["switches"]["plugins"]["on"])  # and plugins too
         command = proposal["command"]
         self.assertTrue(command.startswith(f"agt setup --yes --if-plan {proposal['plan']} --host claude"), command)
         self.assertIn("--resolve gamma-apikey=skip", command)

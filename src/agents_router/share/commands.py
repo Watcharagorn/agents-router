@@ -51,7 +51,8 @@ from agents_router.share.providers import _short as short
 
 SUPPORTED_KINDS = settings.KINDS
 LATER_KINDS = ("commands",)
-# Runs started by these write to Claude later: two `claude mcp` starts don't fit a session hook's few seconds.
+# Runs started by these leave the slow writes to later: `claude mcp` starts and plugin installs don't fit a session
+# hook's few seconds.
 MCP_LATER_TRIGGERS = ("session", "save", "mcp-start")
 IN_WORKER = "agt share doesn't write inside agt's workers; run it from your own terminal or session."
 NOT_ENABLED = "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."
@@ -96,6 +97,8 @@ def add_parser(subparsers) -> None:
     enable.add_argument("--mcp", choices=("on", "off"), help="Share your user MCP servers too; off by default.")
     enable.add_argument("--hooks", choices=("on", "off"),
                         help="List your hooks for sharing; each copy waits for your approval. Off by default.")
+    enable.add_argument("--plugins", choices=("on", "off"),
+                        help="Install your Claude Code and Codex plugins in each other's folders where they fit; off by default.")
     enable.add_argument("--tool-widening", choices=toolmap.TOOL_WIDENING,
                         help="Codex agents can't limit tools: allow-if-shell (the default) copies agents that have a shell, "
                              "skip copies none with a tool list.")
@@ -179,6 +182,7 @@ def add_parser(subparsers) -> None:
     kind_add = kind_actions.add_parser("add", help="Share a kind too.")
     kind_add.add_argument("kind")
     kind_add.add_argument("--dry-run", action="store_true")
+    kind_add.add_argument("--yes", action="store_true", help="plugins: install what it shows without asking.")
     kind_add.add_argument("--json", action="store_true")
     kind_remove = kind_actions.add_parser("remove", help="Stop sharing a kind.")
     kind_remove.add_argument("kind")
@@ -228,7 +232,7 @@ def _kinds(value: str) -> tuple[str, ...]:
     if "hooks" in kinds:
         raise ValueError("hooks aren't a kind of item: use --hooks on, or `agt share kinds add hooks`")
     if "plugins" in kinds:
-        raise ValueError("plugins aren't a kind of item: `agt share plugins` lists the ones another CLI could install")
+        raise ValueError("plugins aren't a kind of item: use --plugins on, or `agt share kinds add plugins`")
     later = [kind for kind in kinds if kind in LATER_KINDS]
     if later:
         raise ValueError(f"sharing {', '.join(later)} comes in a later phase; this build shares agents and skills")
@@ -321,7 +325,7 @@ def _command_line(args: argparse.Namespace, digest: str) -> str:
         parts += ["--projects", args.projects]
     for flag, value in (("--kinds", args.kinds), ("--tool-widening", args.tool_widening), ("--auto-copy", args.auto_copy),
                         ("--instructions", getattr(args, "instructions", None)), ("--mcp", getattr(args, "mcp", None)),
-                        ("--hooks", getattr(args, "hooks", None))):
+                        ("--hooks", getattr(args, "hooks", None)), ("--plugins", getattr(args, "plugins", None))):
         if value is not None:
             parts += [flag, value]
     return " ".join(shlex.quote(part) for part in parts)
@@ -375,6 +379,10 @@ def _plan(args: argparse.Namespace, current: state.State, saved: settings.Settin
         plan.mcp = mcp.build(included, current, options, later=later)
     if _hooks_on(args, saved) and not scope.current().project:
         plan.hooks = hooks.build(included, saved.hook_approvals if saved else {})
+    if _plugins_on(args, saved) and not scope.current().project:
+        # Installs clone repos and take a while: a session hook or a save leaves them to the watcher.
+        later = frozenset(plugins.NATIVE) if getattr(args, "trigger", "command") in MCP_LATER_TRIGGERS else frozenset()
+        plan.plugins = plugins.build(included, current, options, saved.plugin_approvals if saved else {}, later=later)
     return plan
 
 
@@ -388,6 +396,11 @@ def _hooks_on(args: argparse.Namespace, saved: settings.Settings | None) -> bool
     return flag == "on" if flag else bool(saved and saved.hooks)
 
 
+def _plugins_on(args: argparse.Namespace, saved: settings.Settings | None) -> bool:
+    flag = getattr(args, "plugins", None)
+    return flag == "on" if flag else bool(saved and saved.plugins)
+
+
 def _print(value: Any) -> None:
     print(json.dumps(value, indent=2, ensure_ascii=False) if not isinstance(value, str) else value)
 
@@ -396,7 +409,7 @@ def _item_key(plan: planner.Plan, name: str) -> str:
     """`<kind>/<name>`, as the folders spell it, for an item named on the command line (bare when it's unique)."""
 
     kind, slash, bare = name.partition("/")
-    if kind in (mcp.KIND, hooks.KIND) and bare:
+    if kind in (mcp.KIND, hooks.KIND, plugins.KIND) and bare:
         return name
     if not slash:
         kind, bare = "", name
@@ -435,7 +448,8 @@ def _saved_answers(plan: planner.Plan, args: argparse.Namespace, saved: settings
                                instructions=getattr(args, "instructions", None) or (saved.instructions if saved else "off"),
                                worktrees=saved.worktrees if saved else "auto", mcp=_mcp_on(args, saved),
                                hooks=_hooks_on(args, saved), hook_approvals=dict(saved.hook_approvals) if saved else {},
-                               **switches)
+                               plugins=_plugins_on(args, saved),
+                               plugin_approvals=dict(saved.plugin_approvals) if saved else {}, **switches)
     result.off = {_item_key(plan, name) for name in options.off}
     for name, label in options.skip:
         result.not_in.setdefault(_item_key(plan, name), []).append(label)
@@ -562,8 +576,18 @@ def _report_lines(plan: planner.Plan, result: apply.Result, saved_at: Path | Non
                   for server in plan.mcp.conflicts]
     if plan.waiting:
         lines += ["", "Waiting:"] + [f"  {item.name}: {item.decision.reason}" for item in plan.waiting]
+    stays = [f"  {entry.name} not in {label}: {why}" for entry in plan.plugins.entries if not entry.held
+             for label, why in sorted(entry.stays.items())] if plan.plugins is not None else []
+    if stays:
+        lines += ["", "Plugins that can't go there:"] + stays
+    if plan.plugins is not None and plan.plugins.waiting:
+        lines += ["", "Plugins not installed until you answer:"]
+        lines += [f"  {entry.name} in {label}: {'; '.join(entry.asks[label])}. Install it as it is: "
+                  f"`agt share pick {entry.key} --in {label}`; keep it out: `agt share pick {entry.key} --not-in {label}`."
+                  for entry, label in plan.plugins.waiting]
     notes = extra + result.replayed + plan.notices + [note for item in plan.items for note in item.notes]
     notes += plan.mcp.notes() if plan.mcp is not None else []
+    notes += plan.plugins.notes() if plan.plugins is not None and any(o.kind == plugins.KIND for o in result.written) else []
     if notes:
         lines += ["", "Notes:"] + [f"  {note}" for note in notes]
     for path, changed in result.excluded:
@@ -955,7 +979,7 @@ def _diff(item: planner.Item) -> list[str]:
 WHO = {"choice": "your choice", "action": "for you to do", "agent": "an agent can do it"}
 TITLES = {"conflict": "Conflict", "delete": "Waiting to be deleted", "unreadable": "Can't read", "new": "New",
           "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed", "watcher": "Watcher stopped",
-          "changed": "Changed since you approved it"}
+          "changed": "Changed since you approved it", "plugin": "Waiting for your answer"}
 
 
 def _status(args: argparse.Namespace) -> int:
@@ -976,9 +1000,10 @@ def _status(args: argparse.Namespace) -> int:
         needs.append({"id": "watcher", "kind": "watcher", "item": attention.FOLDER, "who": "agent",
                       "message": "the background watcher stopped", "fix": ["agt doctor --fix"]})
     shared = plan.instructions
-    servers, shared_hooks = plan.mcp, plan.hooks
+    servers, shared_hooks, shared_plugins = plan.mcp, plan.hooks, plan.plugins
     code = 1 if plan.conflicts or pending or plan.frozen or (shared is not None and shared.conflict) \
-        or (servers is not None and (servers.conflicts or servers.pending)) else 0
+        or (servers is not None and (servers.conflicts or servers.pending)) \
+        or (shared_plugins is not None and (shared_plugins.pending or shared_plugins.waiting)) else 0
     repos = [] if scope.current().project else [_repo_status(target) for target in _repo_scopes(saved)]
     if any(entry.get("conflicts") or entry.get("pending") for entry in repos):
         code = 1
@@ -990,6 +1015,7 @@ def _status(args: argparse.Namespace) -> int:
                 "watcher": health, "instructions": shared.summary() if shared is not None else None,
                 "mcp": servers.summary() if servers is not None else None,
                 "hooks": shared_hooks.summary() if shared_hooks is not None else None,
+                "plugins": shared_plugins.summary() if shared_plugins is not None else None,
                 "repos": [{key: value for key, value in entry.items() if key != "scope"} for entry in repos],
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
@@ -1004,6 +1030,8 @@ def _status(args: argparse.Namespace) -> int:
         lines += [f"  {line}" for line in servers.summary().splitlines()]
     if shared_hooks is not None:
         lines += [f"  {line}" for line in shared_hooks.summary().splitlines()]
+    if shared_plugins is not None:
+        lines += [f"  {line}" for line in shared_plugins.summary().splitlines()]
     by_key = {item.key: item for item in plan.items}
     for entry in needs:
         fix = " or ".join(f"`{command}`" for command in entry["fix"])
@@ -1021,7 +1049,7 @@ def _status(args: argparse.Namespace) -> int:
         lines += [f"    {TITLES.get(need['kind'], need['kind'])}: {need['message']}."
                   + (f" Fix: `{need['fix'][0]}`." if need["fix"] else "") for need in entry.get("attention", [])]
     if plan.changes or (shared is not None and shared.writes) or (servers is not None and servers.writes) \
-            or any(entry.get("to_write") for entry in repos):
+            or (shared_plugins is not None and shared_plugins.writes) or any(entry.get("to_write") for entry in repos):
         lines.append("  `agt share sync` writes the changes.")
     print("\n".join(lines))
     return code
@@ -1272,6 +1300,8 @@ def _pick(args: argparse.Namespace) -> int:
         return _pick_mcp(args, saved, plan, to_in, to_out, only)
     if args.item.startswith(f"{hooks.KIND}/"):
         return _pick_hook(args, saved, plan, to_in, to_out, only)
+    if args.item.startswith(f"{plugins.KIND}/"):
+        return _pick_plugin(args, saved, plan, to_in, to_out, only)
     key = _existing(plan, args.item)
     name = key.partition("/")[2]
     if not (to_in or to_out or only):
@@ -1536,8 +1566,120 @@ def _pick_hook(args: argparse.Namespace, saved: settings.Settings, plan: planner
     return 1 if result.failed else 0
 
 
+def _plugin_entry(plan: planner.Plan, key: str) -> Any:
+    if plan.plugins is None:
+        raise ValueError("plugins don't share; `agt share kinds add plugins` shows what it would install")
+    entry = next((entry for entry in plan.plugins.entries if entry.key == key), None)
+    if entry is None:
+        raise ValueError(f"no plugin {key.partition('/')[2]} in the Claude Code and Codex folders sharing "
+                         "(name it as name@marketplace)")
+    return entry
+
+
+def _plugin_run(args: argparse.Namespace, saved: settings.Settings, key: str, title: str, op: str, *,
+                removing: Any = _REMOVE_ALL, save: bool = False, unstop: frozenset[str] = frozenset()) -> int:
+    """One plugin's run, holding the lock: `pick` (`save` first, and `unstop` the CLIs you picked back) and `rm`."""
+
+    if apply.in_worker():
+        print(IN_WORKER)
+        return 2
+    included = _folders(load_config(), None, False, saved)[1]
+    with apply.lock([provider.folder for provider in included]):
+        current = state.load()
+        replayed = apply.replay(current)
+        saved_at = settings.save(saved) if save else None  # saved only now, holding the lock
+        record = current.items.get(key)
+        if record and unstop:  # you uninstalled agt's copy there once; picking it back in installs it again
+            record["stopped"] = [label for label in record.get("stopped") or [] if label not in unstop]
+        plan = _plan(args, current, saved)
+        locked = plan.restricted(set())
+        locked.plugins = dataclasses.replace(plan.plugins, entries=[entry for entry in plan.plugins.entries if entry.key == key])
+        if removing is not _REMOVE_ALL:
+            locked.plugins.removing = {key.partition("/")[2]: removing}
+        result = apply.apply(locked, current, op=op)
+        result.replayed = replayed
+        _remember(plan, current, result)
+    _report(locked, result, saved_at, args.json, title=title)
+    return 1 if result.failed else 0
+
+
+def _plugin_cells(entry: Any, plan: Any) -> list[str]:
+    """`pick plugins/<id>` with no flags: where the plugin is, and what each other folder would do with it."""
+
+    lines = [f"Plugin {entry.id}:"]
+    for label in sorted(plan.by_label):
+        copy = entry.copies.get(label)
+        where = (("has it" + ("" if copy.enabled is not False else ", turned off")) if copy else
+                 f"can't: {entry.stays[label]}" if label in entry.stays else
+                 f"waits for your answer: {'; '.join(entry.asks[label])}" if label in entry.asks else
+                 f"the last install failed: {entry.failing[label]}" if label in entry.failing else
+                 "goes there" + (f" (you said yes to: {'; '.join(entry.approved[label])})" if label in entry.approved else "")
+                 if label in entry.sources else "doesn't have it")
+        lines.append(f"  {label:<20} {where}")
+    lines += [f"  {label:<20} installs no plugins" for label in plan.others]
+    lines.append(f"  {entry.held}." if entry.held else f"  {entry.decision.reason or entry.decision.action}.")
+    return lines
+
+
+def _pick_plugin(args: argparse.Namespace, saved: settings.Settings, plan: planner.Plan, to_in: list[str],
+                 to_out: list[str], only: list[str] | None) -> int:
+    """`pick plugins/<id>`: where the plugin goes. Picking a CLI where it waits for your answer is your yes, as it is
+    now; agt uninstalls its own copies from CLIs you leave out, unless `--keep-copies`."""
+
+    entry = _plugin_entry(plan, args.item)
+    key, shared = entry.key, plan.plugins
+    if not (to_in or to_out or only):
+        print("\n".join(_plugin_cells(entry, shared)))
+        return 0
+    both = sorted(set(to_in) & set(to_out))
+    if both:
+        raise ValueError(f"{', '.join(both)} is in both --in and --not-in")
+    approvals = dict(saved.plugin_approvals.get(entry.id, {}))
+    picked = sorted(set(to_in) | set(only or []))
+    for label in picked:
+        if label in entry.copies:
+            continue  # it's there already
+        if label not in shared.by_label:
+            raise ValueError(f"{label} installs no plugins; only Claude Code and Codex folders do")
+        if label in entry.stays:
+            raise ValueError(f"{entry.name} can't go to {label}: {entry.stays[label]}")
+        if label in entry.asks:
+            approvals[label] = plugins.signature(entry.asks[label])
+        plugins._forget(entry.id, label)  # a pick tries a failed install again
+    for label in to_out:
+        approvals.pop(label, None)
+    if approvals:
+        saved.plugin_approvals[entry.id] = approvals
+    else:
+        saved.plugin_approvals.pop(entry.id, None)
+    if only:
+        saved.only[key] = sorted(only)
+        saved.not_in.pop(key, None)
+    for label in to_in:
+        saved.not_in[key] = [other for other in saved.not_in.get(key, []) if other != label]
+        if key in saved.only and label not in saved.only[key]:
+            saved.only[key] = sorted([*saved.only[key], label])
+    for label in to_out:
+        saved.not_in[key] = sorted({*saved.not_in.get(key, []), label})
+        if key in saved.only:
+            saved.only[key] = [other for other in saved.only[key] if other != label]
+    for chosen in (saved.not_in, saved.only):
+        if key in chosen and not chosen[key]:
+            del chosen[key]
+    if picked:
+        saved.off.discard(key)
+    allowed = set(saved.only.get(key, shared.by_label)) - set(saved.not_in.get(key, []))
+    left = {label for label in entry.copies if label not in allowed}
+    removing = set() if args.keep_copies else left & plugins.agt_made(entry, state.load())
+    if left - removing:
+        print(f"{entry.name} stays in {', '.join(sorted(left - removing))}: "
+              + ("you kept it there." if args.keep_copies else "you installed it there yourself."))
+    return _plugin_run(args, saved, key, "agt share pick", "pick", removing=removing, save=True, unstop=frozenset(picked))
+
+
 def _plugins(args: argparse.Namespace) -> int:
-    """`plugins`: what another CLI could install natively. `plugins apply`: install them, after you say yes."""
+    """`plugins`: where each plugin goes, or (with plugins off) what another CLI could install. `plugins apply`:
+    install them now, after you say yes."""
 
     saved = _enabled()
     if saved is None:
@@ -1547,15 +1689,19 @@ def _plugins(args: argparse.Namespace) -> int:
     found = plugins.offers(included, saved.off)
     shown = [{"plugin": offer.plugin.id, "from": offer.source_label, "to": offer.label, "key": offer.key,
               "commands": [" ".join([offer.cli, *step]) for step in offer.steps], "why_not": offer.why_not,
-              "failed_before": offer.failed} for offer in found]
+              "asks": offer.asks, "failed_before": offer.failed} for offer in found]
     if getattr(args, "plugins_command", None) != "apply":
+        shared = _plan(args, state.load(), saved).plugins if saved.plugins else None
         if args.json:
-            _print({"offers": shown})
+            _print({"sharing": saved.plugins, "summary": shared.summary() if shared else None, "offers": shown})
+        elif shared is not None:
+            print(shared.summary())
         else:
             print("\n".join(plugins.summary(found)))
             for offer in found:
                 if not offer.why_not:
                     print(f"  {offer.key}: " + "; ".join(" ".join([offer.cli, *step]) for step in offer.steps))
+            print("Plugins don't share now; `agt share kinds add plugins` installs them with each sync.")
         return 0
     by_key = {offer.key: offer for offer in found}
     unknown = [key for key in args.offers if key not in by_key]
@@ -1586,7 +1732,9 @@ def _plugins(args: argparse.Namespace) -> int:
         approved, never = [], []
         for offer in chosen:
             steps = "; ".join(" ".join([offer.cli, *step]) for step in offer.steps)
-            answer = input(f"Install {offer.plugin.name} in {offer.label} ({steps})? y / n / x never / q quit: ").strip().lower()
+            missing = f" Note: {'; '.join(offer.asks)}." if offer.asks else ""
+            answer = input(f"Install {offer.plugin.name} in {offer.label} ({steps})?{missing} "
+                           "y / n / x never / q quit: ").strip().lower()
             if answer == "q":
                 break
             if answer == "y":
@@ -1600,10 +1748,15 @@ def _plugins(args: argparse.Namespace) -> int:
         chosen = approved
     by_label = {provider.label: provider for provider in included}
     failed = 0
-    for offer in chosen:
-        ok, lines = plugins.install(offer, by_label[offer.label])
-        failed += not ok
-        print(f"{'+' if ok else '!'} {offer.plugin.name} in {offer.label}" + "".join(f"\n    {line}" for line in lines))
+    with apply.lock([provider.folder for provider in included]):  # never at the same time as a sync's installs
+        current = state.load()
+        for offer in chosen:
+            ok, lines = plugins.install(offer, by_label[offer.label])
+            failed += not ok
+            if ok:
+                plugins.record_install(current, offer.plugin.id, offer.label)
+            print(f"{'+' if ok else '!'} {offer.plugin.name} in {offer.label}" + "".join(f"\n    {line}" for line in lines))
+        state.save(current)
     if chosen and not failed:
         print("Restart those CLIs (or run /reload-plugins in Claude Code) to load them.")
     return 1 if failed else 0
@@ -1651,6 +1804,10 @@ def _resolve(args: argparse.Namespace) -> int:
         return _resolve_instructions(args, saved)
     if (args.item or "").startswith(f"{mcp.KIND}/"):
         return _resolve_mcp(args, saved)
+    if (args.item or "").startswith(f"{plugins.KIND}/"):
+        print(f"agt share resolve: a plugin has no versions to pick; it's installed in a CLI or it isn't. "
+              f"`agt share pick {args.item}` shows where it goes.")
+        return 0
     plan = _plan(args, state.load(), saved)
     if args.all == bool(args.item):
         raise ValueError("name one item to resolve, or --all")
@@ -1725,6 +1882,12 @@ def _rm(args: argparse.Namespace) -> int:
             print(f"{server.name} isn't shared ({server.held}), so agt leaves it alone in every CLI.")
             return 1
         return _mcp_run(args, saved, args.item, "agt share rm", "rm", removing=None)
+    if args.item.startswith(f"{plugins.KIND}/"):
+        entry = _plugin_entry(_plan(args, state.load(), saved), args.item)
+        if entry.held:
+            print(f"{entry.name} isn't shared ({entry.held}), so agt leaves it alone in every CLI.")
+            return 1
+        return _plugin_run(args, saved, entry.key, "agt share rm", "rm", removing=None)
     plan = _plan(args, state.load(), saved)
     key = _existing(plan, args.item)
     name = key.partition("/")[2]
@@ -2023,6 +2186,9 @@ def _turn_off_writes(args: argparse.Namespace, part: _Part, op: str, what: str, 
                 part.left.append(entry)
             if op == "disable" and choice == "remove" and plan.mcp is not None:
                 off.mcp = mcp.removal_only(plan.mcp, {server.name: mcp.agt_made(server, current) for server in plan.mcp.servers})
+            if op == "disable" and choice == "remove" and plan.plugins is not None:
+                off.plugins = plugins.removal_only(plan.plugins, {entry.id: plugins.agt_made(entry, current)
+                                                                  for entry in plan.plugins.entries})
             copies = [{"item": entry.item.key, "labels": entry.labels, "path": str(entry.path), "status": entry.status}
                       for entry in part.left]
             result = apply.apply(off, current, op=op, command=command,
@@ -2355,8 +2521,7 @@ def _kinds_command(args: argparse.Namespace) -> int:
     if kind in LATER_KINDS:
         raise ValueError(f"sharing {kind} comes in a later phase; this build shares agents and skills")
     if kind == plugins.KIND:
-        raise ValueError("plugins aren't shared as a kind: `agt share plugins` lists the ones another CLI could install, "
-                         "and `agt share plugins apply` installs them after you say yes")
+        return _kinds_plugins(args, saved)
     if kind not in SUPPORTED_KINDS:
         raise ValueError(f"unknown kind {kind}; use agents or skills")
     if args.kinds_command == "add":
@@ -2383,6 +2548,67 @@ def _kinds_command(args: argparse.Namespace) -> int:
                      lambda removed: f"{kind} don't share any more; `agt share kinds add {kind}` shares them again"
                      + (" and fills the copies." if removed else ", and the copies you kept stay your own files."),
                      repos=in_repo)
+
+
+def _kinds_plugins(args: argparse.Namespace, saved: settings.Settings) -> int:
+    """`kinds add plugins`: what it would install, and only after your yes. `kinds remove plugins`: every CLI keeps
+    the plugins it has, unless `--remove-copies` uninstalls the ones agt installed."""
+
+    if args.kinds_command == "remove":
+        if not saved.plugins:
+            print("agt share: plugins don't share now.")
+            return 0
+        if getattr(args, "remove_copies", False) and not getattr(args, "dry_run", False):
+            if apply.in_worker():
+                print(IN_WORKER)
+                return 2
+            included = _folders(load_config(), None, False, saved)[1]
+            with apply.lock([provider.folder for provider in included]):
+                current = state.load()
+                plan = _plan(args, current, saved)
+                off = plan.restricted(set())
+                off.plugins = plugins.removal_only(plan.plugins, {entry.id: plugins.agt_made(entry, current)
+                                                                  for entry in plan.plugins.entries})
+                result = apply.apply(off, current, op="kinds-remove", command="agt share kinds remove plugins")
+                if result.failed:
+                    _report(off, result, None, args.json, title="agt share kinds remove")
+                    return 1
+                saved.plugins = False
+                at = settings.save(saved)
+                attention.save(_plan(args, current, saved), current)
+            _report(off, result, at, args.json, title="agt share kinds remove",
+                    notes=["plugins don't share any more; agt uninstalled the copies it installed."])
+            return 0
+        if getattr(args, "dry_run", False):
+            print("agt share kinds remove plugins: dry run; every CLI would keep the plugins it has.")
+            return 0
+        saved.plugins = False
+        at = settings.save(saved)
+        _print({"plugins": "off", "settings": str(at)} if args.json else
+               "agt share: plugins don't share any more; every CLI keeps the plugins it has.")
+        return 0
+    if saved.plugins:
+        print("agt share: plugins already share.")
+        return 0
+    saved.plugins = True
+    note = ["Plugins go between your Claude Code and Codex folders, installed with each CLI's own commands. One that "
+            "a CLI would load only part of waits for your answer: `agt share pick plugins/<id> --in <label>`."]
+    if getattr(args, "dry_run", False):
+        return _run_sync(args, saved, "agt share kinds add", notes=note)
+    shared = _plan(args, state.load(), saved).plugins
+    if shared.writes and not args.yes:
+        installs = ", ".join(f"{entry.name} in {label}" for entry, label in shared.writes)
+        if args.json or not _interactive():
+            ask = f"Turning plugins on installs {len(shared.writes)} now: {installs}. Go ahead?"
+            _print({"error": "needs_choice", "ask": ask, "summary": shared.summary(),
+                    "retry": "agt share kinds add plugins --yes"} if args.json else
+                   f"Nothing was installed. {ask} Answer with `agt share kinds add plugins --yes`.\n\n{shared.summary()}")
+            return 3
+        print(shared.summary())
+        if input(f"\nInstall these {len(shared.writes)} plugins, and share plugins from now on? y / n: ").strip().lower() != "y":
+            print("Nothing was installed; plugins don't share.")
+            return 0
+    return _run_sync(args, saved, "agt share kinds add", save=True, notes=note)
 
 
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:
