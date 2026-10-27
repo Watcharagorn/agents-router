@@ -206,6 +206,14 @@ class PluginTests(PluginBase):
         self.assertIn("plugins/formatter@tools", settings.load().off)
         self.assertEqual(sorted(self.offers()), ["drafts@elsewhere:claude-lab", "drafts@elsewhere:codex"])
 
+    def test_a_prompt_nobody_can_answer_installs_nothing(self):
+        from agents_router.share import commands
+
+        self.enable()
+        with patch.object(commands, "_interactive", lambda: True), patch("builtins.input", side_effect=EOFError):
+            self.share("plugins", "apply")
+        self.assertEqual(self.installs(), [])
+
 
 class PluginSyncTests(PluginBase):
     """Plugins as a kind that shares: each sync installs them where they fit, and asks where they'd lose parts."""
@@ -259,6 +267,18 @@ class PluginSyncTests(PluginBase):
         self.assertEqual(self.installs(), [])
         preview = self.share("kinds", "add", "plugins", "--dry-run")
         self.assertIn("Plugins: 3 to install", preview)
+        self.assertIn("No agent or skill changes.", preview)
+        self.assertIn("To apply it:\n  agt share kinds add plugins\n", preview + "\n")
+        self.assertEqual(self.installs(), [])
+
+    def test_a_prompt_nobody_can_answer_turns_nothing_on(self):
+        from agents_router.share import commands
+
+        self.enable()
+        with patch.object(commands, "_interactive", lambda: True), patch("builtins.input", side_effect=EOFError):
+            out = self.share("kinds", "add", "plugins")
+        self.assertIn("Nothing was installed; plugins don't share.", out)
+        self.assertFalse(settings.load().plugins)
         self.assertEqual(self.installs(), [])
 
     def test_each_plugin_goes_stays_or_waits_for_your_answer(self):

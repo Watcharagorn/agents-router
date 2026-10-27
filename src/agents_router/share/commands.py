@@ -1733,8 +1733,11 @@ def _plugins(args: argparse.Namespace) -> int:
         for offer in chosen:
             steps = "; ".join(" ".join([offer.cli, *step]) for step in offer.steps)
             missing = f" Note: {'; '.join(offer.asks)}." if offer.asks else ""
-            answer = input(f"Install {offer.plugin.name} in {offer.label} ({steps})?{missing} "
-                           "y / n / x never / q quit: ").strip().lower()
+            try:
+                answer = input(f"Install {offer.plugin.name} in {offer.label} ({steps})?{missing} "
+                               "y / n / x never / q quit: ").strip().lower()
+            except EOFError:
+                answer = "q"
             if answer == "q":
                 break
             if answer == "y":
@@ -2469,7 +2472,7 @@ def _kinds_command(args: argparse.Namespace) -> int:
                 print("agt share: hooks already share.")
                 return 0
             saved.hooks = True
-            code = _run_sync(args, saved, "agt share kinds add", save=True, notes=[
+            code = _run_sync(args, saved, f"agt share kinds add {kind}", save=True, notes=[
                 "agt lists your hooks and what each one can do in your other CLIs; none is copied until you approve it "
                 "there: `agt share pick hooks/<name> --in <label>`."])
             if not args.json and not getattr(args, "dry_run", False):
@@ -2488,7 +2491,7 @@ def _kinds_command(args: argparse.Namespace) -> int:
                 print("agt share: MCP servers already share.")
                 return 0
             saved.mcp = True
-            return _run_sync(args, saved, "agt share kinds add", save=True, notes=[
+            return _run_sync(args, saved, f"agt share kinds add {kind}", save=True, notes=[
                 "MCP servers share between your CLIs' user settings; one with a secret written into it stays where it is."])
         saved.mcp = False
         at = settings.save(saved)
@@ -2501,7 +2504,7 @@ def _kinds_command(args: argparse.Namespace) -> int:
                 print(f"agt share: instructions already share ({saved.instructions}).")
                 return 0
             saved.instructions = "block"
-            return _run_sync(args, saved, "agt share kinds add", save=True, notes=[
+            return _run_sync(args, saved, f"agt share kinds add {kind}", save=True, notes=[
                 "Instructions share agt's block of each CLI's instruction file; `agt share adopt` adds the block to a file."])
         if apply.in_worker():
             print(IN_WORKER)
@@ -2529,7 +2532,7 @@ def _kinds_command(args: argparse.Namespace) -> int:
             print(f"agt share: {kind} already share.")
             return 0
         saved.kinds = tuple(entry for entry in SUPPORTED_KINDS if entry in saved.kinds or entry == kind)
-        return _run_sync(args, saved, "agt share kinds add", save=True,
+        return _run_sync(args, saved, f"agt share kinds add {kind}", save=True,
                          notes=_kept_there(state.load(), (kind,), {folder.label for folder in saved.folders}))
     if kind not in saved.kinds:
         print(f"agt share: {kind} don't share now.")
@@ -2594,7 +2597,7 @@ def _kinds_plugins(args: argparse.Namespace, saved: settings.Settings) -> int:
     note = ["Plugins go between your Claude Code and Codex folders, installed with each CLI's own commands. One that "
             "a CLI would load only part of waits for your answer: `agt share pick plugins/<id> --in <label>`."]
     if getattr(args, "dry_run", False):
-        return _run_sync(args, saved, "agt share kinds add", notes=note)
+        return _run_sync(args, saved, "agt share kinds add plugins", notes=note)
     shared = _plan(args, state.load(), saved).plugins
     if shared.writes and not args.yes:
         installs = ", ".join(f"{entry.name} in {label}" for entry, label in shared.writes)
@@ -2605,10 +2608,15 @@ def _kinds_plugins(args: argparse.Namespace, saved: settings.Settings) -> int:
                    f"Nothing was installed. {ask} Answer with `agt share kinds add plugins --yes`.\n\n{shared.summary()}")
             return 3
         print(shared.summary())
-        if input(f"\nInstall these {len(shared.writes)} plugins, and share plugins from now on? y / n: ").strip().lower() != "y":
-            print("Nothing was installed; plugins don't share.")
+        try:
+            answer = input(f"\nInstall these {len(shared.writes)} plugins, and share plugins from now on? y / n: ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() != "y":
+            print("Nothing was installed; plugins don't share. `agt share kinds add plugins --yes` installs them "
+                  "without asking.")
             return 0
-    return _run_sync(args, saved, "agt share kinds add", save=True, notes=note)
+    return _run_sync(args, saved, "agt share kinds add plugins", save=True, notes=note)
 
 
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:

@@ -1038,11 +1038,14 @@ def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, 
     if plan.plugins is not None:
         lines += ["", plan.plugins.summary()]
     count = len(plan.changes)
-    lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
-                  f"{'s' if len(plan.folders_changed) != 1 else ''}."]
     extra = (plan.instructions is not None and (plan.instructions.writes or plan.instructions.conflict)) or \
         (plan.mcp is not None and (plan.mcp.writes or plan.mcp.conflicts)) or \
         (plan.plugins is not None and plan.plugins.writes)
+    if count or not extra:
+        lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
+                      f"{'s' if len(plan.folders_changed) != 1 else ''}."]
+    else:  # the summaries above say what the other kinds write; "0 changes" would contradict them
+        lines += ["", "No agent or skill changes."]
     if (count or plan.conflicts or saving or extra) and command:
         lines.append(f"Plan {plan.digest}. To apply it:")
         lines.append(f"  {command}")
