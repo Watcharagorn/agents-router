@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use or build on this project, please credit it as below."
 title: "Agents Router"
-abstract: "Let your coding agent delegate tasks to other installed agent CLIs, each running in its own native harness under your own login."
+abstract: "Keep agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and run subagents in those CLIs on your own accounts."
 authors:
   - alias: "Watcharagorn"
     website: "https://github.com/Watcharagorn"
@@ -13,6 +13,8 @@ keywords:
   - claude-code
   - codex
   - antigravity
+  - kiro
+  - agent-skills
   - coding-agents
 references:
   - type: software

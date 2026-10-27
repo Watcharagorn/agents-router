@@ -1,4 +1,4 @@
-# Kiro: setup and use
+# Kiro CLI subagents: setup and use
 
 Agents Router can run Kiro CLI workers (`kiro-cli chat --no-interactive`) the same way it runs Claude Code, Codex and Antigravity workers: in the background, from any host. Each worker is the official `kiro-cli` with your own login.
 

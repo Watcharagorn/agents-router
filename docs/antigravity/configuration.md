@@ -1,5 +1,7 @@
 # Antigravity adapter: configuration
 
+Superseded: the core Antigravity runtime replaces this adapter; its settings are in [configuration](../configuration.md).
+
 The bootstrap script writes machine-specific config into `adapters/antigravity/.local/`, which git ignores. Keep personal paths and secrets out of tracked files.
 
 | Variable | Meaning |
