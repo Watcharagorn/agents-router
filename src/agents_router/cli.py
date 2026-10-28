@@ -11,8 +11,9 @@ import sys
 import time
 from typing import Any
 
-from agents_router import __version__, accounts, config_cli, jobs, levels, plans, rules, setup, sync, synclog, tools
+from agents_router import __version__, accounts, config_cli, helptext, jobs, levels, plans, rules, setup, sync, synclog, tools, ui
 from agents_router.config import NAME_RE, Account, homes_dir, load_config, save_accounts, user_settings_path
+from agents_router.hosts import HOST_LABELS
 from agents_router.fsutil import make_private_dir
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from agents_router.runtimes.base import ACCESS_LEVELS, JobSpec
@@ -69,13 +70,29 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_accounts(args: argparse.Namespace) -> int:
     config = load_config()
-    runtime_config = config.runtime(args.runtime)
-    runtime = get_runtime(args.runtime)
     action = args.action or "list"
 
     if action == "list":
-        _print(tools.account_report(args.runtime))
+        names = [args.runtime] if args.runtime else _runtimes_set_up(config)
+        reports = [tools.account_report(name) for name in names]
+        if args.json:
+            _print(reports[0] if args.runtime else {"runtimes": reports})
+            return 0
+        total = sum(len(report.get("accounts", [])) for report in reports)
+        lines: list[ui.Line] = [[ui.bold("agt accounts"), f"  {_and(names)}, {total} account{'s' if total != 1 else ''}"]]
+        rows = ui.columns([_account_rows(entry, method=True) for report in reports for entry in report.get("accounts", [])],
+                          gap=3)
+        for name, report in zip(names, reports):
+            lines += ["", ui.bold(HOST_LABELS.get(name, name)), *(rows.pop(0) for _ in report.get("accounts", []))]
+        others = [name for name in names if name != "claude"]
+        flag = f" [--runtime {others[0]}]" if others else ""
+        lines += ["", *ui.columns([[ui.muted("Log in"), ui.cmd(f"agt accounts login <name>{flag}")],
+                                   [ui.muted("Add one"), ui.cmd(f"agt accounts add <name>{flag}")]], gap=3)]
+        ui.out(*lines)
         return 0
+    args.runtime = args.runtime or "claude"
+    runtime_config = config.runtime(args.runtime)
+    runtime = get_runtime(args.runtime)
 
     if action == "reset":
         # The primary account can cool down too, so 'primary' is a valid name here.
@@ -193,16 +210,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
     _refresh_share_launcher(False)
     report.notes.append(setup_screen.scopes_note())
-    print()
-    print(setup.format_report(report))
+    ui.out(*setup.report_lines(report))
     return code
 
 
 def cmd_update(args: argparse.Namespace) -> int:
     code, report = setup.run_update(load_config(), args.host or ["auto"], dry_run=args.dry_run, package=not args.no_package)
     _refresh_share_launcher(args.dry_run)
-    print()
-    print(setup.format_report(report, "update"))
+    ui.out(*setup.report_lines(report, "update"))
     return code
 
 
@@ -231,66 +246,157 @@ def _share_doctor(fix: bool) -> list[str]:
     return lines
 
 
+def _runtimes_set_up(config: Any) -> list[str]:
+    """The runtimes doctor and accounts look at when you don't name one: those whose CLI is installed."""
+
+    found = [name for name in RUNTIMES if get_runtime(name).find_binary(config.runtime(name)) is not None]
+    return found or ["claude"]
+
+
+def _and(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _from(text: str, source: Any) -> str:
+    return f"{text} ({source})" if source and source != "default" else text
+
+
+def _limits_text(entry: dict[str, Any]) -> str:
+    shown = entry.get("limits") or {}
+    jobs_text = "no cap on jobs" if shown.get("max_jobs") is None else f"up to {shown['max_jobs']} jobs"
+    text = _from(jobs_text, shown.get("max_jobs_from"))
+    if shown.get("max_effort"):
+        text += ", " + _from(f"effort up to {shown['max_effort']}", shown.get("max_effort_from"))
+    if shown.get("models"):
+        text += ", " + _from(f"models {', '.join(shown['models'])}", shown.get("models_from"))
+    if shown.get("suggested_plan"):
+        text += f"; suggested plan {shown['suggested_plan']}"
+    return text
+
+
+def _login_state(entry: dict[str, Any]) -> ui.Span:
+    auth = entry.get("auth")
+    if not entry.get("enabled", True):
+        return ui.muted("turned off")
+    if auth is None:
+        return ui.muted("not checked")
+    return ui.ok("✓ logged in") if auth.get("loggedIn") else ui.error("✗ not logged in")
+
+
+def _account_rows(entry: dict[str, Any], *, method: bool = False) -> list[ui.Line]:
+    """One account: name, folder, login, then (for accounts list) how it logs in and its running jobs, and limits."""
+
+    row: list[ui.Line] = [entry["name"], ui.muted(ui.short_path(entry.get("home") or "")), _login_state(entry)]
+    detail: list[ui.Piece] = []
+    if method:
+        row.append(ui.muted(str((entry.get("auth") or {}).get("authMethod") or "")))
+        running = entry.get("running_jobs") or 0
+        detail.append(f"{running} running" if running else "no jobs running")
+    if entry.get("cooldown_until"):
+        detail.append(ui.warn(f"cooling down until {entry['cooldown_until']}"))
+    if entry.get("usage"):
+        detail.append(ui.muted("used " + ", ".join(f"{share}% of {window}" for window, share in entry["usage"].items())))
+    detail.append(_limits_text(entry).replace("no cap on jobs", "no cap") if method else _limits_text(entry))
+    joined: list[ui.Piece] = []
+    for index, piece in enumerate(detail):
+        joined += [", ", piece] if index else [piece]
+    return row + [joined]
+
+
+def _runtime_limits(config: Any, name: str) -> str:
+    shown = config.runtime(name)
+    full = "refuse new jobs" if shown.when_full == "refuse" else shown.when_full
+    text = f"{full} when full, usage ceiling {shown.usage_ceiling:.0%}, failover {shown.failover}"
+    return text + (f", at most {shown.max_jobs} jobs" if shown.max_jobs else "")
+
+
+def _login_fix(runtime: str, account: str) -> ui.Line:
+    if runtime == "antigravity" and account == "primary":
+        return "run agy in a terminal and sign in"
+    return ui.cmd(f"agt accounts login {account}" + ("" if runtime == "claude" else f" --runtime {runtime}"))
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
-    runtime_config = config.runtime(args.runtime)
-    runtime = get_runtime(args.runtime)
-    report = tools.account_report(args.runtime)
-    _print(report)
-    for note in config.notes:
-        print(f"Note: {note}")
-    for line in _share_doctor(getattr(args, "fix", False)):
-        print(line)
-    for found in setup.upstream_installs(config):
-        print(f"Warning: {found}. Two installs both register an MCP server and hooks; remove the old one.")
-    problems = 0
-    for account in runtime_config.pool_accounts():
-        copies = runtime.fallback_copies(account) if hasattr(runtime, "fallback_copies") else sync.fallback_copies(account.home)
-        if copies and not account.is_primary:
-            print(f"Note: account '{account.name}' has copies instead of links (they don't follow later edits "
-                  f"until the next sync): {', '.join(copies)}")
-    if args.runtime == "codex" and os.name == "nt":
-        from agents_router.runtimes.codex import windows_sandbox_summary
-        print(windows_sandbox_summary(runtime_config))
-    print(f"\nEffective limits ({args.runtime}): when_full={runtime_config.when_full}, usage_ceiling={runtime_config.usage_ceiling}"
-          + (f", runtime max_jobs={runtime_config.max_jobs}" if runtime_config.max_jobs else "")
-          + (f", global max_jobs={config.max_jobs}" if config.max_jobs else ""))
-    if "room_cap" in report.get("limits", {}):
-        shown = report["limits"]
-        left = shown["remaining_percent"]
-        detail = f"{left:g}% left" if left is not None else "no usage data"
-        print(f"  max_jobs_by_room: {shown['room_cap']} jobs at a time, {detail}; effective runtime cap {shown['effective_max_jobs']}")
-    for entry in report["accounts"]:
-        shown = entry.get("limits") or {}
-        jobs_text = "no cap on jobs" if shown.get("max_jobs") is None else f"up to {shown.get('max_jobs')} jobs"
-        text = f"  {entry['name']}: {jobs_text} ({shown.get('max_jobs_from')})"
-        if shown.get("max_effort"):
-            text += f", effort up to {shown['max_effort']} ({shown.get('max_effort_from')})"
-        if shown.get("models"):
-            text += f", models {', '.join(shown['models'])} ({shown.get('models_from')})"
-        if shown.get("suggested_plan"):
-            text += f"; suggested plan {shown['suggested_plan']}"
-        print(text)
-        for pool in entry.get("pools", []):
-            print(f"    {pool['state']}")
-    if args.runtime == "antigravity" and plans.no_parent_channel(runtime_config):
-        print(f"Note: Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under [antigravity] "
-              f"in {user_settings_path()} to get it.")
-    if not report["binary"]:
-        print(f"\nProblem: no {args.runtime} binary found. Install it or set [{args.runtime}] binary in {user_settings_path()}.")
-        return 1
-    for entry in report["accounts"]:
-        auth = entry.get("auth") or {}
-        if not auth.get("loggedIn") and entry.get("enabled", True):
-            problems += 1
-            flag = "" if args.runtime == "claude" else f" --runtime {args.runtime}"
-            how = f"run: agt accounts login {entry['name']}{flag}"
-            if args.runtime == "antigravity" and entry["name"] == "primary":
-                how = "run agy in a terminal and sign in"
-            print(f"Problem: account '{entry['name']}' is not logged in. To fix it, {how}")
-    if not args.live:
-        print("\nAdd --live to start one tiny job per account and compare what each one loads.")
+    named = getattr(args, "runtime", None)
+    names = [named] if named else _runtimes_set_up(config)
+    reports = {name: tools.account_report(name) for name in names}
+    problems: list[tuple[str, ui.Line]] = []  # what's wrong, and its fix
+    for name, report in reports.items():
+        label = HOST_LABELS.get(name, name)
+        if not report.get("binary"):
+            problems.append((f"no {name} binary found.",
+                             f"install {label}, or set [{name}] binary in {ui.short_path(user_settings_path())}"))
+            continue
+        for entry in report.get("accounts", []):
+            if not (entry.get("auth") or {}).get("loggedIn") and entry.get("enabled", True):
+                problems.append((f"{label} account {entry['name']} is not logged in.", _login_fix(name, entry["name"])))
+    if getattr(args, "json", False):
+        _print(reports[names[0]] if named else {"runtimes": list(reports.values())})
         return 1 if problems else 0
+    notes = list(config.notes)
+    notes += [f"{found}. Two installs both register an MCP server and hooks; remove the old one."
+              for found in setup.upstream_installs(config)]
+    for name in names:
+        runtime_config, runtime = config.runtime(name), get_runtime(name)
+        for account in runtime_config.pool_accounts():
+            copies = runtime.fallback_copies(account) if hasattr(runtime, "fallback_copies") else sync.fallback_copies(account.home)
+            if copies and not account.is_primary:
+                notes.append(f"account '{account.name}' has copies instead of links (they don't follow later edits "
+                             f"until the next sync): {', '.join(copies)}")
+        if name == "codex" and os.name == "nt":
+            from agents_router.runtimes.codex import windows_sandbox_summary
+            notes.append(windows_sandbox_summary(runtime_config))
+        limits = reports[name].get("limits") or {}
+        if "room_cap" in limits:
+            left = limits["remaining_percent"]
+            detail = f"{left:g}% left" if left is not None else "no usage data"
+            notes.append(f"{name} max_jobs_by_room: {limits['room_cap']} jobs at a time, {detail}; "
+                         f"effective runtime cap {limits['effective_max_jobs']}")
+        for entry in reports[name].get("accounts", []):
+            notes += [f"{name} {entry['name']}: {pool['state']}" for pool in entry.get("pools", [])]
+        if name == "antigravity" and plans.no_parent_channel(runtime_config):
+            notes.append("Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under [antigravity] "
+                         f"in {user_settings_path()} to get it.")
+    share_lines = _share_doctor(getattr(args, "fix", False))
+    count = len(problems)
+    lines: list[ui.Line] = [[ui.bold("agt doctor"), f"  {_and(names)}, ",
+                             ui.error(f"{count} problem{'s' if count != 1 else ''}") if count else ui.ok("✓ all good")], ""]
+    width = max(len(HOST_LABELS.get(name, name)) for name in names + ["Sharing"]) + 3
+    accounts_lines = ui.columns([_account_rows(entry) for name in names for entry in reports[name].get("accounts", [])],
+                                indent=4, gap=3)
+    for name in names:
+        report = reports[name]
+        label = HOST_LABELS.get(name, name)
+        binary = [report["binary"], " ", ui.muted(f"({report['version']})")] if report.get("binary") and report.get("version") \
+            else [report["binary"]] if report.get("binary") else [ui.error("✗ not installed")]
+        lines.append(["  ", label, " " * (width - len(label)), *binary])
+        lines += [accounts_lines.pop(0) for _ in report.get("accounts", [])]
+    texts = {name: _runtime_limits(config, name) for name in names}
+    every = config.max_jobs and f"; at most {config.max_jobs} jobs across every runtime" or ""
+    if len(set(texts.values())) == 1:
+        lines.append(["  ", "Limits", " " * (width - 6), next(iter(texts.values())) + every])
+    else:
+        lines += [["  ", f"Limits, {name}", " " * max(2, width - 8 - len(name)), text] for name, text in texts.items()]
+        if every:
+            lines.append(["  ", " " * width, every.lstrip("; ")])
+    first, *rest = share_lines or ["agt share: off."]
+    lines.append(["  ", "Sharing", " " * (width - 7), first.removeprefix("agt share: ").rstrip(".")])
+    lines += [[" " * (width + 2), *ui.inline(line.strip())] for line in rest]
+    if notes:
+        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline(ui.tilde(note))] for note in notes)]
+    if problems:
+        lines += ["", ui.bold(f"{count} problem{'s' if count != 1 else ''}")]
+        for what, fix in problems:
+            lines += [["  ", ui.Span("error-mark", "✗"), " ", what], ["    ", ui.muted("Fix it"), "   ", fix]]
+    if not args.live:
+        lines += ["", [ui.code("agt doctor --live"), ui.muted(" starts one tiny job per account and compares what each one loads.")]]
+    ui.out(*lines)
+    if not args.live:
+        return 1 if problems else 0
+    args.runtime = named or "claude"  # --live checks one runtime: the one named, else Claude
+    runtime_config, runtime = config.runtime(args.runtime), get_runtime(args.runtime)
+    problems = len(problems)  # the live jobs below add to it
 
     cwd = str(Path(args.cwd).resolve())
     # Claude's cheapest model is a known alias; other runtimes use their default unless asked.
@@ -349,15 +455,57 @@ def cmd_run(args: argparse.Namespace) -> int:
         from agents_router.follow import follow
 
         return follow(status["job_id"], None, args.max_wait, window=args.window)
-    print(f"Started {status['job_id']}", file=sys.stderr)
-    status = jobs.wait_for(status["job_id"], args.timeout + 960)
-    result = jobs.read_result(status["job_id"], 1_000_000)
+    job_id = status["job_id"]
+    person = ui.live_on(sys.stderr) and not args.json  # a spinner and one line at the end; the JSON for everyone else
+    if not person:
+        print(f"Started {job_id}", file=sys.stderr)
+        status = jobs.wait_for(job_id, args.timeout + 960)
+    else:
+        from agents_router import jobs_view
+
+        try:
+            with ui.Live(jobs_view.run_frame(job_id)):
+                status = jobs.wait_for(job_id, args.timeout + 960)
+        except KeyboardInterrupt:
+            ui.out(*jobs_view.stopped_lines(f"agt status {job_id}"), stream=sys.stderr)
+            return 130
+    result = jobs.read_result(job_id, 1_000_000)
     if result.get("state") == "done":
-        jobs.claim_delivery(status["job_id"])
+        jobs.claim_delivery(job_id)
     if result.get("result"):
         print(result["result"])
-    print(json.dumps(tools.summarize(result), indent=2, default=str), file=sys.stderr)
+    if person:
+        ui.out(*jobs_view.end_lines(tools.summarize(result)), stream=sys.stderr)
+    else:
+        print(json.dumps(tools.summarize(result), indent=2, default=str), file=sys.stderr)
     return 0 if result.get("outcome") == "success" else 1
+
+
+def cmd_wait(args: argparse.Namespace) -> int:
+    """Today's JSON for agents and pipes; a person at a terminal sees each job work, then a line per job and the
+    next command. With one job that finished, its result, as `agt run` ends. The exit code is 0 either way."""
+
+    person = ui.live_on(sys.stdout) and not args.json
+    if not person:
+        _print(tools.call("subagent_wait", {"job_ids": args.job_ids, "timeout_seconds": args.timeout}))
+        return 0
+    from agents_router import jobs_view
+
+    try:
+        with ui.Live(jobs_view.wait_frame(args.job_ids)):
+            report = tools.call("subagent_wait", {"job_ids": args.job_ids, "timeout_seconds": args.timeout})
+    except KeyboardInterrupt:
+        ui.out(*jobs_view.stopped_lines("agt wait " + " ".join(args.job_ids)), stream=sys.stderr)
+        return 130
+    finished = report.get("finished") or []
+    if len(args.job_ids) == 1 and finished:
+        text = jobs.read_result(args.job_ids[0], 1_000_000).get("result")  # all of it, as `agt run` prints it
+        if text:
+            print(text)
+        ui.out(*jobs_view.end_lines(finished[0]), stream=sys.stderr)
+        return 0
+    ui.out(*jobs_view.wait_lines(report))
+    return 0
 
 
 def cmd_follow(args: argparse.Namespace) -> int:
@@ -399,7 +547,19 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_result(args: argparse.Namespace) -> int:
-    _print(tools.call("subagent_result", {"job_id": args.job_id, "max_chars": args.max_chars}))
+    """`agt result`: for a person at a terminal, the result, how the job ended and everything it said and asked, read
+    without taking anything from the agent that started it. Agents, pipes and --json get the JSON summary."""
+
+    if args.json or not ui.live_on(sys.stdout):
+        _print(tools.call("subagent_result", {"job_id": args.job_id, "max_chars": args.max_chars}))
+        return 0
+    from agents_router import jobs_view
+
+    data = jobs.read_result(args.job_id, 1_000_000)  # all of it, as `agt run` prints it
+    if data.get("result"):
+        print(data["result"])
+    ui.out(*jobs_view.end_lines(tools.summarize(data, take=False), jobs_view.conversation(args.job_id), again=False),
+           stream=sys.stderr)
     return 0
 
 
@@ -411,16 +571,32 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 def cmd_jobs(args: argparse.Namespace) -> int:
     workspace = None if getattr(args, "all", False) else levels.find_workspace()
     found = jobs.list_jobs(args.limit, workspace)
-    if workspace is not None:
-        print(f"Jobs started in {workspace.root}" + (" and its worktrees" if workspace.checkout else "") + ":")
-    for job in found:
-        created = time.strftime("%m-%d %H:%M", time.localtime(job.get("created_at") or 0))
-        override = f"  override={json.dumps(job['override'], ensure_ascii=False)}" if job.get("override") else ""
-        print(f"{job['job_id']}  {created}  {job.get('runtime')}  {job.get('state')}/{job.get('outcome') or '-'}  {job.get('account') or '-'}{override}")
+    if workspace is None:
+        ui.out("Jobs from every workspace" if found else "No jobs yet.")
+    elif not found:
+        ui.out(["No jobs started in ", ui.path(workspace.root), " or its worktrees" if workspace.checkout else "", " yet."])
+    else:
+        ui.out(["Jobs started in ", ui.path(workspace.root), " and its worktrees" if workspace.checkout else ""])
+    if found:
+        rows = []
+        for job in found:
+            created = time.strftime("%m-%d %H:%M", time.localtime(job.get("created_at") or 0))
+            override = [ui.muted(f"  override={json.dumps(job['override'], ensure_ascii=False)}")] if job.get("override") else []
+            rows.append([ui.muted(job["job_id"]), created, str(job.get("runtime")), _job_state(job),
+                         [job.get("account") or "-", *override]])
+        ui.out("", *ui.columns(rows, gap=3))
     others = jobs.count_elsewhere(workspace) if workspace is not None else 0
     if others:
-        print(f"{others} more in other workspaces: agt jobs --all")
+        ui.out("", [ui.muted(f"{others} more in other workspaces: "), ui.code("agt jobs --all")])
     return 0
+
+
+def _job_state(job: dict[str, Any]) -> ui.Span:
+    state, outcome = str(job.get("state")), job.get("outcome")
+    if state != "done":
+        return ui.warn(state)
+    shown = f"done, {outcome}" if outcome else "done"
+    return ui.ok(shown) if outcome == "success" else ui.muted(shown) if outcome == "cancelled" else ui.error(shown)
 
 
 # Interactive launcher --------------------------------------------------------
@@ -463,10 +639,14 @@ def _positive_seconds(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agt", description="Agents Router: run tasks in other agent CLIs under your own accounts.")
+    parser = helptext.Parser(prog="agt", description="Agents Router: run tasks in other agent CLIs under your own accounts.",
+                             page=helptext.ROOT)
     parser.add_argument("--version", action="version", version=f"agents-router {__version__}")
     parser.add_argument("--home", dest="agt_home", help="Use this folder instead of ~/.agents-router (sets AGT_HOME).")
-    sub = parser.add_subparsers(dest="command", required=True)
+    # main() takes --color out of argv wherever it is; this entry is what --help shows.
+    parser.add_argument("--color", choices=ui.MODES,
+                        help="auto (the default) colors output for a person at a terminal, never for an agent or a pipe.")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")  # no command: the home screen
     rules.add_parser(sub)
     share_commands.add_parser(sub)
     config_cli.add_parser(sub)
@@ -481,7 +661,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="reset clears an account's usage-limit cooldown.",
     )
     accounts_parser.add_argument("name", nargs="?")
-    accounts_parser.add_argument("--runtime", default="claude", choices=RUNTIMES)
+    accounts_parser.add_argument("--runtime", choices=RUNTIMES, help="Claude unless you name one; list shows every runtime.")
+    accounts_parser.add_argument("--json", action="store_true", help="With list: the report as JSON.")
     accounts_parser.add_argument("--home", help="Folder for this account (default ~/.agents-router/homes/<runtime>/<name>).")
     accounts_parser.add_argument("--no-login", action="store_true")
     accounts_parser.add_argument("--cwd", default=os.getcwd(), help="Project used to resolve local MCP servers for sync.")
@@ -523,7 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--dry-run", action="store_true", help="Print the plan; change nothing (read-only checks still run).")
 
     doctor = sub.add_parser("doctor", help="Check binaries, logins and shared setup.")
-    doctor.add_argument("--runtime", default="claude", choices=RUNTIMES)
+    doctor.add_argument("--runtime", choices=RUNTIMES, help="Check only this runtime (default: every one installed).")
+    doctor.add_argument("--json", action="store_true", help="The report as JSON.")
     doctor.add_argument("--live", action="store_true", help="Run one tiny job per account (uses a little quota).")
     doctor.add_argument("--model", help="Model for --live jobs (default: haiku for claude, the CLI's default otherwise).")
     doctor.add_argument("--cwd", default=os.getcwd())
@@ -538,6 +720,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the worker's steps as they happen, then the result (see agt follow).",
     )
     run_parser.add_argument("--max-wait", type=float, default=540, help="With --follow: stop watching after this many seconds (default 540).")
+    run_parser.add_argument("--json", action="store_true",
+                            help="Print the JSON summary on stderr, as for an agent or a pipe, instead of a spinner and one line.")
     follow_parser = sub.add_parser(
         "follow", help="Print a job's steps as they happen, then its result.",
         description="Prints one line per worker event and ends with one marker: DONE or FAILED (with the result), "
@@ -553,12 +737,14 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--wait", type=float, default=0)
     result = sub.add_parser("result", help="Show a job's result.")
     result.add_argument("job_id")
-    result.add_argument("--max-chars", type=int, default=20000)
+    result.add_argument("--max-chars", type=int, default=20000, help="With --json: cut the result at this length.")
+    result.add_argument("--json", action="store_true", help="Print the JSON summary, as for an agent or a pipe.")
     cancel = sub.add_parser("cancel", help="Stop a job.")
     cancel.add_argument("job_id")
     wait = sub.add_parser("wait", help="Wait until a job finishes or sends a message.")
     wait.add_argument("job_ids", nargs="+")
     wait.add_argument("--timeout", type=int, default=1800)
+    wait.add_argument("--json", action="store_true", help="Print the JSON report, as for an agent or a pipe.")
     message = sub.add_parser("message", help="Send a follow-up or an answer to a job.")
     message.add_argument("job_id")
     message.add_argument("text", help="The message. Use '-' to read it from stdin.")
@@ -607,6 +793,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["launch"] and "--" in argv:
         index = argv.index("--")
         argv, extra = argv[:index], argv[index + 1 :]
+    if argv[:1] == ["help"]:  # `agt help [command]` is `agt [command] --help`
+        argv = [*argv[1:], "--help"]
+    try:
+        argv, color = ui.take_color_flag(argv)
+    except ValueError as exc:
+        ui.out(*helptext.mistake_lines("agt", str(exc)), stream=sys.stderr)
+        return 2
+    ui.set_color(color)
+    ui.ARGV[:] = argv
     args = build_parser().parse_args(argv)
     if getattr(args, "agt_home", None):
         os.environ["AGT_HOME"] = args.agt_home
@@ -638,15 +833,22 @@ def main(argv: list[str] | None = None) -> int:
             "result": cmd_result,
             "cancel": cmd_cancel,
             "jobs": cmd_jobs,
-            "wait": lambda a: _print(tools.call("subagent_wait", {"job_ids": a.job_ids, "timeout_seconds": a.timeout})) or 0,
+            "wait": cmd_wait,
             "message": cmd_message,
             "follow": cmd_follow,
         }
+        if args.command is None:
+            from agents_router import home
+
+            return home.show()
         if args.command == "launch":
             return cmd_launch(args, extra)
         return handlers[args.command](args)
+    except ui.Mistake as exc:
+        ui.out(*helptext.mistake_lines(exc.prog, exc.message, exc.suggestion, exc.typed, exc.hint), stream=sys.stderr)
+        return 2
     except (ValueError, RuntimeError, tools.ToolError) as exc:
-        print(f"agt: {exc}", file=sys.stderr)
+        ui.out(*helptext.mistake_lines("agt", str(exc)), stream=sys.stderr)
         return 2
     except KeyboardInterrupt:
         return 130

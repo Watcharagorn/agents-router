@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -44,9 +45,9 @@ def events_path() -> Path:
     return share_dir() / "events.jsonl"
 
 
-def _entry(kind: str, item: str, who: str, message: str, fix: list[str], label: str = "") -> dict[str, Any]:
+def _entry(kind: str, item: str, who: str, message: str, fix: list[str], label: str = "", **extra: Any) -> dict[str, Any]:
     return {"id": ":".join(part for part in (kind, item, label) if part), "kind": kind, "item": item, "who": who,
-            "message": message, "fix": fix}
+            "message": message, "fix": fix, **extra}
 
 
 def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
@@ -58,23 +59,26 @@ def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
         if decision is None:
             continue
         # The copies the conflict is about (the edited ones), else every copy.
-        where = ", ".join(decision.labels or sorted({label for copy in item.copies for label in copy.labels}))
+        folders = list(decision.labels) or sorted({label for copy in item.copies for label in copy.labels})
+        where = ", ".join(folders)
         if decision.action == engine.CONFLICT:
             found.append(_entry("conflict", item.key, "choice", f"{name} differs between {where} ({decision.reason})",
-                                [f"agt share resolve {name}"]))
+                                [f"agt share resolve {name}"], folders=folders))
         elif decision.action == engine.PENDING_DELETE:
             found.append(_entry("delete", item.key, "choice",
                                 f"{name}'s original was deleted in {', '.join(decision.labels)}; its other copies wait",
-                                [f"agt share rm {name}"]))
+                                [f"agt share rm {name}"], folders=list(decision.labels)))
         elif decision.action == engine.WAIT and decision.reason != "saved less than 3 s ago":
-            found.append(_entry("unreadable", item.key, "action", f"agt can't read {name}: {decision.reason}", []))
+            found.append(_entry("unreadable", item.key, "action", f"agt can't read {name}: {decision.reason}", [],
+                                folders=folders, why=decision.reason))
         elif decision.reason == planner.NEW_WAITING:
             found.append(_entry("new", item.key, "choice", f"{name} is new and waits for you to pick where it goes",
-                                [f"agt share pick {name} --in <label>"]))
+                                [f"agt share pick {name} --in <label>"], folders=folders))
         failing = (current.items.get(item.key) or {}).get("failing") or {}
         if failing.get("runs", 0) >= FAILING_RUNS:
             found.append(_entry("failing", item.key, "action",
-                                f"agt couldn't write {name} in the last {failing['runs']} runs: {failing.get('message', '')}", []))
+                                f"agt couldn't write {name} in the last {failing['runs']} runs: {failing.get('message', '')}", [],
+                                folders=list(failing.get("labels") or []), runs=failing["runs"]))
     for frozen in plan.frozen:
         label = frozen["label"]
         found.append(_entry("frozen", FOLDER, "choice",
@@ -101,6 +105,47 @@ def entries(plan: planner.Plan, current: State) -> list[dict[str, Any]]:
 
         found += plugins.attention(plan.plugins)
     return found
+
+
+def grouped(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The entries as things to do: one that differs only in its folder joins the others (a plugin waiting for the
+    same answer in two CLIs is one answer). A joined entry names every folder (`labels`), in its message and in
+    each fix (`--in a,b`), and keeps every entry's id (`ids`)."""
+
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for entry in found:
+        if entry["kind"] == "adopt" and entry.get("label"):
+            key: tuple[str, ...] = ("adopt", entry["item"])  # one `agt share adopt a b` adds every missing section
+        elif entry.get("label") and "why" in entry:
+            key = (entry["kind"], entry["item"], entry["why"])
+        else:
+            key = (entry["id"],)
+        groups.setdefault(key, []).append(entry)
+    joined = []
+    for entries in groups.values():
+        first = entries[0]
+        labels = [entry["label"] for entry in entries if entry.get("label")]
+        merged = {**first, "ids": [entry["id"] for entry in entries], "labels": labels}
+        if len(labels) > 1 and first["kind"] == "adopt":
+            merged["message"] = (f"the instruction files in {', '.join(labels[:-1])} and {labels[-1]} have no agt share "
+                                 "block, so they don't share instructions")
+            merged["fix"] = ["agt share adopt " + " ".join(labels)]
+        elif len(labels) > 1:
+            label = first["label"]
+            names = ", ".join(labels[:-1]) + " and " + labels[-1]
+            merged["message"] = re.sub(rf" {re.escape(label)}(?=[:;])", lambda _: " " + names, first["message"], count=1)
+            merged["fix"] = [fix[:-len(label)] + ",".join(labels) if fix.endswith(" " + label) else fix
+                             for fix in first.get("fix", [])]
+        joined.append(merged)
+    return joined
+
+
+def commands(entry: dict[str, Any]) -> list[str]:
+    """An entry's fixes as a person types them. Resolving and picking with no answer ask for it (an agent gets
+    the choices), so those go bare; any other placeholder reads <cli>."""
+
+    return [fix.replace(" --prefer <label>", "").replace(" --in <label>", "").replace("<label>", "<cli>")
+            for fix in entry.get("fix") or []]
 
 
 def load() -> list[dict[str, Any]]:

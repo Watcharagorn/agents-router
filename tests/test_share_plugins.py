@@ -1,5 +1,7 @@
 """Plugins between Claude Code and Codex: what each CLI can load, the sync that installs them, and `plugins apply`."""
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,7 @@ from unittest.mock import patch
 
 from test_share_items import ItemBase
 
+from agents_router import cli
 from agents_router.share import plugins, settings, watch
 
 
@@ -175,7 +178,8 @@ class PluginTests(PluginBase):
     def test_apply_installs_what_you_named(self):
         self.enable()
         out = self.share("plugins", "apply", "formatter@tools:codex", "--yes")
-        self.assertIn("+ formatter in codex", out)
+        self.assertEqual(out, "agt share plugins apply  ✓ wrote 1 change in 1 folder\n\n  + plugins/formatter@tools   codex\n\n"
+                              "Next: start a new session in a CLI to use what it got.\n")
         calls = [call["argv"] for call in self.host_calls("codex")]
         self.assertEqual(calls[:2], [["plugin", "marketplace", "add", "example/tools"], ["plugin", "add", "formatter@tools"]])
         self.assertNotIn("formatter@tools:codex", self.offers())
@@ -199,12 +203,33 @@ class PluginTests(PluginBase):
         from agents_router.share import commands
 
         self.enable()
+        with patch.object(commands, "_interactive", lambda: True), patch("builtins.input", lambda prompt: "n"):
+            self.assertTrue(self.share("plugins", "apply").endswith("\n\nagt share plugins apply  nothing installed\n"))
         answers = iter(["y", "x"])  # formatter in claude-lab: yes; in codex: never offer it again
         with patch.object(commands, "_interactive", lambda: True), patch("builtins.input", lambda prompt: next(answers)):
             out = self.share("plugins", "apply")
-        self.assertIn("+ formatter in claude-lab", out)
+        self.assertIn("formatter in codex\n  runs   codex plugin marketplace add example/tools\n", out)  # each command it runs
+        self.assertIn("\n  + plugins/formatter@tools   claude-lab\n", out)
         self.assertIn("plugins/formatter@tools", settings.load().off)
+        self.assertIn("\nformatter isn't offered again in any CLI; `agt share plugins apply formatter@tools:codex --yes` "
+                      "installs it and offers it again.\n", out)
         self.assertEqual(sorted(self.offers()), ["drafts@elsewhere:claude-lab", "drafts@elsewhere:codex"])
+        self.assertTrue(self.share("plugins").endswith(  # weeks later, the page still says how to bring it back
+            "\n\nYou turned off formatter; `agt share plugins apply formatter@tools:codex --yes` installs it and offers "
+            "it again.\n"))
+        out = self.share("plugins", "apply", "formatter@tools:codex", "--yes")  # the undo for "x"
+        self.assertIn("\n  + plugins/formatter@tools   codex\n", out)
+        self.assertTrue(out.endswith("\nSaved your answers in ~/.agt/settings.toml.\n"), out)
+        self.assertNotIn("plugins/formatter@tools", settings.load().off)
+        self.assertNotIn("You turned off", self.share("plugins"))
+
+    def test_try_again_names_every_cli_that_failed(self):
+        from agents_router.share import apply, commands
+        from agents_router import ui
+
+        outcome = apply.Outcome("plugins", "formatter@tools", ["claude-lab", "claude"], "copy", Path("/x"), False, "boom")
+        self.assertEqual(ui.plain(commands._apply_again(outcome, ["claude-lab", "claude"])),
+                         "      Try again   agt share plugins apply formatter@tools:claude-lab formatter@tools:claude --yes")
 
     def test_a_prompt_nobody_can_answer_installs_nothing(self):
         from agents_router.share import commands
@@ -266,9 +291,13 @@ class PluginSyncTests(PluginBase):
         self.assertFalse(settings.load().plugins)
         self.assertEqual(self.installs(), [])
         preview = self.share("kinds", "add", "plugins", "--dry-run")
-        self.assertIn("Plugins: 3 to install", preview)
-        self.assertIn("No agent or skill changes.", preview)
-        self.assertIn("To apply it:\n  agt share kinds add plugins\n", preview + "\n")
+        self.assertIn("\nPlugins to install\n  + deck@tools        claude-lab\n  + formatter@tools   claude-lab, codex\n"
+                      "                      In codex, Codex turns its 1 command into skills.\n", preview)
+        self.assertRegex(preview, r"\n  ! plugin deck, for codex\n    Codex doesn't load its agents \(reviewer\)\.\n"
+                                  r"    Install it as it is +agt share pick plugins/deck@tools --in codex\n")
+        self.assertIn("\nStaying where they are: browser (comes with Codex), linter (not on in claude).\n", preview)
+        self.assertTrue(preview.endswith("\nNo agent or skill changes. To apply it:\n  agt share kinds add plugins\n"), preview)
+        self.assertNotIn("Not shared", preview)  # not a change
         self.assertEqual(self.installs(), [])
 
     def test_a_prompt_nobody_can_answer_turns_nothing_on(self):
@@ -277,7 +306,7 @@ class PluginSyncTests(PluginBase):
         self.enable()
         with patch.object(commands, "_interactive", lambda: True), patch("builtins.input", side_effect=EOFError):
             out = self.share("kinds", "add", "plugins")
-        self.assertIn("Nothing was installed; plugins don't share.", out)
+        self.assertIn("agt share kinds add plugins  nothing installed; plugins don't share\n", out)
         self.assertFalse(settings.load().plugins)
         self.assertEqual(self.installs(), [])
 
@@ -285,22 +314,28 @@ class PluginSyncTests(PluginBase):
         out = self.turn_on()
         self.assertEqual(self.installs(), [(".claude-lab", "deck@tools"), (".claude-lab", "formatter@tools"),
                                            (".codex", "formatter@tools")])
-        self.assertIn("+ plugins/formatter@tools in codex", out)
+        self.assertIn("  + plugins/formatter@tools   claude-lab, codex\n", out)
         self.assertIn("formatter in codex: Codex turns its 1 command into skills", out)
-        self.assertIn("Plugins not installed until you answer:", out)
-        self.assertIn("deck in codex: Codex doesn't load its agents (reviewer)", out)
-        self.assertIn("`agt share pick plugins/deck@tools --in codex`", out)
-        self.assertIn("Plugins that can't go there:", out)  # a sync says what it left out, and why
-        self.assertIn("pdfkit not in claude: the studio marketplace has no .claude-plugin/marketplace.json", out)
+        self.assertNotIn("waits for you:", out)  # the one wait is listed in full
+        self.assertIn("\nWaiting for you\n  ! plugin deck, for codex\n    Codex doesn't load its agents (reviewer).\n", out)
+        self.assertRegex(out, r"\n    Install it as it is +agt share pick plugins/deck@tools --in codex\n")
+        self.assertIn("\nCan't be installed there\n", out)  # turning plugins on says what it left out, and why
+        self.assertRegex(out, r"\n  pdfkit +claude, claude-lab +The studio marketplace has no \.claude-plugin/marketplace\.json")
+        self.assertIn("\nNext: start a new session in a CLI (or run /reload-plugins in Claude Code) to use what it got.\n", out)
         self.assertEqual(self.record("plugins/formatter@tools")["made"], ["claude-lab", "codex"])
         status = self.share("status", code=1)
-        self.assertIn("Waiting for your answer: plugin deck waits for your answer before it goes to codex", status)
-        self.assertIn("pdfkit not in claude: the studio marketplace has no .claude-plugin/marketplace.json", status)
-        self.assertIn("browser (it comes with Codex", status)
-        self.assertIn("drafts not in codex: agt doesn't know where the elsewhere marketplace comes from", status)
-        self.assertIn("Installed only for a project in claude, so not shared: 1 (local)", status)
-        self.assertIn("kiro: it installs no plugins", status)
-        needs = {entry["id"]: entry for entry in json.loads(self.share("status", "--json", code=1))["attention"]}
+        self.assertIn("  ! plugin deck, for codex\n    Codex doesn't load its agents (reviewer).\n", status)
+        self.assertRegex(status, r"\n    Install it as it is +agt share pick plugins/deck@tools --in codex\n")
+        self.assertIn("  Plugins   4 shared, 2 stay in their own CLI, 2 can't be installed everywhere\n", status)
+        self.assertIn("`agt share plugins` says why the others stay where they are.", status)
+        report = json.loads(self.share("status", "--json", code=1))
+        summary = report["plugins"]  # the JSON keeps every reason
+        self.assertIn("pdfkit not in claude: the studio marketplace has no .claude-plugin/marketplace.json", summary)
+        self.assertIn("browser (it comes with Codex", summary)
+        self.assertIn("drafts not in codex: agt doesn't know where the elsewhere marketplace comes from", summary)
+        self.assertIn("Installed only for a project in claude, so not shared: 1 (local)", summary)
+        self.assertIn("kiro: it installs no plugins", summary)
+        needs = {entry["id"]: entry for entry in report["attention"]}
         self.assertEqual(needs["plugin:plugins/deck@tools:codex"]["fix"],
                          ["agt share pick plugins/deck@tools --in codex", "agt share pick plugins/deck@tools --not-in codex"])
         before = len(self.installs())
@@ -317,7 +352,7 @@ class PluginSyncTests(PluginBase):
         self.assertNotIn((".codex", "deck@tools"), self.installs())
         self.assertIn("Codex doesn't load its agents (planner, reviewer)", self.share("status", code=1))
         out = self.share("pick", "plugins/deck@tools", "--in", "codex")
-        self.assertIn("+ plugins/deck@tools in codex", out)
+        self.assertIn("  + plugins/deck@tools   codex\n", out)
         self.assertIn("you said yes to this: Codex doesn't load its agents (planner, reviewer)", out)
         self.assertEqual(settings.load().plugin_approvals["deck@tools"],
                          {"codex": plugins.signature(["Codex doesn't load its agents (planner, reviewer)"])})
@@ -328,7 +363,7 @@ class PluginSyncTests(PluginBase):
         self.share("pick", "plugins/deck@tools", "--not-in", "codex")
         self.assertNotIn("plugins/deck@tools", json.dumps(json.loads(self.share("status", "--json"))["attention"]))
         out = self.share("pick", "plugins/formatter@tools", "--not-in", "codex")
-        self.assertIn("- plugins/formatter@tools in codex", out)
+        self.assertIn("  - plugins/formatter@tools   codex\n", out)
         self.assertIn(["plugin", "remove", "formatter@tools"], [call["argv"] for call in self.host_calls("codex")])
         self.assertNotIn('"formatter@tools"', (self.user / ".codex" / "config.toml").read_text())
 
@@ -357,7 +392,7 @@ class PluginSyncTests(PluginBase):
         status = json.loads(self.share("status", "--json", code=1))
         self.assertIn("delete:plugins/notes@tools", [entry["id"] for entry in status["attention"]])
         out = self.share("rm", "plugins/notes@tools")
-        self.assertIn("- plugins/notes@tools in claude-lab", out)
+        self.assertIn("  - plugins/notes@tools   claude-lab\n", out)
         self.assertIsNone(self.record("plugins/notes@tools"))
 
     def test_a_half_written_plugin_file_changes_nothing(self):
@@ -393,14 +428,14 @@ class PluginSyncTests(PluginBase):
         self.turn_on()
         self.assertNotIn((".claude-lab", "formatter@tools"), self.installs())
         status = self.share("status", code=1)
-        self.assertIn("formatter waits for your answer before it goes to claude-lab: it's installed there for a project "
-                      "(local scope)", status)
+        self.assertIn("  ! plugin formatter, for claude-lab\n    It's installed there for a project (local scope)", status)
 
     def test_a_failed_install_is_told_once_and_a_pick_tries_again(self):
         self.enable()
         with patch.dict(os.environ, {"FAKE_HOST_FAIL": "add"}):
-            self.share("kinds", "add", "plugins", "--yes", code=1)
+            out = self.share("kinds", "add", "plugins", "--yes", code=1)
             self.share("sync")
+        self.assertNotIn("formatter in codex: Codex turns", out)  # no note about an install that didn't go in
         self.assertEqual([plugin for folder, plugin in self.installs() if folder == ".codex"], ["formatter@tools"])
         needs = json.loads(self.share("status", "--json", code=1))["attention"]
         failing = next(entry for entry in needs if entry["id"] == "failing:plugins/formatter@tools:codex")
@@ -416,6 +451,90 @@ class PluginSyncTests(PluginBase):
                          if call["argv"][:2] in (["plugin", "uninstall"], ["plugin", "remove"]))
         self.assertEqual(removed, [(".claude-lab", "deck@tools"), (".claude-lab", "formatter@tools"), (".codex", "formatter@tools")])
         self.assertIn("formatter@tools", json.loads((self.claude / "settings.json").read_text())["enabledPlugins"])
+
+    def test_the_plugins_page_reads_like_status(self):
+        self.enable()
+        off = self.share("plugins")
+        self.assertTrue(off.startswith("agt share plugins  off; 4 installs could go to another CLI\n\n"
+                                       "  deck       claude-lab, codex\n"
+                                       "             In codex, Codex doesn't load its agents (reviewer).\n"), off)
+        self.assertNotIn("marketplace add", off)  # the commands agt runs stay in --json and the apply prompt
+        self.assertTrue(off.endswith("\n  Install them with each sync   agt share kinds add plugins\n"
+                                     "  Choose one at a time now      agt share plugins apply\n"), off)
+        self.share("kinds", "add", "plugins", "--yes")
+        on = self.share("plugins")
+        self.assertTrue(on.startswith("agt share plugins  on: 4 shared, 1 thing waits for you\n\n"
+                                      "Waiting for you\n  ! plugin deck, for codex\n"), on)
+        self.assertIn("\nStaying where they are\n  Come with Codex    browser\n  Not on in claude   linter\n", on)
+        self.assertIn("\nInstalled for one project only, so not shared\n  claude   local\n", on)
+        self.assertTrue(on.endswith("\nkiro installs no plugins; plugins go between Claude Code and Codex folders only.\n"), on)
+        pick = self.share("pick", "plugins/deck@tools")
+        self.assertTrue(pick.startswith("agt share pick plugins/deck@tools  where it goes; nothing changed\n"), pick)
+        self.assertIn("\n  codex        ! waits for your answer: Codex doesn't load its agents (reviewer).\n", pick)
+        self.assertIn("\nChange it\n  Install it as it is   agt share pick plugins/deck@tools --in codex\n", pick)
+
+    def test_with_no_one_to_answer_it_gives_the_commands(self):
+        self.enable()
+        self.assertEqual(self.share("kinds", "add", "plugins", code=3),
+                         "agt share kinds add plugins  ! nothing installed: turning plugins on installs 3 now\n\n"
+                         "Plugins to install\n  + deck@tools        claude-lab\n  + formatter@tools   claude-lab, codex\n"
+                         "                      In codex, Codex turns its 1 command into skills.\n\n"
+                         "  Go ahead         agt share kinds add plugins --yes\n"
+                         "  See everything   agt share kinds add plugins --dry-run\n")
+        out = self.share("plugins", "apply", code=3)
+        self.assertIn("\n  All of them               agt share plugins apply deck@tools:claude-lab deck@tools:codex "
+                      "formatter@tools:claude-lab formatter@tools:codex --yes\n", out)  # whole, never shortened
+
+    def test_installs_keep_their_order(self):
+        self.enable()
+        out = json.loads(self.share("kinds", "add", "plugins", "--yes", "--json"))
+        self.assertEqual([(entry["name"], entry["labels"]) for entry in out["written"]],
+                         [("deck@tools", ["claude-lab"]), ("formatter@tools", ["claude-lab"]), ("formatter@tools", ["codex"])])
+
+    def test_turning_plugins_off_says_what_stays(self):
+        self.turn_on()
+        self.assertEqual(self.share("kinds", "remove", "plugins", "--dry-run"),
+                         "agt share kinds remove plugins  dry run, nothing changed\n\n"
+                         "Turning off plugins leaves the 3 installs agt made:\n"
+                         "  deck        claude-lab\n  formatter   claude-lab, codex\nEvery CLI keeps them.\n\n"
+                         "  Uninstall them too   agt share kinds remove plugins --remove-copies\n")
+        self.assertTrue(self.share("kinds", "remove", "plugins", "--dry-run", "--remove-copies").endswith(
+            "Turning off plugins removes the 3 installs agt made:\n  deck        claude-lab\n  formatter   claude-lab, codex\n\n"
+            "To apply it:\n  agt share kinds remove plugins --remove-copies\n"))
+        self.assertEqual(self.share("kinds", "remove", "plugins"),
+                         "agt share kinds remove plugins  ✓ plugins don't share any more\n\n"
+                         "  Every CLI keeps the plugins it has; agt installs none from now on.\n\n"
+                         "  Share them again   agt share kinds add plugins\n")
+        self.assertEqual(self.share("kinds", "remove", "plugins"), "agt share kinds remove plugins  already off\n")
+
+    def test_a_failed_uninstall_gives_the_command_to_try_again(self):
+        self.turn_on()
+        with patch.dict(os.environ, {"FAKE_HOST_FAIL": "remove"}):  # codex's copy stays listed
+            out = self.share("rm", "plugins/formatter@tools", code=1)
+        self.assertIn("  ✗ plugins/formatter@tools   codex\n", out)
+        self.assertIn("\n      Try again   agt share rm plugins/formatter@tools\n", out)
+
+    def test_an_uninstall_the_cli_says_isnt_needed_counts_as_removed(self):
+        self.turn_on()
+        out = self.share("rm", "plugins/formatter@tools", "-v")  # the fake claude's list doesn't show your own install
+        self.assertNotIn("✗", out)
+        self.assertNotIn("Try again", out)
+        self.assertIn("  - plugins/formatter@tools   claude\n      already gone: claude plugin list doesn't show it\n", out)
+
+    def test_an_uninstall_with_a_list_agt_cant_read_stays_a_failure(self):
+        self.turn_on()
+        with patch.object(plugins, "_listed", return_value=None):
+            out = self.share("rm", "plugins/formatter@tools", code=1)
+        self.assertIn("  ✗ plugins/formatter@tools   claude\n", out)
+        self.assertIn("\n      Try again   agt share rm plugins/formatter@tools\n", out)
+
+    def test_ctrl_c_says_what_finishes_the_installs(self):
+        self.enable()
+        err = io.StringIO()
+        with patch.object(plugins, "run_steps", side_effect=KeyboardInterrupt), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["share", "kinds", "add", "plugins", "--yes"]), 130)
+        self.assertEqual(err.getvalue(), "Stopped. The next sync finishes what's left.\n")  # plugins share now
 
     def test_the_watcher_watches_plugin_files(self):
         self.turn_on()

@@ -45,7 +45,7 @@ class SyncTests(MacCopy):
 
     def test_enable_writes_the_plan_and_a_second_run_does_nothing(self):
         out = self.enable()
-        self.assertIn("agt share: wrote 9 changes in 4 folders.", out)
+        self.assertIn("agt share enable  ✓ wrote 9 changes in 4 folders\n", out)
         kiro, codex = self.user / ".kiro", self.user / ".codex"
         for path in (self.lab / "agents" / "dana.md", codex / "agents" / "dana.toml", codex / "agents" / "day-plan.toml",
                      kiro / "agents" / "dana.json", kiro / "agents" / "day-plan.json", kiro / "agents" / "explorer.json"):
@@ -71,11 +71,11 @@ class SyncTests(MacCopy):
         self.assertEqual(self.record("skills/ask-simply")["made"], ["kiro"])
         self.assertNotIn("made", self.record("skills/synced") or {})
         before = self.snapshot()
-        self.assertIn("everything is in sync; nothing to write", self.sync())
+        self.assertIn("✓ everything is in sync, nothing to write", self.sync())
         self.assertEqual(self.snapshot(), before)
         code, out = self.run_share("status")
         self.assertEqual(code, 0, out)
-        self.assertIn("0 changes for the next sync, 0 conflicts", out)
+        self.assertIn("agt share  on, all in sync\n", out)
 
     def test_each_copy_gets_what_its_cli_can_use(self):
         self.enable()
@@ -125,12 +125,17 @@ class SyncTests(MacCopy):
         age(self.claude / "agents" / "day-plan.md", self.lab / "agents" / "day-plan.md")
         before = self.snapshot()
         out = self.sync()
-        self.assertIn("day-plan (agents)", out)
+        self.assertIn("  1 thing waits for you: `agt share status` lists it.\n", out)
         self.assertEqual(self.snapshot(), before)
         code, out = self.run_share("status", "--diff")
         self.assertEqual(code, 1)
         self.assertRegex(out, r"\n    [-+]Wrap it one way\.")
         self.assertRegex(out, r"\n    [-+]Wrap it another way\.")
+        age(self.claude / "agents" / "day-plan.md", seconds=120)  # the claude-lab copy is the newer one
+        out = self.run_share("status", "--diff")[1]
+        self.assertRegex(out, r"\n    \+\+\+ claude-lab\S* ~/\.claude-lab/agents/day-plan\.md\n")  # toward the newest
+        self.assertIn("\n    -Wrap it one way.\n", out)
+        self.assertIn("\n    +Wrap it another way.\n", out)
 
     def test_deleting_a_copy_agt_made_stops_sharing_it_there(self):
         self.enable()
@@ -149,7 +154,7 @@ class SyncTests(MacCopy):
         self.assertEqual(self.snapshot(), before)
         code, out = self.run_share("status")
         self.assertEqual(code, 1)
-        self.assertIn("Waiting to be deleted: day-plan", out)
+        self.assertRegex(out, r"\n  ! agent day-plan\n    Its original was deleted in claude\.\n    Remove its copies +agt share rm day-plan\n")
 
     def test_a_failed_write_then_a_rerun_reverts_nothing(self):
         self.enable()
@@ -194,7 +199,7 @@ class SyncTests(MacCopy):
         self.assertEqual(self.kiro("explorer")["description"], "Edited in Kiro meanwhile.")
         age(target)
         out = self.sync()  # both copies changed now, differently: that's for you to decide
-        self.assertIn("explorer (agents)", out)
+        self.assertIn("  1 thing waits for you: `agt share status` lists it.\n", out)
         self.assertEqual(self.kiro("explorer")["description"], "Edited in Kiro meanwhile.")
 
     def test_an_interrupted_run_is_finished_from_the_journal(self):

@@ -19,6 +19,7 @@ import time
 import tomllib
 from typing import Any
 
+from agents_router import ui
 from agents_router.share import engine, exclude, model, names, providers, toolmap
 from agents_router.share.providers import Provider, _short as short
 from agents_router.share.state import State
@@ -77,6 +78,17 @@ class Cell:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class MissingServer:
+    """An MCP server an agent names that some CLIs it goes to don't have; `note` is its line in --json."""
+
+    server: str
+    missing: tuple[str, ...]
+    has: tuple[str, ...]  # the CLIs that do have it
+    kiro: bool  # a Kiro copy leaves out its tools
+    note: str
+
+
 @dataclass
 class Item:
     kind: str
@@ -89,6 +101,7 @@ class Item:
     ignored: set[str] = field(default_factory=set)  # labels holding a copy the engine didn't weigh (frozen, left out)
     renamed_from: str | None = None  # the `<kind>/<identity>` key this item had before a rename
     unreleased: set[str] = field(default_factory=set)  # kept copies that are gone now: those CLIs get the item again
+    servers: list[MissingServer] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -895,6 +908,8 @@ def add_notes(items: list[Item], included: list[Provider], home: Path) -> None:
                 kiro = [label for label in missing if by_label[label].cli == "kiro"]
                 left = f"; the Kiro copy leaves out its {server} tools" if kiro else ""
                 item.notes.append(f"{item.name} in {', '.join(missing)}: no `{server}` server ({where}){left}")
+                has = tuple(label for label, found in servers.items() if server in found)
+                item.servers.append(MissingServer(server, tuple(missing), has, bool(kiro), item.notes[-1]))
         if tools is not None and getattr(source.obj, "cli", None) == "claude":
             for label in item.decision.fills:
                 cli = by_label[label].cli
@@ -933,20 +948,41 @@ def build(config: Any, rows: list[providers.Candidate], included: list[Provider]
 
 MARKS = {HAS: "·", COPY: "+", UPDATE: "~", SKIPPED: "x", BLOCKED: "-", CONFLICTED: "!", WAITING: "…", REMOVE: "rm",
          RELEASED: "k"}
-LEGEND = "  + copy  ~ update  · has it  x you unticked it  - can't go there  ! conflict  … waiting"
+MARK_STYLES = {HAS: "muted", COPY: "ok", UPDATE: "warn", SKIPPED: "muted", BLOCKED: "muted", CONFLICTED: "error-mark",
+               WAITING: "warn", REMOVE: "warn", RELEASED: "muted"}
+# The legend, in this order, lists only the marks a table uses.
+MEANINGS = [(COPY, "copy"), (UPDATE, "update"), (HAS, "has it"), (SKIPPED, "you unticked it"), (BLOCKED, "can't be copied there"),
+            (CONFLICTED, "conflict"), (WAITING, "waiting"), (REMOVE, "removed, with a backup"), (RELEASED, "kept as your own file")]
+SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+LIST_NAME = 16  # in the narrow list, a longer name gets a line of its own
 
 
-def _group_excluded(excluded: list[Excluded]) -> list[str]:
-    grouped: dict[tuple[str, str, str], list[str]] = {}
+def _group_excluded(excluded: list[Excluded]) -> list[tuple[str, str, str, str]]:
+    """(kind, names, folders, reason): one name's folders with the same reason together, then names with the same folders."""
+
+    folders: dict[tuple[str, str, str], set[str]] = {}
     for entry in excluded:
-        grouped.setdefault((entry.kind, ", ".join(entry.labels), entry.reason), []).append(entry.name)
-    lines = []
-    for (kind, labels, reason), found in sorted(grouped.items()):
-        crew = sorted(name for name in found if name.startswith("kirocrew-"))
-        rest = sorted(name for name in found if not name.startswith("kirocrew-"))
+        folders.setdefault((entry.kind, entry.name, entry.reason), set()).update(entry.labels)
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    for (kind, name, reason), labels in folders.items():
+        grouped.setdefault((kind, ", ".join(sorted(labels)), reason), []).append(name)
+    found = []
+    for (kind, labels, reason), names_found in sorted(grouped.items(), key=lambda pair: (KINDS.index(pair[0][0])
+                                                                                          if pair[0][0] in KINDS else 99, pair[0])):
+        crew = sorted(name for name in names_found if name.startswith("kirocrew-"))
+        rest = sorted(name for name in names_found if not name.startswith("kirocrew-"))
         shown = rest + ([f"kirocrew-* ({len(crew)})"] if len(crew) > 3 else crew)
-        lines.append(f"{kind} in {labels}: {', '.join(shown)} ({reason})")
-    return lines
+        found.append((kind, ", ".join(shown), labels, reason))
+    return found
+
+
+def not_shared_lines(excluded: list[Excluded]) -> list[ui.Line]:
+    rows = []
+    last = None
+    for kind, shown, labels, reason in _group_excluded(excluded):
+        rows.append([ui.muted(kind if kind != last else ""), [shown, " ", ui.muted(f"in {labels}: {reason}")]])
+        last = kind
+    return [ui.bold("Not shared"), *ui.columns(rows)] if rows else []
 
 
 def would_save(plan: Plan) -> list[str]:
@@ -958,98 +994,257 @@ def would_save(plan: Plan) -> list[str]:
     return lines
 
 
-def table(plan: Plan, shown: list[Item]) -> list[str]:
-    """The item × folder table for these items, with its legend and footnotes."""
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:] + ("" if text.endswith(".") else ".")
+
+
+def _and(words: list[str]) -> str:
+    return ", ".join(words[:-1]) + " and " + words[-1] if len(words) > 1 else words[0]
+
+
+def _server_sentence(names_found: list[str], text: str) -> str:
+    return f"{_and(names_found)} use{'' if len(names_found) > 1 else 's'} {text}"
+
+
+def note_lines(plan: Plan) -> list[str]:
+    """The plan's notes for a person. Agents naming MCP servers some CLIs lack become one sentence per case: a server
+    no CLI has, one MCP sharing would bring along, one that stays in its own CLI. --json keeps each note as it is."""
+
+    nowhere: dict[str, list[str]] = {"names": [], "servers": []}
+    nowhere_kiro = False
+    elsewhere: dict[str, tuple[list[str], tuple[str, ...], bool, str]] = {}  # server -> names, has, kiro, why it stays
+    hidden = set()
+    for item in plan.items:
+        for found in item.servers:
+            hidden.add(found.note)
+            if not found.has:
+                for field_name, value in (("names", item.name), ("servers", found.server)):
+                    if value not in nowhere[field_name]:
+                        nowhere[field_name].append(value)
+                nowhere_kiro = nowhere_kiro or found.kiro
+                continue
+            why = ""
+            if plan.mcp is not None:
+                server = next((entry for entry in plan.mcp.servers if entry.name == found.server), None)
+                if server is not None and set(found.missing) <= set(server.writes):
+                    continue  # it goes there in this same run
+                why = (server.held or next((server.blocked[label] for label in found.missing if label in server.blocked), "")
+                       if server is not None else "")
+            names_found, _has, kiro, _why = elsewhere.get(found.server, ([], found.has, False, why))
+            if item.name not in names_found:
+                names_found.append(item.name)
+            elsewhere[found.server] = (names_found, found.has, kiro or found.kiro, why)
+    lines = []
+    if nowhere["names"]:
+        servers = nowhere["servers"]
+        text = _server_sentence(nowhere["names"], f"{'servers' if len(servers) > 1 else 'a server'} no CLI here has "
+                                                  f"({', '.join(servers)})")
+        if nowhere_kiro:
+            many = len(nowhere["names"]) > 1
+            text += f", so {'their Kiro copies leave' if many else 'its Kiro copy leaves'} out those tools"
+        lines.append(text + ".")
+    for server, (names_found, has, kiro, why) in elsewhere.items():
+        many = len(names_found) > 1
+        if plan.mcp is None:
+            lines.append(_server_sentence(names_found, f"{server}, which only {_and(list(has))} "
+                                                       f"{'have' if len(has) > 1 else 'has'}; `agt share kinds add mcp` shares it."))
+        else:
+            text = _server_sentence(names_found, f"{server}, which stays in {_and(list(has))}" + (f" ({why})" if why else ""))
+            if kiro:
+                text += f", so {'their Kiro copies leave' if many else 'the Kiro copy leaves'} out its {server} tools"
+            lines.append(text + ".")
+    return plan.notices + lines + [note for item in plan.items for note in item.notes if note not in hidden]
+
+
+def table(plan: Plan, shown: list[Item]) -> list[ui.Line]:
+    """The item × folder grid for these items, with a legend of the marks it uses and its footnotes.
+
+    For a person whose terminal is narrower than the grid, one line per item instead; plain output always gets the grid.
+    """
 
     labels = [provider.label for provider in plan.included]
-    lines: list[str] = []
-    footnotes: list[str] = []
+    notes: list[str] = []
     used: set[str] = set()
-    width = max([len(item.name) for item in shown] + [10]) + 4
+    groups: list[tuple[str, list[tuple[str, list[tuple[str, str, str]]]]]] = []  # kind, [(name, [(label, state, mark)])]
     for kind in plan.options.kinds:
-        rows = [item for item in shown if item.kind == kind]
-        if not rows:
-            continue
-        lines += ["", f"{kind.capitalize():<{width}}" + "".join(f"{label:<12}" for label in labels)]
-        for item in rows:
+        rows = []
+        for item in (item for item in shown if item.kind == kind):
             cells = []
             for label in labels:
                 cell = item.cells.get(label, Cell(BLOCKED))
                 mark = MARKS[cell.state]
-                used.add(cell.state)
-                if cell.state in (BLOCKED, RELEASED) or (cell.state == HAS and cell.note):
-                    footnotes.append(f"{item.name} in {label}: {cell.note}")
-                    mark += str(len(footnotes))
-                cells.append(f"{mark:<12}")
-            lines.append(f"  {item.name:<{width - 2}}" + "".join(cells))
-    if shown:
-        extra = "".join(text for state, text in ((REMOVE, "  rm removed, with a backup"), (RELEASED, "  k kept as your own file"))
-                        if state in used)
-        lines += ["", LEGEND + extra]
-        lines += [f"  {index}. {note}" for index, note in enumerate(footnotes, 1)]
+                if cell.note and (cell.state in (BLOCKED, RELEASED) or cell.state == HAS):
+                    if cell.note not in notes:
+                        notes.append(cell.note)
+                    mark += str(notes.index(cell.note) + 1).translate(SUPERSCRIPT)
+                cells.append((label, cell.state, mark))
+            rows.append((item.name, cells))
+        if rows:
+            groups.append((kind, rows))
+    if not groups:
+        return []
+    widths = [max([ui.cell_len(label)] + [len(cells[index][2]) for _, rows in groups for _, cells in rows]) + 2
+              for index, label in enumerate(labels)]
+    name_width = max(ui.cell_len(name) for _, rows in groups for name, _ in rows) + 2
+    room = ui.width()
+    lines: list[ui.Line] = []
+    left_out = False
+    if room is None or 4 + name_width + sum(widths) - 2 <= room:
+        header: list[ui.Piece] = [" " * (4 + name_width)]
+        for label, width in zip(labels, widths):
+            header += [ui.bold(label), " " * (width - ui.cell_len(label))]
+        lines.append(header[:-1])
+        for kind, rows in groups:
+            lines.append(["  ", ui.bold(kind.capitalize())])
+            for name, cells in rows:
+                line: list[ui.Piece] = ["    ", name, " " * (name_width - ui.cell_len(name))]
+                for (_, state, mark), width in zip(cells, widths):
+                    used.add(state)
+                    line += [ui.Span(MARK_STYLES[state], mark), " " * (width - len(mark))]
+                lines.append(line[:-1])
+    else:  # one line per item, naming only the folders where something happens
+        name_width = max([ui.cell_len(name) for _, rows in groups for name, _ in rows if ui.cell_len(name) <= LIST_NAME],
+                         default=0) + 2
+        for kind, rows in groups:
+            lines.append(["  ", ui.bold(kind.capitalize())])
+            for name, cells in rows:
+                by_mark: dict[str, tuple[str, list[str]]] = {}
+                for label, state, mark in cells:
+                    if mark == MARKS[HAS]:
+                        left_out = True
+                        continue
+                    used.add(state)
+                    by_mark.setdefault(mark, (state, []))[1].append(label)
+                parts: list[ui.Piece] = []
+                order = [state for state, _ in MEANINGS]
+                for mark, (state, where) in sorted(by_mark.items(), key=lambda pair: order.index(pair[1][0])):
+                    parts += ["  "] if parts else []
+                    parts += [ui.Span(MARK_STYLES[state], mark), " " + ", ".join(where)]
+                parts = parts or [ui.muted("has it everywhere")]
+                if ui.cell_len(name) > LIST_NAME:
+                    lines += [["    ", name], [" " * (4 + name_width), *parts]]
+                else:
+                    lines.append(["    ", name, " " * (name_width - ui.cell_len(name)), *parts])
+    legend: list[ui.Piece] = []
+    for state, meaning in MEANINGS:
+        if state in used:
+            legend += ["  ", ui.Span(MARK_STYLES[state], MARKS[state]), " ", ui.muted(meaning)]
+    lines += ["", legend]
+    if left_out:
+        lines.append(["  ", ui.muted("Folders not named already have the item.")])
+    lines += [["  ", ui.muted(str(number).translate(SUPERSCRIPT) + " " + _sentence(note))]
+              for number, note in enumerate(notes, 1)]
     return lines
 
 
-def render_text(plan: Plan, command: str, *, header: str = "agt share: dry run, nothing was written.",
-                saves: bool = True) -> str:
-    """The plan as text. `saves` is false for a run that saves no answers (`sync`), so your saved picks aren't news."""
+def folder_lines(plan: Plan) -> list[ui.Line]:
+    """The CLI folders agt found, ticked where they share, with what each holds."""
 
-    lines = [header, "", "Folders:"]
     used = {provider.label for provider in plan.included}
+    rows = []
     for row in plan.rows:
         provider = row.provider
         mark = "[x]" if provider.label in used else "[-]" if row.reason else "[ ]"
-        detail = row.reason or f"{row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
-        lines.append(f"  {mark} {provider.label:<16} {short(provider.folder):<22} {detail}")
-    lines += table(plan, [item for item in plan.items if any(cell.state != HAS for cell in item.cells.values())])
+        agents, skills = row.holds.get("agents", 0), row.holds.get("skills", 0)
+        detail = row.reason or f"{agents} agent{'s' if agents != 1 else ''}, {skills} skill{'s' if skills != 1 else ''}"
+        rows.append([f"{mark} {provider.label}", ui.muted(short(provider.folder)), ui.muted(detail) if row.reason else detail])
+    return [ui.bold("Folders"), *ui.columns(rows, gap=3)]
+
+
+def conflict_lines(plan: Plan, saves: bool) -> list[ui.Line]:
+    """Each conflict's versions, one per line, and how to pick one: a flag for `enable`, `resolve` otherwise."""
+
+    if not plan.conflicts:
+        return []
+    count = len(plan.conflicts)
+    lines: list[ui.Line] = [[ui.bold(f"{count} conflict{'s' if count != 1 else ''}"),
+                             f": nothing is written for {'it' if count == 1 else 'them'} until you pick a version"]]
+    for item in plan.conflicts:
+        latest = newest(item)
+        lines.append(["  ", ui.Span("error-mark", "!"), " ", ui.bold(f"{item.kind}/{item.name}")])
+        lines += ui.columns([[", ".join(copy.labels), ui.muted(short(copy.path)), ui.ok("newer") if copy is latest else ""]
+                             for copy in item.copies], indent=6, gap=3)
+        if saves:
+            lines.append(["    ", ui.muted("Add one of these to the command below:")])
+            lines += ui.columns([[ui.muted("Pick one"), ui.cmd(f"--resolve {item.name}=<cli>")],
+                                 [ui.muted("Leave every copy"), ui.cmd(f"--resolve {item.name}=skip")]], indent=4, gap=3)
+        else:  # a sync takes no --resolve
+            lines += ui.columns([[ui.muted("Pick one"), ui.cmd(f"agt share resolve {item.name}")]], indent=4, gap=3)
+    return lines
+
+
+def apply_lines(command: str) -> list[ui.Line]:
+    """How to apply the plan: the plan id is in the command when there is one."""
+
+    if command.endswith("--dry-run"):  # `scan`: its plan is enable's, which a dry run shows
+        return ui.columns([[ui.muted("Turn it into a plan you can apply"), ui.cmd(command)]], gap=3)
+    return [ui.muted("To apply exactly this plan:" if "--if-plan" in command else "To apply it:"), ["  ", ui.cmd(command)]]
+
+
+def render(plan: Plan, command: str, *, header: ui.Line | None = None, saves: bool = True,
+           intro: str | None = None, apply: bool = True) -> list[ui.Line]:
+    """The plan for a person. `saves` is false for a run that saves no answers (`sync`): your saved picks aren't news
+    there, and neither are the folders, which you pick in `enable`. `intro`: a sentence on what sharing does, for a
+    first run. `apply` false leaves out the command that applies it, for a screen where Enter does."""
+
+    lines: list[ui.Line] = [header or [ui.bold("agt share enable"), "  ", ui.muted("dry run, nothing written")]]
+    if intro:
+        lines += ["", intro]
+    if saves:
+        lines += ["", *folder_lines(plan)]
+    grid = table(plan, [item for item in plan.items if any(cell.state != HAS for cell in item.cells.values())])
+    lines += ["", *grid] if grid else []
     renames = [item for item in plan.items if item.decision and item.decision.action == "rename"]
     if renames:
-        lines += ["", "Renames (agt renames every copy; each keeps its own fields, and what it replaces is backed up):"]
+        lines += ["", [ui.bold("Renames"), ui.muted(": agt renames every copy; each keeps its own fields, and what it "
+                                                    "replaces is backed up")]]
         for item in renames:
             where = sorted({label for change in plan.changes if change.name == item.name and change.kind == item.kind
                             for label in change.labels})
-            lines.append(f"  {item.renamed_from.partition('/')[2]} -> {item.name} ({item.kind}) in {', '.join(where)}")
+            lines.append([f"  {item.renamed_from.partition('/')[2]} -> {item.name} ", ui.muted(f"({item.kind}) in {', '.join(where)}")])
     if plan.conflicts:
-        lines += ["", "Conflicts (nothing is written for these until you pick a version):"]
-        for item in plan.conflicts:
-            latest = newest(item)
-            versions = ", ".join(f"{'/'.join(copy.labels)} {short(copy.path)}" + (" (newer)" if copy is latest else "")
-                                 for copy in item.copies)
-            lines.append(f"  {item.name} ({item.kind}): {versions}")
-            lines.append(f"    pick one with --resolve {item.name}=<label>, or --resolve {item.name}=skip to leave every copy as it is")
+        lines += ["", *conflict_lines(plan, saves)]
     if plan.waiting:
-        lines += ["", "Waiting:"] + [f"  {item.name}: {item.decision.reason}" for item in plan.waiting]
+        lines += ["", ui.bold("Waiting"), *ui.columns([[item.name, ui.muted(item.decision.reason)] for item in plan.waiting])]
     if plan.excluded:
-        lines += ["", "Not shared:"] + [f"  {line}" for line in _group_excluded(plan.excluded)]
-    notes = plan.notices + [note for item in plan.items for note in item.notes]
+        lines += ["", *not_shared_lines(plan.excluded)]
+    from agents_router.share import attention, status_view
+
+    notes = note_lines(plan) + status_view.kind_notes(plan)
     if notes:
-        lines += ["", "Notes:"] + [f"  {note}" for note in notes]
+        lines += ["", ui.bold("Notes")] + [["  ", *ui.inline(note)] for note in notes]
     saving = would_save(plan) if saves else []
     if saving and command:
-        lines += ["", "Would save in your user settings:"] + [f"  {line}" for line in saving]
-    if plan.new_folders:
-        lines += ["", "New folders: " + ", ".join(short(folder) for folder in plan.new_folders)]
-    if plan.instructions is not None:
-        lines += ["", plan.instructions.summary()]
-    if plan.mcp is not None:
-        lines += ["", plan.mcp.summary()]
-    if plan.hooks is not None:
-        lines += ["", plan.hooks.summary()]
-    if plan.plugins is not None:
-        lines += ["", plan.plugins.summary()]
+        lines += ["", ui.bold("Would save in your user settings")] + [f"  {line}" for line in saving]
+    rows = status_view.kind_rows(plan, named=True)
+    if rows:
+        lines += ["", *ui.columns(rows, gap=3)]
+    waits = attention.grouped(attention.entries(plan, State()))
+    # The agent and skill conflicts are listed above; status lists the rest.
+    above = {item.key for item in plan.conflicts}
+    rest = [entry for entry in waits if not (entry["kind"] == "conflict" and entry["item"] in above)]
+    more = " more" if len(rest) < len(waits) else ""
     count = len(plan.changes)
     extra = (plan.instructions is not None and (plan.instructions.writes or plan.instructions.conflict)) or \
         (plan.mcp is not None and (plan.mcp.writes or plan.mcp.conflicts)) or \
         (plan.plugins is not None and plan.plugins.writes)
-    if count or not extra:
-        lines += ["", f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
-                      f"{'s' if len(plan.folders_changed) != 1 else ''}."]
-    else:  # the summaries above say what the other kinds write; "0 changes" would contradict them
-        lines += ["", "No agent or skill changes."]
-    if (count or plan.conflicts or saving or extra) and command:
-        lines.append(f"Plan {plan.digest}. To apply it:")
-        lines.append(f"  {command}")
-    return "\n".join(lines)
+    new = [short(folder) for folder in plan.new_folders]
+    if count:
+        total = ui.bold(f"{count} change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
+                        f"{'s' if len(plan.folders_changed) != 1 else ''}")
+        lines += ["", [total, f", and {len(new)} new folder{'s' if len(new) != 1 else ''}: ", ui.muted(", ".join(new))]
+                  if new else [total, "."]]
+    else:  # the summaries above say what the other kinds write; "no changes" would contradict them
+        lines += ["", "No agent or skill changes." if extra else ui.bold("No changes.")]
+    if (count or plan.conflicts or saving or extra) and command and apply:
+        lines += apply_lines(command)
+    if rest:  # a sync's dry run shows what waits now; any other, what will once its settings are saved
+        now = not saves and command == "agt share sync"
+        things = f"{len(rest)}{more} thing{'s' if len(rest) != 1 else ''} "
+        lines += ["", ["  ", ui.warn(things + (f"wait{'s' if len(rest) == 1 else ''} for you" if now
+                                               else "will wait for you once you apply this plan")),
+                       ": ", ui.code("agt share status"), f" lists {'them' if len(rest) != 1 else 'it'}" + ("." if now else " then.")]]
+    return lines
 
 
 def proposal(plan: Plan, command: str, *, saves: bool = True) -> dict[str, Any]:

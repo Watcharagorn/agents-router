@@ -14,7 +14,7 @@ from test_share_items import ItemBase
 from test_share_sync import age
 
 from agents_router import cli
-from agents_router.share import engine, mcp, providers, settings, watch
+from agents_router.share import commands, engine, mcp, providers, settings, watch
 from agents_router.share.plan import Options
 from agents_router.share.state import State
 
@@ -117,7 +117,7 @@ class McpTests(ItemBase):
 
     def test_a_server_in_one_cli_reaches_the_others(self):
         out = self.enable("--mcp", "on")
-        self.assertIn("mcp/notes in", out)
+        self.assertIn("  + mcp/notes                        claude-lab, codex, kiro\n", out)
         for label in ("claude-lab", "codex", "kiro"):
             self.assertEqual(self.servers(label).get("notes"), NOTES, label)
             self.assertNotIn("agents-router", self.servers(label))  # agt's own server never goes
@@ -231,9 +231,17 @@ class McpTests(ItemBase):
         codex = self.user / ".codex" / "config.toml"
         codex.write_text(codex.read_text().replace('args = ["-y", "notes-mcp"]', 'args = ["codex-edit"]'))
         status = self.share("status", code=1)
-        self.assertIn("differ between CLIs (notes)", status)
+        self.assertIn("MCP servers   1 differs between CLIs", status)
+        self.assertRegex(status, r"\n  ! MCP server notes, in [a-z, -]+\n    The copies were edited differently\.\n"
+                                 r"    Pick a version +agt share resolve mcp/notes\n")
         out = json.loads(self.share("resolve", "mcp/notes", "--json", code=3))
         self.assertEqual(out["error"], "needs_choice")
+        prompts, answers = [], iter(["kirro", "q"])
+        with patch.object(commands, "_interactive", lambda: True), \
+                patch("builtins.input", lambda prompt: prompts.append(prompt) or next(answers)):
+            self.assertIn("Nothing was changed.", self.share("resolve", "mcp/notes"))
+        self.assertEqual(len(prompts), 2)  # a typo asks again; q leaves
+        self.assertTrue(prompts[0].endswith(" · s stop sharing it · q quit: "), prompts[0])
         self.share("resolve", "mcp/notes", "--prefer", "kiro")
         for label in ("claude", "claude-lab", "codex"):
             self.assertEqual(self.servers(label)["notes"]["args"], ["kiro-edit"], label)
@@ -241,7 +249,7 @@ class McpTests(ItemBase):
     def test_a_pick_keeps_a_server_in_one_cli_and_takes_agts_copies_out(self):
         self.enable("--mcp", "on")
         out = self.share("pick", "mcp/notes", "--only", "claude")
-        self.assertIn("- mcp/notes in", out)
+        self.assertIn("  - mcp/notes   claude-lab, codex, kiro\n", out)
         for label in ("claude-lab", "codex", "kiro"):
             self.assertNotIn("notes", self.servers(label), label)
         self.assertEqual(self.servers("claude")["notes"], NOTES)
@@ -329,7 +337,7 @@ class McpTests(ItemBase):
         self.assertTrue(settings.load().mcp)
         self.assertEqual(self.servers("kiro")["notes"], NOTES)
         out = self.share("kinds", "remove", "mcp")
-        self.assertIn("every CLI keeps the servers it has", out)
+        self.assertIn("Every CLI keeps the servers it has.", out)
         self.assertFalse(settings.load().mcp)
         self.assertEqual(self.servers("kiro")["notes"], NOTES)
         with contextlib.redirect_stdout(io.StringIO()):

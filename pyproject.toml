@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agents-router"
-version = "0.8.1"
+version = "0.9.1"
 description = "Keep agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and run subagents in those CLIs on your own accounts."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,7 +29,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development",
 ]
-dependencies = []
+dependencies = ["rich>=14.3.4,<16", "rich-argparse>=1.8,<2"]
 
 [project.urls]
 Homepage = "https://github.com/Watcharagorn/agents-router"
@@ -37,7 +37,7 @@ Repository = "https://github.com/Watcharagorn/agents-router"
 Documentation = "https://github.com/Watcharagorn/agents-router/blob/main/docs/README.md"
 
 [project.scripts]
-agt = "agents_router.cli:main"
+agt = "agents_router.entry:main"
 agents-router-mcp = "agents_router.mcp_server:main"
 
 [tool.setuptools.packages.find]

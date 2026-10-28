@@ -24,7 +24,9 @@ def fake_launchd(root: Path) -> dict[str, str]:
 
 # Variables of the session that runs the tests (an agent CLI, an agt worker, a git hook).
 DROPPED_PREFIXES = ("CLAUDE", "CODEX_", "AGY_", "AGT_", "KIRO_", "ANTHROPIC_", "OPENAI_")
-DROPPED = {"AGY_CMD", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}
+DROPPED = {"AGY_CMD", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+           # and the terminal's, so whether output gets color never depends on where the tests run
+           "NO_COLOR", "FORCE_COLOR", "CLICOLOR_FORCE", "TTY_COMPATIBLE", "TTY_INTERACTIVE", "COLUMNS", "TERM"}
 OWN_COMMANDS = ("agt", "agents-router-mcp", "csa", "cli-subagents-mcp")
 
 

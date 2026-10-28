@@ -1,6 +1,6 @@
 {
   "name": "agents-router",
-  "version": "0.8.1",
+  "version": "0.9.1",
   "description": "Keep agents, skills, MCP servers and instructions in sync between Claude Code, Codex, Kiro and Antigravity, and start subagents in those CLIs under your own accounts, with one shared setup across them.",
   "author": { "name": "Watcharagorn", "url": "https://github.com/Watcharagorn" },
   "homepage": "https://github.com/Watcharagorn/agents-router",

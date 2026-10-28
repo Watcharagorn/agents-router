@@ -26,8 +26,8 @@ class AttentionTests(ItemBase):
         self.assertEqual(self.entries()["conflict:skills/gamma-apikey"]["since"], since)
         code, out = self.run_share("status")
         self.assertEqual(code, 1)
-        self.assertIn("Conflict: gamma-apikey differs between", out)
-        self.assertIn("Your choice: `agt share resolve gamma-apikey`.", out)
+        self.assertRegex(out, r"\n  ! skill gamma-apikey, in [a-z, -]+\n    The copies were edited differently\.\n"
+                              r"    Pick a version +agt share resolve gamma-apikey\n")
         self.share("resolve", "gamma-apikey", "--prefer", "claude-lab")
         self.assertNotIn("conflict:skills/gamma-apikey", self.entries())
 
@@ -107,7 +107,8 @@ class FreezeTests(ItemBase):
         self.assertEqual(entry["fix"], ["agt share sync --allow-deletes kiro", "agt share sync --refill kiro"])
         code, out = self.run_share("status")
         self.assertEqual(code, 1)
-        self.assertIn("Frozen: 4 of 7 skills disappeared from kiro at once", out)
+        self.assertIn("  ! skills in kiro\n    4 of 7 skills disappeared from kiro at once", out)
+        self.assertRegex(out, r"\n    Keep them out +agt share sync --allow-deletes kiro\n    Put them back +agt share sync --refill kiro\n")
 
     def test_refill_puts_the_copies_back(self):
         self.share("sync")
@@ -140,6 +141,6 @@ class OriginalsDontFreezeTests(ItemBase):
         self.assertEqual(self.folders(), before)
         code, out = self.run_share("status")
         self.assertEqual(code, 1)
-        self.assertNotIn("Frozen", out)
-        self.assertEqual(out.count("Waiting to be deleted: helper-"), 4)
+        self.assertNotIn("disappeared from", out)
+        self.assertEqual(out.count("Remove its copies   agt share rm helper-"), 4)
 

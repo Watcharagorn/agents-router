@@ -39,7 +39,7 @@ import time
 import tomllib
 from typing import Any, Iterator
 
-from agents_router import fsutil, levels
+from agents_router import fsutil, levels, ui
 from agents_router.config import state_dir
 
 KEEP_MONTHS = 12
@@ -404,11 +404,13 @@ def command(args: Any) -> int:
                           "other_workspaces": len(others)}, indent=2, ensure_ascii=False))
         return 0
     if not shown:
-        print("Nothing logged" + (f" in {workspace.root}" if workspace else "") + (" in that time." if cutoff else " yet."))
+        ui.out(["Nothing logged", *([" in ", ui.path(workspace.root)] if workspace else []), " in that time." if cutoff else " yet."])
     for entry in shown:
-        print(line(entry))
+        when, _, what = line(entry).partition("  ")
+        ui.out([ui.muted(when), "  ", what])
     if more:
-        print(f"{more} more in {len(others)} other workspace{'s' if len(others) != 1 else ''}: --all")
+        ui.out([ui.muted(f"{more} more in {len(others)} other workspace{'s' if len(others) != 1 else ''}: "),
+                ui.code("agt log --all")])
     return 0
 
 

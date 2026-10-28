@@ -35,14 +35,33 @@ class SetupScreenTests(ItemBase):
         self.assertTrue(command.startswith(f"agt setup --yes --if-plan {proposal['plan']} --host claude"), command)
         self.assertIn("--resolve gamma-apikey=skip", command)
         out = self.setup(*command.split()[2:])
-        self.assertIn("agt share: wrote", out)
-        self.assertGreater(out.index("Still needed from you"), out.index("agt share: wrote"))  # last, once
+        self.assertIn("agt setup  ✓ done\n\n  +  Claude Code  installed the agents-router plugin\n"
+                      "  +  Sharing      9 copies in 4 folders\n      + agents/dana ", out)  # one headline, one list
+        self.assertIn("\n  agt keeps them the same from now on: every minute, and at each session start in Claude Code.\n", out)
+        self.assertNotIn("Saved your answers", out)
+        self.assertNotIn("Next:", out)
+        self.assertGreater(out.index("Still needed from you"), out.index("  +  Sharing"))  # last, once
         self.assertEqual(out.count("Still needed from you"), 1)
         saved = settings.load()
         self.assertTrue(saved.enabled)
         self.assertEqual(saved.off, {"skills/gamma-apikey"})
         self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").exists())
         self.assertTrue((self.user / "Library" / "LaunchAgents" / f"{triggers.LABEL}.plist").exists())
+
+    def test_a_person_gets_a_short_apply_command_that_applies(self):
+        preview = self.setup("--dry-run")
+        self.assertIn("! skills/gamma-apikey differs between folders", preview)
+        self.assertRegex(preview, r"Pick a copy first +agt setup --dry-run --resolve gamma-apikey=<cli>")
+        self.assertNotIn("In one command", preview)  # the plan id can't stand for an answer not given yet
+        picked = self.setup("--dry-run", "--resolve", "gamma-apikey=skip")
+        command = next(line.split("In one command", 1)[1].strip() for line in picked.splitlines() if "In one command" in line)
+        self.assertRegex(command, r"^agt setup --yes --if-plan [0-9a-f]{12} --host claude --resolve gamma-apikey=skip$")
+        self.assertNotIn("--rules", command)  # only the flags you gave
+        out = self.setup(*command.split()[2:])
+        self.assertIn("  +  Sharing      9 copies in 4 folders\n", out)
+        self.assertLess(out.index("Still needed from you"), out.index("Then try your first delegated job"))
+        self.assertTrue(out.rstrip().endswith("`agt` on its own shows what is set up and what to do next."), out)
+        self.assertIn("Nothing was written: the plan changed", self.setup(*command.split()[2:-2], code=1))
 
     def test_kiro_without_a_login_is_still_needed(self):
         self.assertNotIn("kiro-cli login", self.setup("--dry-run"))
@@ -81,5 +100,5 @@ class SetupScreenTests(ItemBase):
         with patch.object(commands, "_interactive", lambda: True), \
                 patch("builtins.input", lambda prompt: next(answers)):
             out = self.setup()
-        self.assertIn("Nothing is written until you press Enter", out)
+        self.assertIn("agt setup  nothing is written until you press Enter", out)
         self.assertTrue(settings.load().enabled)

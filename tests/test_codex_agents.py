@@ -90,7 +90,7 @@ class CodexAgentInstallTests(SetupBase):
         for runtime in RUNTIMES:
             name = f"agt-{runtime}.toml"
             self.assertEqual((self.roles() / name).read_bytes(), TEMPLATES.joinpath(name).read_bytes())
-        self.assertIn("installed relay agent agt-codex", out)
+        self.assertIn("relay agents agt-claude, agt-codex, agt-antigravity in ", out)
 
     def test_enabled_plugin_gets_missing_roles_without_reinstalling_plugin(self):
         self.run_cli("--host", "codex")
@@ -129,7 +129,7 @@ class CodexAgentInstallTests(SetupBase):
     def test_dry_run_lists_roles_without_creating_the_agents_directory(self):
         code, out = self.run_cli("--host", "codex", "--dry-run")
         self.assertEqual(code, 0, out)
-        self.assertIn("would install relay agent agt-claude", out)
+        self.assertIn("relay agents agt-claude, agt-codex, agt-antigravity in ", out)
         self.assertFalse(self.roles().exists())
 
     def test_failed_plugin_install_does_not_install_roles(self):

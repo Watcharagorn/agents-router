@@ -98,7 +98,7 @@ class HookTests(ItemBase):
         self.assertEqual(self.codex_hooks(), {})
         self.assertIsNone(json.loads(self.share("status", "--json"))["hooks"])
         out = self.share("kinds", "add", "hooks")
-        self.assertIn("Waiting for your approval", out)
+        self.assertIn("  Found   pretooluse-guard-shell, sessionstart-echo\n", out)
         self.assertIn(NAME, out)
         self.assertNotIn("share hook-run", json.dumps(self.codex_hooks()))
 

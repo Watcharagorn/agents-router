@@ -13,15 +13,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from importlib.resources import files
+import itertools
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import sys
 import sysconfig
 import time
 from typing import Any
 
+from agents_router import ui
 from agents_router.config import NAME_RE, Account, Config, save_accounts
 from agents_router.fsutil import copy_exclusive, is_link, no_window_kwargs, same_path, write_json, write_private
 from agents_router.runtimes import get_runtime
@@ -61,6 +65,7 @@ class Report:
     failed: list[str] = field(default_factory=list)
     todo: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    checked: list[tuple[str, str]] = field(default_factory=list)  # (what, how it stands): nothing done, nothing wrong
 
     def add_todo(self, text: str) -> None:
         if text not in self.todo:
@@ -78,6 +83,18 @@ def run_command(argv: list[str], env: dict[str, str] | None, timeout: int = 300)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", f"{type(exc).__name__}: {exc}"
     return completed.returncode, completed.stdout or "", completed.stderr or ""
+
+
+def _run_shown(what: str, argv: list[str], env: dict[str, str] | None, shown: str, timeout: int = 300) -> tuple[int, str, str]:
+    """`run_command` for a step setup or update reports: a person at a terminal sees it run (`what`, the command and
+    its time, gone when it ends); everyone else gets a `$ command` line first, as a log."""
+
+    if not ui.live_on(sys.stderr):
+        print(f"$ {shown}", flush=True)
+        return run_command(argv, env, timeout)
+    words = " ".join(itertools.takewhile(lambda word: word.replace("-", "").isalpha(), shown.split()))
+    with ui.spinner([what, "   ", ui.muted("running "), ui.code(words)]):
+        return run_command(argv, env, timeout)
 
 
 def _json(text: str) -> Any:
@@ -289,8 +306,7 @@ def install_plugin(config: Config, host: str, report: Report, claude_route: str 
         if report.dry_run:
             report.done.append(f"{label}: would run `{shown}`")
             continue
-        print(f"$ {shown}", flush=True)
-        code, stdout, stderr = run_command([*command, *args], env)
+        code, stdout, stderr = _run_shown(label, [*command, *args], env, shown)
         if code != 0:
             detail = _last_line(stdout, stderr)
             if host == "claude" and claude_route == "auto":
@@ -577,29 +593,89 @@ def run_setup(config: Config, hosts: list[str], accounts: list[str], dry_run: bo
     return (1 if report.failed else 0), report
 
 
-def format_report(report: Report, name: str = "setup") -> str:
-    title = f"Agents Router {name}" + (" (dry run: nothing was changed)" if report.dry_run else "")
-    lines = [title, ""]
-    sections = (
-        ("Planned" if report.dry_run else "Done", report.done),
-        ("Already in place", report.unchanged),
-        ("Failed", report.failed),
-        ("Notes", report.notes),
-    )
-    for heading, items in sections:
-        if items:
-            lines.append(f"{heading}:")
-            lines += [f"  - {item}" for item in items]
-            lines.append("")
-    if report.todo:
-        lines.append("Still needed from you:")
-        lines += [f"  {index}. {item}" for index, item in enumerate(report.todo, 1)]
+REPORT_LABELS = ("Claude Code", "Codex", "Antigravity")
+RAN = re.compile(r"^(?:would run|ran) `(.+)`$")
+RELAY = re.compile(r"^(would install|installed) relay agent (\S+) at (\S+)(.*)$")
+
+
+def report_rows(items: list[str], mark: ui.Span, ran_as: str | None = None) -> list[list[ui.Line]]:
+    """One row per CLI: its plugin commands under its name, its relay agents on one line. `ran_as`: the commands a
+    CLI ran (shown as they ran, above the report) become this one row."""
+
+    rows: list[list[ui.Line]] = []
+    said: set[str] = set()
+    relays: dict[tuple[str, str, str], list[str]] = {}
+    last = None
+    for item in items:
+        label, sep, rest = item.partition(": ")
+        if not sep or label not in REPORT_LABELS:
+            label, rest = "", item
+        relay = RELAY.match(rest)
+        if relay:
+            key = (label, relay.group(1), ui.short_path(Path(relay.group(3)).parent))
+            if key not in relays:
+                relays[key] = []
+                rows.append([mark, ui.muted(label), key])  # filled in below, once every agent is known
+            relays[key].append(relay.group(2) + relay.group(4))
+            continue
+        ran = RAN.match(rest)
+        if ran and ran_as and rest.startswith("ran "):
+            if label in said:
+                continue
+            said.add(label)
+            ran = None
+            rest = ran_as
+        text: ui.Line = ui.muted(ran.group(1)) if ran else ui.inline(ui.tilde(rest))
+        if not label:  # a line that isn't about one CLI takes the label's place
+            rows.append([mark, text])
+        else:
+            rows.append(["", "", text] if label == last else [mark, ui.muted(label), text])
+        last = label
+    for row in rows:
+        if len(row) == 3 and isinstance(row[2], tuple) and not isinstance(row[2], ui.Span):  # a relay group's key
+            label, verb, folder = row[2]
+            names = relays[row[2]]
+            row[2] = f"{'relay agents' if len(names) > 1 else 'relay agent'} {', '.join(names)} in {folder}"
+    return rows
+
+
+def still_needed(todo: list[str], heading: str = "Still needed from you") -> list[ui.Line]:
+    """What's left for you (logins and restarts), numbered, with home paths written as ~."""
+
+    if not todo:
+        return []
+    return ["", ui.bold(heading), *(["  ", f"{n}. ", *ui.inline(ui.tilde(item))] for n, item in enumerate(todo, 1))]
+
+
+def report_lines(report: Report, name: str = "setup", *, todo: bool = True, footer: bool = True) -> list[ui.Line]:
+    if report.dry_run:
+        outcome: ui.Line = ui.muted("dry run, nothing changed")
+    elif report.failed:
+        outcome = ui.error(f"{len(report.failed)} failed")
     else:
-        lines.append("Nothing left for you to do.")
-    lines += ["", "Check everything with `agt doctor` (add --runtime codex for Codex accounts)."]
-    if name == "setup":
-        lines.append("Optional: delegation rules for your agent. See `agt rules`; install with `agt rules --install`.")
-    return "\n".join(lines)
+        outcome = ui.ok("✓ done")
+    lines: list[ui.Line] = [[ui.bold(f"agt {name}"), "  ", outcome]]
+    ran_as = "installed the agents-router plugin" if name == "setup" and not report.dry_run else None
+    rows = report_rows(report.done, ui.ok("+"), ran_as) + report_rows(report.unchanged, ui.muted("·")) \
+        + report_rows(report.failed, ui.Span("error-mark", "✗"))
+    if rows:
+        lines += ["", *ui.columns(rows, gap=2)]
+    if report.checked:
+        lines += ["", *ui.columns([[ui.muted(what), ui.inline(how)] for what, how in report.checked], gap=3)]
+    if report.notes:
+        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline(ui.tilde(note))] for note in report.notes)]
+    if todo:
+        lines += still_needed(report.todo)
+    if footer:
+        lines += ["", [ui.muted("Check everything with "), ui.code("agt doctor"), ui.muted(".")]]
+        if name == "setup":
+            lines.append([ui.muted("Optional: delegation rules for your agent. See "), ui.code("agt rules"),
+                          ui.muted("; install with "), ui.code("agt rules --install"), ui.muted(".")])
+    return lines
+
+
+def format_report(report: Report, name: str = "setup") -> str:
+    return "\n".join(ui.plain(line) for line in report_lines(report, name))
 
 
 # Update ----------------------------------------------------------------------
@@ -659,7 +735,7 @@ def detect_install(prefix: str, location: str | None, direct_url: str | None, us
     if "venvs" in parts and any("pipx" in part for part in parts):
         return "pipx", [shutil.which("pipx") or "pipx", "install", "--force", source]
     if "uv" in parts and "tools" in parts:
-        return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", source]
+        return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", "--compile-bytecode", source]
     if user_site and Path(location).resolve().is_relative_to(Path(user_site).resolve()):
         return "pip-user", [executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-deps", source]
     return "pip", [executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", source]
@@ -724,8 +800,7 @@ def update_package(report: Report) -> None:
     if _replaces_running_program(method):
         report.add_todo(f"Update the agt package now with `{shown}` (Windows can't replace agt while it's running).")
         return
-    print(f"$ {shown}", flush=True)
-    code, stdout, stderr = run_command(argv, None, timeout=600)
+    code, stdout, stderr = _run_shown("updating agt", argv, None, shown, timeout=600)
     if code != 0:
         report.failed.append(f"agt: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
         return
@@ -774,8 +849,7 @@ def update_plugin(config: Config, host: str, report: Report) -> bool:
         if report.dry_run:
             report.done.append(f"{label}: would run `{shown}`")
             continue
-        print(f"$ {shown}", flush=True)
-        code, stdout, stderr = run_command([*command, *args], env)
+        code, stdout, stderr = _run_shown(label, [*command, *args], env, shown)
         if code != 0:
             report.failed.append(f"{label}: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
             return True
@@ -795,5 +869,5 @@ def run_update(config: Config, hosts: list[str], dry_run: bool = False, package:
     candidates = HOSTS if not hosts or "auto" in hosts else [host for host in HOSTS if host in hosts]
     found = [host for host in candidates if update_plugin(config, host, report)]
     if not found:
-        report.unchanged.append("No host has the agents-router plugin installed. Run `agt setup` to install it.")
+        report.checked.append(("Plugin", "no host has it yet; `agt setup` installs it"))
     return (1 if report.failed else 0), report

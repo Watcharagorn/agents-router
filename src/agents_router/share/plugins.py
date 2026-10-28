@@ -48,6 +48,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -55,7 +56,7 @@ import re
 import tomllib
 from typing import Any
 
-from agents_router import fsutil
+from agents_router import fsutil, ui
 from agents_router.share import engine, mcp, providers
 from agents_router.share.state import State, share_dir
 
@@ -467,11 +468,16 @@ class Plan:
     def conflicts(self) -> list[Entry]:
         return []  # a plugin has one version: it's there or it isn't
 
-    def notes(self) -> list[str]:
-        found = [f"{entry.name} in {label}: {note}" for entry, label in self.writes for note in entry.notes.get(label, [])]
+    def notes(self, restart: bool = True, done: set[tuple[str, str]] | None = None) -> list[str]:
+        """What to know about the installs. `restart`: the sentence on loading them, which a person's report says
+        in its Next line instead. `done`: (plugin id, label) of the installs that went in, when a report tells only
+        about those."""
+
+        writes = [(entry, label) for entry, label in self.writes if done is None or (entry.id, label) in done]
+        found = [f"{entry.name} in {label}: {note}" for entry, label in writes for note in entry.notes.get(label, [])]
         found += [f"{entry.name} in {label}: you said yes to this: {'; '.join(entry.approved[label])}"
-                  for entry, label in self.writes if label in entry.approved]
-        if self.writes:
+                  for entry, label in writes if label in entry.approved]
+        if writes and restart:
             found.append("Restart a CLI that got a plugin (or run /reload-plugins in Claude Code) to load it.")
         return found
 
@@ -695,7 +701,14 @@ def _shown_command(stdout: str) -> dict[str, str] | None:
     return None
 
 
-def run_steps(plugin: Plugin, label: str, provider: providers.Provider, commands: list[list[str]]) -> tuple[bool, list[str]]:
+def _doing(cli: str, step: list[str]) -> str:
+    """The command's words without its arguments, for the step that runs: `codex plugin marketplace add`."""
+
+    return " ".join([cli, *itertools.takewhile(str.isalpha, step)])
+
+
+def run_steps(plugin: Plugin, label: str, provider: providers.Provider, commands: list[list[str]],
+              display: ui.Steps | None = None) -> tuple[bool, list[str]]:
     """Run the install commands with the CLI's own binary, then check `plugin list` shows it. (ok, lines)"""
 
     from agents_router import setup
@@ -709,6 +722,8 @@ def run_steps(plugin: Plugin, label: str, provider: providers.Provider, commands
     lines = []
     for step in commands:
         shown = " ".join([provider.cli, *step])
+        if display is not None:
+            display.now(_doing(provider.cli, step))
         code, stdout, stderr = setup.run_command([*binary, *step], env, timeout=600)
         if code != 0:
             command = _shown_command(stdout) if step[1] == "install" else None
@@ -720,6 +735,8 @@ def run_steps(plugin: Plugin, label: str, provider: providers.Provider, commands
                 _remember(plugin, label, message)
             return False, lines + [message]
         lines.append(f"ran `{shown}`")
+    if display is not None:
+        display.now(f"{provider.cli} plugin list")
     if _listed(binary, env, plugin.id) is False:
         message = f"the commands worked, but `{provider.cli} plugin list` doesn't show {plugin.id}"
         _remember(plugin, label, message)
@@ -728,8 +745,13 @@ def run_steps(plugin: Plugin, label: str, provider: providers.Provider, commands
     return True, lines
 
 
-def uninstall(plugin_id: str, provider: providers.Provider) -> tuple[bool, str]:
-    """`claude plugin uninstall --scope user` or `codex plugin remove`, then check `plugin list` no longer shows it."""
+def uninstall(plugin_id: str, provider: providers.Provider, display: ui.Steps | None = None) -> tuple[bool, str]:
+    """`claude plugin uninstall --scope user` or `codex plugin remove`, then check `plugin list` no longer shows it.
+
+    When the command fails, `plugin list` decides: a plugin it doesn't show is gone already (the CLI says "not
+    installed", in words that change between versions), and retrying could never work. A list agt can't read keeps
+    it a failure.
+    """
 
     from agents_router import setup
     from agents_router.config import load_config
@@ -740,9 +762,17 @@ def uninstall(plugin_id: str, provider: providers.Provider) -> tuple[bool, str]:
         return False, f"the {provider.cli} command isn't installed"
     env = _env(provider)
     step = ["plugin", "uninstall", plugin_id, "--scope", "user"] if provider.cli == "claude" else ["plugin", "remove", plugin_id]
+    if display is not None:
+        display.now(_doing(provider.cli, step))
     code, stdout, stderr = setup.run_command([*binary, *step], env, timeout=300)
     if code != 0:
+        if display is not None:
+            display.now(f"{provider.cli} plugin list")
+        if _listed(binary, env, plugin_id) is False:
+            return True, f"already gone: {provider.cli} plugin list doesn't show it"
         return False, f"`{' '.join([provider.cli, *step])}` failed (exit {code}): {setup._last_line(stdout, stderr)}"
+    if display is not None:
+        display.now(f"{provider.cli} plugin list")
     if _listed(binary, env, plugin_id):
         return False, f"`{' '.join([provider.cli, *step])}` worked, but `{provider.cli} plugin list` still shows it"
     return True, ""
@@ -762,7 +792,20 @@ def _forget(plugin_id: str, label: str) -> None:
         fsutil.write_json(failures_path(), data)
 
 
-def apply(plan: Plan, current: State) -> list[Written]:
+def _removing(plan: Plan, entry: Entry) -> list[str]:
+    labels = plan.removing[entry.id]
+    return sorted(set(entry.copies) if labels is None else labels & set(entry.copies))
+
+
+def counts(plan: Plan) -> tuple[int, int]:
+    """How many installs and uninstalls `apply` runs."""
+
+    return (sum(len([label for label in entry.writes if label not in plan.later]) for entry in plan.entries
+                if entry.id not in plan.removing or entry.decision is not None),
+            sum(len(_removing(plan, entry)) for entry in plan.entries if entry.id in plan.removing))
+
+
+def apply(plan: Plan, current: State, display: ui.Steps | None = None) -> list[Written]:
     """Install or uninstall each plugin where it goes, and record it. Call it holding the share lock.
 
     A plugin's record moves on only when all of its installs worked, so after a failure the next run that may
@@ -777,10 +820,13 @@ def apply(plan: Plan, current: State) -> list[Written]:
         if entry.id in plan.removing:
             # `agt share rm` (every copy) or a pick that leaves CLIs out (the copies agt made there).
             labels = plan.removing[entry.id]
-            gone = sorted(set(entry.copies) if labels is None else labels & set(entry.copies))
             results = []
-            for label in gone:
-                ok, message = uninstall(entry.id, plan.by_label[label])
+            for label in _removing(plan, entry):
+                if display is not None:
+                    display.start(entry.key, ui.muted(label))
+                ok, message = uninstall(entry.id, plan.by_label[label], display)
+                if display is not None:
+                    display.finish(ok, ui.Span("muted", "-"))
                 results.append(Written(entry.id, label, plan.by_label[label].folder, "remove", ok, message))
             done += results
             if labels is None:
@@ -807,8 +853,12 @@ def apply(plan: Plan, current: State) -> list[Written]:
             results = []
             for label in [label for label in entry.writes if label not in plan.later]:
                 provider, source = plan.by_label[label], entry.copies[entry.sources[label]]
+                if display is not None:
+                    display.start(entry.key, ui.muted(label))
                 commands = steps(source, provider.cli, plan.holdings[label].markets, entry.accept.get(label))
-                ok, lines = run_steps(source, label, provider, commands)
+                ok, lines = run_steps(source, label, provider, commands, display)
+                if display is not None:
+                    display.finish(ok)
                 message = f"installed from {source.marketplace}" if ok else lines[-1]
                 results.append(Written(entry.id, label, provider.folder, "copy", ok, message))
             done += results
@@ -829,16 +879,19 @@ def attention(plan: Plan) -> list[dict[str, Any]]:
         found.append({"id": f"plugin:{entry.key}:{label}", "kind": "plugin", "item": entry.key, "who": "choice",
                       "message": f"plugin {entry.name} waits for your answer before it goes to {label}: "
                                  + "; ".join(entry.asks[label]),
-                      "fix": [f"agt share pick {entry.key} --in {label}", f"agt share pick {entry.key} --not-in {label}"]})
+                      "fix": [f"agt share pick {entry.key} --in {label}", f"agt share pick {entry.key} --not-in {label}"],
+                      "label": label, "why": "; ".join(entry.asks[label])})
     for entry in plan.entries:
         for label, message in sorted(entry.failing.items()):
             found.append({"id": f"failing:{entry.key}:{label}", "kind": "failing", "item": entry.key, "who": "action",
                           "message": f"agt couldn't install plugin {entry.name} in {label}: {message}",
-                          "fix": [f"agt share pick {entry.key} --in {label}", f"agt share pick {entry.key} --not-in {label}"]})
+                          "fix": [f"agt share pick {entry.key} --in {label}", f"agt share pick {entry.key} --not-in {label}"],
+                          "label": label, "why": message})
     for entry in plan.pending:
         found.append({"id": f"delete:{entry.key}", "kind": "delete", "item": entry.key, "who": "choice",
                       "message": f"plugin {entry.name} was uninstalled in {', '.join(entry.decision.labels)}; "
-                                 "agt's copies of it wait", "fix": [f"agt share rm {entry.key}"]})
+                                 "agt's copies of it wait", "fix": [f"agt share rm {entry.key}"],
+                      "folders": list(entry.decision.labels)})
     for problem in plan.problems:
         found.append({"id": f"unreadable:plugins:{problem.partition(':')[0]}", "kind": "unreadable", "item": "plugins",
                       "who": "action", "message": f"agt can't read plugins in {problem}", "fix": []})
@@ -892,25 +945,6 @@ def offers(included: list[providers.Provider], off: set[str] | None = None, curr
                 offer.steps = steps(source, cli, plan.holdings[label].markets, entry.accept.get(label))
             found.append(offer)
     return found
-
-
-def summary(found: list[Offer]) -> list[str]:
-    ready = [offer for offer in found if not offer.why_not and not offer.failed]
-    lines = [f"Plugins: {len(ready)} could be installed in another CLI"
-             + (f" ({', '.join(f'{offer.plugin.name} in {offer.label}' for offer in ready)}); "
-                "`agt share plugins apply` asks you about each." if ready else ".")]
-    lines += [f"  {offer.plugin.name} in {offer.label}: {'; '.join(offer.asks)}" for offer in ready if offer.asks]
-    lines += [f"  {offer.plugin.name} in {offer.label}: {offer.why_not}" for offer in found if offer.why_not]
-    lines += [f"  {offer.plugin.name} in {offer.label}: the last install failed ({offer.failed}); agt tries again when "
-              "its version changes, or name it: `agt share plugins apply " + offer.key + "`"
-              for offer in found if offer.failed]
-    return lines
-
-
-def install(offer: Offer, provider: providers.Provider) -> tuple[bool, list[str]]:
-    """Run the offer's steps with the CLI's own command, then check `plugin list` shows it. (ok, lines)"""
-
-    return run_steps(offer.plugin, offer.label, provider, offer.steps)
 
 
 def record_install(current: State, plugin_id: str, label: str) -> None:

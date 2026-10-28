@@ -73,8 +73,8 @@ class WatchBase(ItemBase):
 class SetUpTests(WatchBase):
     def test_enable_starts_the_watcher_and_adds_the_claude_entries(self):
         out = self.enable()
-        self.assertIn("The background watcher runs every minute", out)
-        self.assertIn("claude: agt catches up at each session start and saves in Claude Code", out)
+        self.assertIn("\nSyncs on its own\n  The background watcher checks every minute", out)
+        self.assertIn("  In claude-lab and claude, agt also catches up at each session start and each save in Claude Code.\n", out)
         data = self.plist()
         launcher = self.agt_home / "bin" / "agt-run"
         self.assertEqual(data["ProgramArguments"], ["/bin/sh", str(launcher), "share", "watch", "--once", "--quiet"])
@@ -115,7 +115,7 @@ class SetUpTests(WatchBase):
         backups = list((self.agt_home / "state" / "share" / "backups" / "hooks").rglob("claude-settings.json"))
         self.assertEqual([json.loads(path.read_text()) for path in backups], [mine])
         out = self.share("disable")
-        self.assertIn("Removed the background watcher.", out)
+        self.assertIn("  Removed the background watcher and agt's entries in ", out)
         self.assertEqual(json.loads((self.claude / "settings.json").read_text()), mine)
         self.assertFalse((self.lab / "settings.json").exists())  # agt made it, and it held only agt's entries
         self.assertFalse((self.user / "Library" / "LaunchAgents" / f"{triggers.LABEL}.plist").exists())
@@ -330,7 +330,20 @@ class HookTests(WatchBase):
             cli.main(["share", "badge"])
         self.assertEqual(out.getvalue(), "share:1!\n")
         status = self.share("status")
-        self.assertIn("Watcher stopped: the background watcher stopped. An agent can do it: `agt doctor --fix`.", status)
+        self.assertRegex(status, r"\n  Watcher   stopped, its last run was \d+ min ago\n")
+        self.assertRegex(status, r"\n  ✗ background watcher\n    It stopped\.\n    Restart it +agt doctor --fix\n")
+        from agents_router import home
+
+        self.assertEqual(home._sharing()[1], [("Restart the background watcher", "agt doctor --fix")])  # its own step
+        self.break_launcher()  # a second problem is the same wait, fixed by the same command
+        status = self.share("status")
+        self.assertIn("agt share  on, 1 thing waits for you\n", status)
+        self.assertRegex(status, r"\n  Launcher +.+ is gone")
+        self.assertRegex(status, r"\n  ✗ background watcher\n    It stopped\.\n    Its launcher is broken: .+\.\n"
+                                 r"    Repair it +agt doctor --fix\n")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            cli.main(["share", "badge"])
+        self.assertEqual(out.getvalue(), "share:1!\n")
         lines_out = cli._share_doctor(fix=True)
         self.assertTrue(any(line.startswith("  Watcher") for line in lines_out), lines_out)
 

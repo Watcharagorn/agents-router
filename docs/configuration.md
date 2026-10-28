@@ -34,7 +34,7 @@ When a change applies: job settings at the next job start (running jobs keep the
 ## agt config
 
 ```bash
-agt config show                         # every setting in effect here, and where each value comes from
+agt config show                         # the settings set here, and where each comes from (--all: every one)
 agt config set codex.max_jobs 2         # in a workspace: its .agt/settings.toml
 agt config set codex.max_jobs 2 --user  # your user file
 agt config unset codex.max_jobs         # back to the next level, or the default

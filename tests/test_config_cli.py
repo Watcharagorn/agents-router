@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from agents_router import cli, jobs, synclog
+from agents_router import cli, jobs, synclog, ui
 from agents_router.config import load_config
 
 AGENT = {"CLAUDECODE": "1"}
@@ -84,12 +84,12 @@ class ShowTests(ConfigBase):
         self.assertEqual(rows["share.kinds"]["changed_by"], "agt share kinds add|remove <kind>")
 
     def test_show_in_text_lists_no_cap_and_the_parent_channel_hint(self):
-        code, out, _ = self.agt("config", "show")
+        code, out, _ = self.agt("config", "show", "--all")
         self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines()[0], f"Workspace: {self.project}")
-        self.assertIn("antigravity.max_jobs_per_account = no cap", out)
+        self.assertEqual(out.splitlines()[0], f"agt config  settings in effect in {ui.short_path(self.project)}")
+        self.assertRegex(out, r"\n  antigravity\.max_jobs_per_account +no cap +default\n")
         self.assertIn("Note: Antigravity workers have no parent channel; set `max_jobs_per_account = 1` under "
-                      f"[antigravity] in {self.user_file} to get it.", out)
+                      f"[antigravity] in {ui.tilde(str(self.user_file))} to get it.", out)
 
     def test_show_names_a_bad_value_with_its_file_and_line(self):
         self.team_file.write_text("[codex]\n\nmax_jobs_per_account = 0\n", encoding="utf-8")
@@ -100,8 +100,8 @@ class ShowTests(ConfigBase):
     def test_in_the_home_folder_there_are_user_settings_only(self):
         os.chdir(self.user_home)
         code, out, _ = self.agt("config", "show")
-        self.assertEqual(out.splitlines()[:2], ["No workspace here (your home folder): user settings only.",
-                                                f"  user       {self.user_file} (not there yet)"])
+        self.assertEqual(out.splitlines()[:4], ["agt config  settings in effect, outside any workspace", "", "Settings files",
+                                                f"  user   {ui.short_path(self.user_file)}   not there yet"])
 
 
 class SetTests(ConfigBase):
@@ -181,7 +181,7 @@ class SetTests(ConfigBase):
         for argv, message in ((("codex.max_jobs", "x"), "codex.max_jobs takes a number"),
                               (("codex.max_jobs", "0"), "must be at least 1; `agt config unset` it for no cap"),
                               (("codex.failover", "sometimes"), "codex.failover takes off, on-limit"),
-                              (("max_job", "2"), "agt has no setting max_job; did you mean"),
+                              (("max_job", "2"), "agt has no setting max_job\n  Did you mean max_jobs?"),
                               (("cooldown_minutes", "2"), "did you mean claude.cooldown_minutes or "
                                                           "codex.cooldown_minutes or antigravity.cooldown_minutes or kiro.cooldown_minutes?"),
                               (("codex.max_jobs", "2"), "max_jobs spans more than one line; change it there by hand")):
@@ -277,7 +277,8 @@ class ShareSettingsTests(ConfigBase):
         self.assertEqual(rows["share.auto_copy"]["command"], "agt config set share.auto_copy on|off|<kinds>")
         self.assertEqual(rows["share.enabled"]["command"], "agt share disable")
         code, out, _ = self.agt("share", "settings")
-        self.assertIn(f"share.auto_copy = off", out)
+        self.assertIn("\nSet by you\n  enabled         true             agt share enable | disable\n"
+                      "  auto_copy       off              on | off | <kinds>\n", out)
 
 
 class LogTests(ConfigBase):
@@ -296,7 +297,7 @@ class LogTests(ConfigBase):
         self.assertIn("max_depth: not set → 0", lines[0])
         self.assertIn("(user, typed in a terminal)", lines[0])
         self.assertIn("codex.max_jobs: not set → 2", lines[1])
-        self.assertEqual(lines[2], "1 more in 1 other workspace: --all")
+        self.assertEqual(lines[2], "1 more in 1 other workspace: `agt log --all`")
         code, shown = self.json("log", "--all")
         self.assertEqual([entry["key"] for entry in shown["entries"]], ["codex.cooldown_minutes", "max_depth", "codex.max_jobs"])
         code, shown = self.json("log", "--all", "--key", "max_depth")
@@ -329,7 +330,7 @@ class JobsListTests(ConfigBase):
         code, out, _ = self.agt("jobs")
         self.assertIn(here, out)
         self.assertNotIn(there, out)
-        self.assertIn("1 more in other workspaces: agt jobs --all", out)
+        self.assertIn("1 more in other workspaces: `agt jobs --all`", out)
         code, out, _ = self.agt("jobs", "--all")
         self.assertIn(here, out)
         self.assertIn(there, out)

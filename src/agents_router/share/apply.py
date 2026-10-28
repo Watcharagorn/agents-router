@@ -33,7 +33,9 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import shutil
+import sys
 import tempfile
 import time
 from typing import Callable, Iterator
@@ -578,7 +580,8 @@ def _record(current: State, item: planner.Item, decision: engine.Decision, outco
     # Runs in a row where a write failed (not one skipped because a copy changed meanwhile): 3 make an attention entry.
     failures = [outcome for outcome in outcomes if not outcome.ok and not outcome.message.startswith(SKIPPED)]
     if failures:
-        record["failing"] = {"runs": int((record.get("failing") or {}).get("runs", 0)) + 1, "message": failures[0].message}
+        record["failing"] = {"runs": int((record.get("failing") or {}).get("runs", 0)) + 1, "message": failures[0].message,
+                             "labels": sorted({label for outcome in failures for label in outcome.labels})}
     elif (outcomes and all(outcome.ok for outcome in outcomes)) or (decision.action == engine.NOTHING and decision.version):
         record.pop("failing", None)  # a run that wrote it, or found nothing to write
     if record.get("version"):
@@ -682,7 +685,7 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
     if plan.hooks is not None:
         result.outcomes += _apply_hooks(plan)
     if plan.plugins is not None:
-        result.outcomes += _apply_plugins(plan, current)
+        result.outcomes += _apply_plugins(plan, current, command or f"agt share {op}")
         save_state(current, rotate=rotate)
         rotate = False
     if plan.claude_import is not None:
@@ -776,13 +779,33 @@ def _apply_hooks(plan: planner.Plan) -> list[Outcome]:
             for written in hooks.apply(plan.hooks)]
 
 
-def _apply_plugins(plan: planner.Plan, current: State) -> list[Outcome]:
-    """The plugins installed and uninstalled with each CLI's own commands, as outcomes (nothing to back up)."""
+def _apply_plugins(plan: planner.Plan, current: State, command: str) -> list[Outcome]:
+    """The plugins installed and uninstalled with each CLI's own commands, as outcomes (nothing to back up). Each
+    install can take minutes, so a person at a terminal sees each one as it runs."""
 
+    from agents_router import ui
     from agents_router.share import plugins
 
+    installs, uninstalls = plugins.counts(plan.plugins)
+    if not installs and not uninstalls:
+        return [Outcome(plugins.KIND, written.name, [written.label], written.action, written.path, written.ok, written.message)
+                for written in plugins.apply(plan.plugins, current)]  # records only: nothing to show
+    doing = [f"installing {installs} plugin{'s' if installs != 1 else ''}"] if installs else []
+    doing += [f"uninstalling {uninstalls}" + ("" if installs else f" plugin{'s' if uninstalls != 1 else ''}")] if uninstalls else []
+    try:
+        with ui.Steps([ui.bold(command), "  ", ui.muted(", ".join(doing))]) as display:
+            written = plugins.apply(plan.plugins, current, display)
+    except KeyboardInterrupt:
+        from agents_router.share import settings
+
+        if not uninstalls and settings.load().plugins:  # a sync installs the rest
+            ui.out("Stopped. The next sync finishes what's left.", stream=sys.stderr)
+        else:
+            ran = "agt " + shlex.join(ui.ARGV) if ui.ARGV else command
+            ui.out(["Stopped. Run ", ui.code(ran), " again to finish."], stream=sys.stderr)
+        raise
     return [Outcome(plugins.KIND, written.name, [written.label], written.action, written.path, written.ok, written.message)
-            for written in plugins.apply(plan.plugins, current)]
+            for written in written]
 
 
 def _log(plan: planner.Plan, result: Result, command: str, started: float, extra: dict | None,

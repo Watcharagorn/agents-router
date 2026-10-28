@@ -57,8 +57,8 @@ class PickTests(ItemBase):
         kiro = self.user / ".kiro" / "agents" / "dana.json"
         before = kiro.read_bytes()
         out = self.share("pick", "dana", "--not-in", "kiro")
-        self.assertIn("- agents/dana in kiro", out)
-        self.assertIn("`agt share undo dana --in kiro` brings a removed copy back", out)
+        self.assertIn("  - agents/dana   kiro\n", out)
+        self.assertIn("  Bring it back   agt share undo dana --in kiro\n", out)
         self.assertFalse(kiro.exists())
         self.assertEqual([path.read_bytes() for path in self.backups("dana.json")], [before])
         self.assertEqual(settings.load().not_in, {"agents/dana": ["kiro"]})
@@ -80,7 +80,7 @@ class PickTests(ItemBase):
     def test_keep_copies_keeps_it_as_your_own_file(self):
         self.enable()
         out = self.share("pick", "day-plan", "--not-in", "kiro", "--keep-copies")
-        self.assertIn("day-plan in kiro: kept as your own file (--keep-copies)", out)
+        self.assertIn("  day-plan stays in kiro as your own file; agt no longer updates it.\n", out)
         self.assertTrue((self.user / ".kiro" / "agents" / "day-plan.json").exists())
         self.assertEqual(self.record("agents/day-plan")["released"], ["kiro"])
         self.agent(self.claude, "day-plan", body="Wrap the day, v2.", tools="Bash, mcp__tracker__tracker_log_work")
@@ -89,7 +89,9 @@ class PickTests(ItemBase):
         self.assertEqual(self.kiro("day-plan")["prompt"], "Wrap the day.")  # agt no longer updates it
         # Picked back after it fell behind: it differs, so it's for you to decide.
         out = self.share("pick", "day-plan", "--in", "kiro", code=0)
-        self.assertIn("day-plan (agents)", out)
+        self.assertTrue(out.startswith("agt share pick  saved, nothing to write\n\n  ! agents/day-plan   differs between "), out)
+        self.assertIn("\n  Pick a version   agt share resolve day-plan\n", out)
+        self.assertNotIn("waits for you", out)  # the report names the one thing that waits
         self.assertEqual(self.kiro("day-plan")["prompt"], "Wrap the day.")
         self.assertNotIn("released", self.record("agents/day-plan"))
 
@@ -160,8 +162,8 @@ class PickTests(ItemBase):
     def test_with_no_flags_it_shows_the_table_and_writes_nothing(self):
         self.enable()
         before = self.snapshot()
-        out = self.share("pick", "dana", code=3)  # no terminal: the table, and nothing changes
-        self.assertIn("agt share pick: what goes where. Nothing was changed.", out)
+        out = self.share("pick", "dana")  # no terminal: the table, and nothing changes
+        self.assertIn("agt share pick  what goes where; nothing changed\n", out)
         self.assertIn("dana", out)
         with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", lambda prompt: "q"):
             self.assertIn("Nothing was changed.", self.share("pick", "dana"))  # a person quits the grid
@@ -194,7 +196,7 @@ class PickTests(ItemBase):
         settings_now.not_in.clear()
         settings.save(settings_now)
         out = self.share("sync", "--dry-run")
-        self.assertIn("0 changes in 0 folders.", out)
+        self.assertIn("\nNo changes.\n", out)
         self.assertNotIn("To apply it", out)
 
     def test_unknown_names_and_labels_are_refused(self):
@@ -245,7 +247,7 @@ class ResolveTests(ItemBase):
 
     def test_prefer_a_label_moves_the_other_version_to_the_backups_and_links(self):
         out = self.share("resolve", "gamma-apikey", "--prefer", "claude-lab")
-        self.assertIn("~ skills/gamma-apikey in claude", out)
+        self.assertIn("  ~ skills/gamma-apikey   claude\n", out)
         link = self.claude / "skills" / "gamma-apikey"
         self.assertTrue(link.is_symlink())
         self.assertIn("New steps.", (link / "SKILL.md").read_text(encoding="utf-8"))
@@ -259,15 +261,16 @@ class ResolveTests(ItemBase):
         self.assertIn("Old steps.", (link / "SKILL.md").read_text(encoding="utf-8"))
         code, out = self.run_share("status")
         self.assertEqual(code, 1)
-        self.assertIn("Conflict: gamma-apikey", out)
+        self.assertIn("  ! skill gamma-apikey, in ", out)
 
     def test_in_a_terminal_it_shows_the_difference_and_asks(self):
         answers = iter(["9", "2"])
         with patch.object(commands, "_interactive", lambda: True), \
                 patch.object(builtins, "input", lambda prompt: next(answers)):
             out = self.share("resolve", "gamma-apikey")
-        self.assertIn("-New steps.", out)
-        self.assertIn("+Old steps.", out)
+        self.assertIn("+++ claude-lab/codex ~/.claude-lab/skills/gamma-apikey", out)  # toward the newest copy
+        self.assertIn("-Old steps.", out)
+        self.assertIn("+New steps.", out)
         self.assertIn("Old steps.", (self.lab / "skills" / "gamma-apikey" / "SKILL.md").read_text(encoding="utf-8"))
         with patch.object(commands, "_interactive", lambda: True), patch.object(builtins, "input", lambda prompt: "q"):
             self.assertIn("no conflict", self.share("resolve", "gamma-apikey"))
@@ -323,7 +326,7 @@ class RemoveTests(ItemBase):
                  self.user / ".codex" / "agents" / "dana.toml", self.user / ".kiro" / "agents" / "dana.json"]
         contents = {path: path.read_bytes() for path in paths}
         out = self.share("rm", "dana")
-        self.assertIn("agt share rm: wrote 4 changes in 4 folders.", out)
+        self.assertIn("agt share rm  ✓ removed 4 copies\n", out)
         self.assertIn("`agt share undo dana` puts it back.", out)
         self.assertFalse(any(path.exists() for path in paths))
         self.assertIsNone(self.record("agents/dana"))
@@ -525,7 +528,7 @@ class RenameDetectionTests(ItemBase):
         self.rename_file(self.claude, "dana", "reviewer")  # its name field still says dana
         before = self.snapshot()
         out = self.share("sync", "--dry-run")
-        self.assertIn("Renames (agt renames every copy", out)
+        self.assertIn("Renames: agt renames every copy", out)
         self.assertIn("dana -> reviewer (agents) in claude, claude-lab, kiro", out)
         self.assertEqual(self.snapshot(), before)
         self.assertIn("dana is reviewer now, in every CLI.", self.share("sync"))

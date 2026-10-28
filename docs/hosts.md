@@ -2,7 +2,7 @@
 
 The host is the CLI your main session runs in. Agents Router is one MCP server, packaged as a plugin for Claude Code, Codex and Antigravity. Every host gets the same tools and the same skill. What differs is how you install it and how long a single tool call may wait.
 
-First install the `agt` command once (Python 3.11+, no dependencies):
+First install the `agt` command once (Python 3.11+; the installer also fetches rich, for color in a terminal):
 
 ```bash
 pipx install git+https://github.com/Watcharagorn/agents-router

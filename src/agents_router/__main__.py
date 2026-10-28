@@ -1,3 +1,3 @@
-from agents_router.cli import main
+from agents_router.entry import main
 
 raise SystemExit(main())

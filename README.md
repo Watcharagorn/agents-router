@@ -5,7 +5,7 @@ Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: early development](https://img.shields.io/badge/status-early%20development-orange.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
-![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
+![Dependencies: rich](https://img.shields.io/badge/dependencies-rich-brightgreen.svg)
 
 ```mermaid
 flowchart LR
@@ -34,7 +34,7 @@ flowchart LR
 |---|---|
 | **What it is** | A command (`agt`), a plugin for Claude Code, Codex and Antigravity, and an MCP server for any other client |
 | **What it isn't** | An API proxy or model router: every subagent is the vendor's own CLI with your own login |
-| **Needs** | Python 3.11 or newer, standard library only (git to install) |
+| **Needs** | Python 3.11 or newer and its one dependency, [rich](https://github.com/Textualize/rich), which draws color for a person at a terminal (git to install) |
 | **Tested live** | Windows, with Claude Code 2.1.299, Codex 0.162.1 and Antigravity 1.4.0 |
 
 ## Install
@@ -343,7 +343,7 @@ rules, and tell me exactly what I still have to do myself.
 
 5. **Show the "Still needed from you" list.** Typical items: browser logins for accounts that aren't logged in (`agt accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code), and putting `agt` on PATH.
 
-6. **Check** with `agt doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`, `kiro`; no model calls). Plain `agt doctor` checks Claude only; `--live` runs one tiny job per account and uses a little quota.
+6. **Check** with `agt doctor` (no model calls). It checks every runtime that's installed; `--runtime <runtime>` checks one (`claude`, `codex`, `antigravity`, `kiro`). `--live` runs one tiny job per account in one runtime, Claude unless you name another, and uses a little quota.
 
 **If `agt setup` fails for a host**, run its commands yourself:
 

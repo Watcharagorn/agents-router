@@ -11,12 +11,12 @@ pipx install git+https://github.com/Watcharagorn/agents-router   # or: pip insta
 agt --version
 agt setup --dry-run --account <name>=<folder> ...
 agt setup --account <name>=<folder> ...
-agt doctor --runtime <runtime>   # repeat for each runtime set up
+agt doctor                       # every runtime that's installed
 ```
 
 The full flow, with the `--if-plan` confirmation step, is in the README's [For AI agents](README.md#for-ai-agents) section. Agents Router isn't on PyPI; the PyPI package named `agt` is a different project.
 
-Plain `agt doctor` checks Claude only. Run `agt doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`).
+Plain `agt doctor` checks every runtime that's installed. `agt doctor --runtime <runtime>` checks one (`claude`, `codex`, `antigravity`), and `--json` prints the report as JSON.
 
 `agt setup` installs the plugin into every installed host (`--host claude|codex|antigravity` limits it), registers and syncs account folders that are already logged in, and prints a "Still needed from you" list. It is safe to run again. Use a `codex:` or `claude:` prefix on `--account` when the folder's runtime is ambiguous.
 
@@ -40,7 +40,7 @@ Don't read, copy or print credential files. Don't edit files in `~/.agents-route
 
 ## Working on the code
 
-Python 3.11+, standard library only. Run the tests from the repository root:
+Python 3.11+, standard library only, except `ui.py`: it alone imports rich and rich-argparse, inside functions, for a person at a terminal. Agents, pipes, tests and hooks get its plain renderer and never load rich. Run the tests from the repository root (the color tests run when rich is installed):
 
 ```bash
 # Windows (cmd): set PYTHONPATH=src;tests    PowerShell: $env:PYTHONPATH="src;tests"

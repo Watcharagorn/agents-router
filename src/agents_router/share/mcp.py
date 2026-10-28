@@ -692,11 +692,12 @@ def attention(plan: Plan) -> list[dict[str, Any]]:
     for server in plan.conflicts:
         found.append({"id": f"conflict:{server.key}", "kind": "conflict", "item": server.key, "who": "choice",
                       "message": f"MCP server {server.name} differs between {', '.join(server.decision.labels)}",
-                      "fix": [f"agt share resolve {server.key} --prefer <label>"]})
+                      "fix": [f"agt share resolve {server.key} --prefer <label>"], "folders": list(server.decision.labels)})
     for server in plan.pending:
         found.append({"id": f"delete:{server.key}", "kind": "delete", "item": server.key, "who": "choice",
                       "message": f"MCP server {server.name} was removed in {', '.join(server.decision.labels)}; "
-                                 "its other copies wait", "fix": [f"agt share rm {server.key}"]})
+                                 "its other copies wait", "fix": [f"agt share rm {server.key}"],
+                      "folders": list(server.decision.labels)})
     for problem in plan.problems:
         found.append({"id": f"unreadable:mcp:{problem.partition(':')[0]}", "kind": "unreadable", "item": "mcp",
                       "who": "action", "message": f"agt can't read MCP servers in {problem}", "fix": []})

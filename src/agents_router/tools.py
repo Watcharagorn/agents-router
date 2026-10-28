@@ -182,8 +182,9 @@ def startup() -> None:
         pass
 
 
-def summarize(status: dict[str, Any]) -> dict[str, Any]:
-    """The parts of a job status a host needs, without internal noise."""
+def summarize(status: dict[str, Any], take: bool = True) -> dict[str, Any]:
+    """The parts of a job status a host needs, without internal noise. `take` false leaves the worker's new messages
+    for the host: a person looking (`agt result` at a terminal) mustn't take them from the agent that started the job."""
 
     keys = (
         "job_id", "runtime", "state", "outcome", "message", "account", "session_id",
@@ -213,7 +214,7 @@ def summarize(status: dict[str, Any]) -> dict[str, Any]:
         summary["elapsed_seconds"] = round(float(end) - float(started), 1)
     job_id = status.get("job_id")
     if job_id:
-        new = messages.take_for_host(job_id)
+        new = messages.take_for_host(job_id) if take else []
         if new:
             summary["messages"] = [{key: item.get(key) for key in ("id", "kind", "text")} for item in new]
         questions = messages.open_questions(job_id)

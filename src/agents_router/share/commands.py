@@ -35,17 +35,18 @@ import dataclasses
 import difflib
 import json
 import os
+import re
 import shlex
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-from agents_router import hosts, synclog
+from agents_router import helptext, hosts, synclog, ui
 from agents_router.config import default_primary, load_config
 from agents_router.share import (
-    apply, attention, engine, gitexclude, hooks, instructions, mcp, model, plugins, names, normalize, picker, plan as planner, providers, scope,
-    settings, state, toolmap, triggers,
+    apply, attention, engine, gitexclude, hooks, instructions, mcp, model, plugin_view, plugins, names, normalize, picker, plan as planner, providers, scope,
+    settings, state, status_view, toolmap, triggers,
 )
 from agents_router.share.providers import _short as short
 
@@ -62,8 +63,15 @@ TURNED_OFF = "agt share is off. `agt share enable` turns it on again, with your 
 def _say_off(args: argparse.Namespace) -> None:
     """Sharing isn't on: never set up, or turned off with `disable` (your answers are still saved)."""
 
-    message = TURNED_OFF if settings.load().folders else NOT_ENABLED
-    _print({"enabled": False, "message": message} if getattr(args, "json", False) else message)
+    turned_off = bool(settings.load().folders)
+    if getattr(args, "json", False):
+        _print({"enabled": False, "message": TURNED_OFF if turned_off else NOT_ENABLED})
+    elif turned_off:
+        ui.out([ui.bold("agt share"), "  off; your answers are saved"],
+               *ui.columns([[ui.muted("Turn it on again"), ui.cmd("agt share enable")]], gap=6))
+    else:
+        ui.out([ui.bold("agt share"), "  not set up yet"],
+               *ui.columns([[ui.muted("See what it would do"), ui.cmd("agt share enable --dry-run")]]))
 
 
 def _folder_flags(parser: argparse.ArgumentParser) -> None:
@@ -79,9 +87,9 @@ def _folder_flags(parser: argparse.ArgumentParser) -> None:
 def add_parser(subparsers) -> None:
     share = subparsers.add_parser(
         "share", help="Keep agents and skills the same across Claude Code, Codex, Antigravity and Kiro.",
-        description="agt share keeps your agents and skills the same in every CLI folder you pick.",
+        description="agt share keeps your agents and skills the same in every CLI folder you pick.", page=helptext.SHARE,
     )
-    actions = share.add_subparsers(dest="share_command", required=True)
+    actions = share.add_subparsers(dest="share_command", metavar="<command>")  # none: the status, then the common commands
     enable = actions.add_parser("enable", help="Turn sharing on: --dry-run shows the plan, --yes saves your answers and applies it.")
     _folder_flags(enable)
     enable.add_argument("--projects", default="none", metavar="none|all-with-items|PATH[,PATH]",
@@ -221,6 +229,9 @@ def add_parser(subparsers) -> None:
     undo.add_argument("--json", action="store_true")
     for parser in (pick, resolve, remove, move, undo):
         parser.add_argument("--repo", metavar="PATH", help="A listed repo's item (inside a listed repo, it's that repo's).")
+    for parser in (enable, sync, pick, resolve, remove, disable, cli_add, cli_remove, kind_add, kind_remove, adopt, repo_add,
+                   repo_remove, move, undo):
+        parser.add_argument("-v", "--verbose", action="store_true", help="List the file of each copy written.")
 
 
 def _kinds(value: str) -> tuple[str, ...]:
@@ -235,7 +246,7 @@ def _kinds(value: str) -> tuple[str, ...]:
         raise ValueError("plugins aren't a kind of item: use --plugins on, or `agt share kinds add plugins`")
     later = [kind for kind in kinds if kind in LATER_KINDS]
     if later:
-        raise ValueError(f"sharing {', '.join(later)} comes in a later phase; this build shares agents and skills")
+        raise ValueError(f"agt doesn't share {', '.join(later)} yet; it shares agents and skills")
     unknown = [kind for kind in kinds if kind not in SUPPORTED_KINDS]
     if unknown or not kinds:
         raise ValueError(f"unknown kind {', '.join(unknown) or '(none)'}; use agents, skills")
@@ -422,7 +433,7 @@ def _item_key(plan: planner.Plan, name: str) -> str:
     if not found:
         if kind:
             return name
-        raise ValueError(f"no agent or skill named {name} in the folders sharing")
+        raise _no_item(plan, name)
     if len({entry[0] for entry in found}) > 1:
         raise ValueError(f"{name} is both an agent and a skill; say agents/{name} or skills/{name}")
     return f"{found[0][0]}/{found[0][1]}"
@@ -467,19 +478,90 @@ def _needs_choice(plan: planner.Plan, command: str, as_json: bool) -> int:
         _print({"error": "needs_choice", "ask": [ask["ask"] for ask in asks], "choices": asks,
                 "retry": command + " " + " ".join(ask["flag"] for ask in asks)})
     else:
-        print("Nothing was written: these items differ between folders, and agt needs to know which version wins.")
+        count = len(asks)
+        lines: list[ui.Line] = [[ui.bold(command.split(" --")[0]), "  ", ui.warn(
+            f"! nothing written: {count} item{'s need' if count != 1 else ' needs'} your choice")]]
+        kinds = {item.name: item.kind for item in plan.conflicts}
         for ask in asks:
-            options = ", ".join(choice["value"] + (" (newer)" if choice.get("newer") else "") for choice in ask["choices"])
-            print(f"  {ask['ask']} Choices: {options}. Answer with {ask['flag']}.")
+            name = ask["flag"].split()[1].partition("=")[0]
+            versions = [choice for choice in ask["choices"] if choice["value"] != "skip"]
+            labels = planner._and([choice["value"] + (" (newer)" if choice.get("newer") else "") for choice in versions])
+            what = ("The instructions differ" if name == "instructions" else
+                    f"{name if '/' in name else kinds.get(name, 'skills') + '/' + name} differs")
+            lines += ["", f"  {what} between {labels}.",
+                      "  Which version should every CLI get? Add one of these to the command:"]
+            lines += ui.columns([[ui.muted(choice["value"] if choice["value"] != "skip" else "neither"),
+                                  ui.cmd(f"--resolve {name}={choice['value']}"),
+                                  ui.muted("every copy stays as it is") if choice["value"] == "skip" else ""]
+                                 for choice in ask["choices"]], indent=4, gap=3)
+        ui.out(*lines)
     return 3
 
 
-def _outcome_line(outcome: apply.Outcome) -> str:
-    mark = {"copy": "+", "link": "+", "update": "~", "relink": "~", "remove": "-", "rename": ">", "rename-folder": ">",
-            "rename-link": ">"}.get(outcome.action, "?")
-    what = "instructions" if outcome.kind == "instructions" else f"{outcome.kind}/{outcome.name}"
-    line = f"  {mark} {what} in {', '.join(outcome.labels)}: {short(outcome.path)}"
-    return f"{line} ({outcome.message})" if outcome.message else line
+MARKS = {"copy": "+", "link": "+", "update": "~", "relink": "~", "remove": "-", "rename": ">", "rename-folder": ">",
+         "rename-link": ">"}
+MARK_STYLES = {"+": "ok", "~": "warn", "-": "muted", ">": "warn"}
+_verbose = False  # -v: each item line is followed by the file of each copy written
+
+
+def _what(outcome: apply.Outcome) -> str:
+    return "instructions" if outcome.kind == "instructions" else f"{outcome.kind}/{outcome.name}"
+
+
+def _item_lines(result: apply.Result, hide: set[str] = frozenset(), held: list[list[ui.Line]] | None = None, *,
+                again: Callable[[apply.Outcome, list[str]], ui.Line] | None = None) -> list[ui.Line]:
+    """One line per item and change, naming its folders; a failed write in red, with its error. With -v, the files.
+    `hide`: kinds whose writes the report shows another way; `held`: rows for items held back, lined up with the rest."""
+
+    by_label = all(outcome.kind == "instructions" for outcome in result.written + result.failed)
+    groups: dict[tuple[str, str, str, bool], list[apply.Outcome]] = {}
+    for outcome in result.written:
+        if outcome.kind in hide:
+            continue
+        # A plugin's message shows only with -v ("installed from tools"), so without it one row holds every CLI.
+        message = "" if outcome.kind == plugins.KIND and not _verbose else outcome.message
+        groups.setdefault((MARKS.get(outcome.action, "?"), _what(outcome), message, False), []).append(outcome)
+    for outcome in result.failed:
+        groups.setdefault(("✗", _what(outcome), outcome.message, True), []).append(outcome)
+    rows: list[list[ui.Line]] = []
+    under: list[list[ui.Line]] = []
+    for (mark, what, message, failed), outcomes in groups.items():
+        sign = ui.Span("error-mark" if failed else MARK_STYLES.get(mark, "muted"), mark)
+        labels = list(dict.fromkeys(label for outcome in outcomes for label in outcome.labels))
+        if by_label:  # instruction files: each CLI keeps its own somewhere else, so the path is the news
+            for outcome in outcomes:
+                rows.append([[sign, " ", ", ".join(outcome.labels)], ui.muted(short(outcome.path))])
+                under.append([])
+        else:
+            plugin = outcomes[0].kind == plugins.KIND  # its message is where it installed from: -v shows it
+            rows.append([[sign, " ", what], [ui.muted(", ".join(labels)), *([ui.muted(f" ({message})")]
+                                                                          if message and not failed and not plugin else [])]])
+            files = [outcome for outcome in outcomes if not plugin] if _verbose and not failed else []
+            under.append(ui.columns([[ui.muted(", ".join(outcome.labels)), ui.muted(short(outcome.path))] for outcome in files],
+                                    indent=6) if files else [["      ", ui.muted(message)]] if _verbose and plugin and message
+                         and not failed else [])
+        if failed:
+            under[-1] = [["      ", *ui.inline(message)], (again or _again)(outcomes[0], labels)]
+    for row in held or []:
+        rows.append(row)
+        under.append([])
+    lines: list[ui.Line] = []
+    for line, extra in zip(ui.columns(rows, gap=3), under):
+        lines += [line, *extra]
+    return lines
+
+
+def _again(outcome: apply.Outcome, labels: list[str]) -> ui.Line:
+    """Under a failed write: what tries it again. A plugin install waits for a new version, or a pick; an uninstall
+    only for the command you ran."""
+
+    if outcome.kind != plugins.KIND:
+        return ["      ", ui.muted("The next sync tries again.")]
+    if outcome.action == "remove":
+        ran = "agt " + shlex.join(ui.ARGV) if ui.ARGV else None
+        return ["      ", ui.muted("Try again"), "   ", ui.cmd(ran)] if ran else ["      ", ui.muted("Run the same command to try again.")]
+    return ["      ", ui.muted("agt tries again when its version changes; "),
+            ui.code(f"agt share pick {_what(outcome)} --in {','.join(labels)}"), ui.muted(" tries now.")]
 
 
 def _kept(plan: planner.Plan) -> list[str]:
@@ -489,7 +571,7 @@ def _kept(plan: planner.Plan) -> list[str]:
             if item.drops.get(label) == "release" or (cell.state == planner.HAS and cell.note)]
 
 
-def _repo_lines(entry: dict[str, Any], title: str) -> list[str]:
+def _repo_lines(entry: dict[str, Any], title: str) -> list[ui.Line]:
     target = entry["scope"]
     name = target.name + (f" (a worktree of {short(target.main)})" if target.main else "")
     if entry.get("skipped"):
@@ -525,17 +607,77 @@ def _repo_json(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _report(plan: planner.Plan, result: apply.Result, saved_at: Path | None, as_json: bool, *,
-            title: str = "agt share", notes: list[str] | None = None, repos: list[dict[str, Any]] | None = None) -> None:
+            title: str = "agt share", notes: list[str] | None = None, repos: list[dict[str, Any]] | None = None,
+            plugin_blocks: bool = False, found: triggers.Refreshed | None = None, headline: ui.Line | None = None,
+            body: list[ui.Line] | None = None, rows: list[list[ui.Line]] | None = None,
+            text_notes: list[str] | None = None, hide: set[str] = frozenset(), named: int = 0, setup: bool = False) -> None:
+    """A writing run's report. --json gets `notes` then the trigger lines; a person gets `text_notes` when it's given
+    (what `rows` and `body` already say), the custom `headline` unless something failed, and `rows` (label, command)
+    lined up with the backup folder at the end."""
+
     if as_json:
-        data = _report_json(plan, result, saved_at, notes)
+        data = _report_json(plan, result, saved_at, (notes or []) + (found.lines if found else []))
         if repos:
             data["repos"] = [_repo_json(entry) for entry in repos]
         _print(data)
         return
-    lines = _report_lines(plan, result, saved_at, title, notes)
+    if setup:
+        ui.out(*_setup_lines(plan, result, found), *(line for entry in repos or [] for line in ["", *_repo_lines(entry, title)]))
+        return
+    held = _held(plan) if title in ITEM_COMMANDS else []
+    lines = _report_lines(plan, result, saved_at, title, notes if text_notes is None else text_notes,
+                          plugin_blocks=plugin_blocks, found=found, headline=headline, body=body, hide=hide,
+                          held=[row for row, _ in held], rows=[*(rows or []), *(action for _, action in held)])
+    if plugin_blocks and plan.plugins is not None:  # the report lists the plugin waits in full
+        named += len(plugin_view.waits(plan.plugins))
+    lines[1:1] = _waiting_pointer(len(held) + named)
     for entry in repos or []:
         lines += ["", *_repo_lines(entry, title)]
-    print("\n".join(lines))
+    ui.out(*lines)
+
+
+def _waiting_pointer(named: int = 0) -> list[ui.Line]:
+    """What waits for you, as one line under a report's headline: `status` lists it, so a report doesn't repeat it.
+    `named`: the waits the report itself names, which the line leaves out."""
+
+    from agents_router.share import watch
+
+    saved = settings.load()
+    if not saved.enabled:
+        return []
+    count = watch.wait_count(saved) - named
+    if count <= 0:
+        return []
+    more = " more" if named else ""
+    return [["  ", ui.warn(f"{count}{more} thing{'s wait' if count != 1 else ' waits'} for you"), ": ",
+             ui.code("agt share status"), f" lists {'them' if count != 1 else 'it'}."]]
+
+
+ITEM_COMMANDS = ("agt share pick", "agt share resolve", "agt share rm", "agt share mv", "agt share undo")
+
+
+def _held(plan: planner.Plan) -> list[tuple[list[ui.Line], list[ui.Line]]]:
+    """An item command's own items held back: a row saying why, and the action row that settles it."""
+
+    def row(key: str, why: str) -> list[ui.Line]:
+        return [[ui.Span("error-mark", "!"), " ", key], ui.muted(why)]
+
+    found = []
+    for item in plan.conflicts:
+        labels = list(dict.fromkeys(label for copy in item.copies for label in copy.labels))
+        found.append((row(f"{item.kind}/{item.name}", f"differs between {planner._and(labels)}"),
+                      [ui.muted("Pick a version"), ui.cmd(f"agt share resolve {item.name}")]))
+    for item in plan.items:
+        if item.decision and item.decision.action == engine.PENDING_DELETE:
+            found.append((row(f"{item.kind}/{item.name}", "its original was deleted"),
+                          [ui.muted("Remove its copies"), ui.cmd(f"agt share rm {item.name}")]))
+        elif item.decision and item.decision.reason == planner.NEW_WAITING:
+            found.append((row(f"{item.kind}/{item.name}", "it's new and waits for you to pick where it goes"),
+                          [ui.muted("Pick where it goes"), ui.cmd(f"agt share pick {item.name}")]))
+    for server in plan.mcp.conflicts if plan.mcp is not None else []:
+        found.append((row(server.key, f"differs between {planner._and(list(server.decision.labels))}"),
+                      [ui.muted("Pick a version"), ui.cmd(f"agt share resolve {server.key}")]))
+    return found
 
 
 def _report_json(plan: planner.Plan, result: apply.Result, saved_at: Path | None, notes: list[str] | None) -> dict[str, Any]:
@@ -552,54 +694,140 @@ def _report_json(plan: planner.Plan, result: apply.Result, saved_at: Path | None
 
 
 def _report_notes(plan: planner.Plan, result: apply.Result, notes: list[str] | None) -> list[str]:
+    return _renamed(result) + (notes or []) + _kept(plan)
+
+
+def _renamed(result: apply.Result) -> list[str]:
     return [f"{old.partition('/')[2]} is {new.partition('/')[2]} now, in every CLI. "
-             f"`agt share mv {new.partition('/')[2]} {old.partition('/')[2]}` renames it back."
-             for old, new in result.renamed] + (notes or []) + _kept(plan)
+            f"`agt share mv {new.partition('/')[2]} {old.partition('/')[2]}` renames it back." for old, new in result.renamed]
+
+
+def _kept_text(plan: planner.Plan) -> list[str]:
+    """`_kept` for a person: the items with the same folder and reason in one sentence."""
+
+    found: dict[tuple[str, str], list[str]] = {}
+    for item in plan.items:
+        for label, cell in item.cells.items():
+            if item.drops.get(label) == "release" or (cell.state == planner.HAS and cell.note):
+                found.setdefault((label, cell.note), []).append(item.name)
+    lines = []
+    for (label, note), names_found in found.items():
+        many = len(names_found) > 1
+        lines.append(f"{planner._and(names_found)} stay{'' if many else 's'} in {label} as your own file{'s' if many else ''}; "
+                     f"agt no longer updates {'them' if many else 'it'}." if note.startswith("kept as your own file")
+                     else f"{planner._and(names_found)} in {label}: {note}")
+    return lines
+
+
+def _written_headline(result: apply.Result) -> list[ui.Piece] | None:
+    """What a run wrote and what failed, as a report's headline; None when it did neither."""
+
+    count, failed = len(result.written), len(result.failed)
+    fail: list[ui.Piece] = [ui.error(f"{failed} failed")]
+    if count:
+        folders = {label for outcome in result.written for label in outcome.labels}
+        text = (f"removed {count} cop{'y' if count == 1 else 'ies'}" if all(o.action == "remove" for o in result.written)
+                else f"wrote {count} change{'s' if count != 1 else ''} in {len(folders)} folder{'s' if len(folders) != 1 else ''}")
+        return [text, ", ", *fail] if failed else [ui.ok("✓ " + text)]
+    return ["nothing written, ", *fail] if failed else None
+
+
+def _headline(plan: planner.Plan, result: apply.Result, saved_at: Path | None) -> list[ui.Piece]:
+    written = _written_headline(result)
+    if written is not None:
+        return written
+    held = plan.conflicts or plan.frozen or any(item.decision and item.decision.action == engine.PENDING_DELETE
+                                                for item in plan.items) \
+        or (plan.mcp is not None and (plan.mcp.conflicts or plan.mcp.pending)) \
+        or (plan.instructions is not None and plan.instructions.conflict) or (plan.plugins is not None and plan.plugins.pending)
+    if saved_at:  # an answer saved; ✓ only when nothing is held back
+        return ["saved, nothing to write"] if held else [ui.ok("✓ saved, nothing to write")]
+    return ["nothing to write"] if held else [ui.ok("✓ everything is in sync, nothing to write")]
 
 
 def _report_lines(plan: planner.Plan, result: apply.Result, saved_at: Path | None, title: str,
-                  notes: list[str] | None) -> list[str]:
-    extra = _report_notes(plan, result, notes)
-    count = len(result.written)
-    folders = sorted({label for outcome in result.written for label in outcome.labels})
-    lines = [f"{title}: wrote {count} change{'s' if count != 1 else ''} in {len(folders)} folder{'s' if len(folders) != 1 else ''}."
-             if count else f"{title}: everything is in sync; nothing to write."]
-    lines += [_outcome_line(outcome) for outcome in result.written]
-    if result.failed:
-        lines += ["", "Not written (the next sync tries again):"] + [_outcome_line(outcome) for outcome in result.failed]
-    if plan.conflicts:
-        lines += ["", "Left as they are until you pick a version (`agt share status --diff` shows how they differ):"]
-        lines += [f"  {item.name} ({item.kind}): {', '.join('/'.join(copy.labels) for copy in item.copies)}" for item in plan.conflicts]
-    if plan.mcp is not None and plan.mcp.conflicts:
-        lines += ["", "MCP servers left as they are until you pick a version:"]
-        lines += [f"  {server.name}: {', '.join(server.decision.labels)} (`agt share resolve {server.key} --prefer <label>`)"
-                  for server in plan.mcp.conflicts]
-    if plan.waiting:
-        lines += ["", "Waiting:"] + [f"  {item.name}: {item.decision.reason}" for item in plan.waiting]
-    stays = [f"  {entry.name} not in {label}: {why}" for entry in plan.plugins.entries if not entry.held
-             for label, why in sorted(entry.stays.items())] if plan.plugins is not None else []
-    if stays:
-        lines += ["", "Plugins that can't go there:"] + stays
-    if plan.plugins is not None and plan.plugins.waiting:
-        lines += ["", "Plugins not installed until you answer:"]
-        lines += [f"  {entry.name} in {label}: {'; '.join(entry.asks[label])}. Install it as it is: "
-                  f"`agt share pick {entry.key} --in {label}`; keep it out: `agt share pick {entry.key} --not-in {label}`."
-                  for entry, label in plan.plugins.waiting]
-    notes = extra + result.replayed + plan.notices + [note for item in plan.items for note in item.notes]
-    notes += plan.mcp.notes() if plan.mcp is not None else []
-    notes += plan.plugins.notes() if plan.plugins is not None and any(o.kind == plugins.KIND for o in result.written) else []
-    if notes:
-        lines += ["", "Notes:"] + [f"  {note}" for note in notes]
-    for path, changed in result.excluded:
-        lines.append(f"\nListed {len(changed)} of agt's copies in {short(path)}, so that repo's `git status` doesn't show them.")
-    for path, changed in result.unlisted:
-        lines.append(f"\nTook {len(changed)} cop{'y' if len(changed) == 1 else 'ies'} you kept out of {short(path)}, "
-                     "so that repo's `git status` shows them now.")
-    if saved_at:
-        lines.append(f"\nSaved your answers in {short(saved_at)}.")
+                  notes: list[str] | None, *, plugin_blocks: bool = False, found: triggers.Refreshed | None = None,
+                  headline: ui.Line | None = None, body: list[ui.Line] | None = None,
+                  rows: list[list[ui.Line]] | None = None, hide: set[str] = frozenset(),
+                  held: list[list[ui.Line]] | None = None) -> list[ui.Line]:
+    """`plugin_blocks`: the plugins that can't go somewhere and those waiting for an answer, in full. Turning
+    plugins on is when they're news; every other run points to `status`, as it does for conflicts and other waits."""
+
+    if headline is None or result.failed:
+        headline = _headline(plan, result, saved_at)
+    lines: list[ui.Line] = [[ui.bold(title), "  ", *(headline if isinstance(headline, list) else [headline])]]
+    items = _item_lines(result, hide, held)
+    lines += ["", *items] if items else []
+    lines += ["", *body] if body else []
+    if plugin_blocks and plan.plugins is not None:
+        for block in (plugin_view.wait_lines(plan, plan.plugins), plugin_view.cant_lines(plan.plugins)):
+            lines += ["", *block] if block else []
+    lines += _on_its_own(found)
+    shown = _renamed(result) + (notes or []) + _kept_text(plan) + result.replayed + planner.note_lines(plan)
+    shown += plan.mcp.notes() if plan.mcp is not None else []
+    shown += plan.plugins.notes(restart=False, done={(o.name, label) for o in result.written if o.kind == plugins.KIND
+                                                     for label in o.labels}) if plan.plugins is not None else []
+    shown += [f"Listed {len(changed)} of agt's copies in {short(path)}, so that repo's `git status` doesn't show them."
+              for path, changed in result.excluded]
+    shown += [f"Took {len(changed)} cop{'y' if len(changed) == 1 else 'ies'} you kept out of {short(path)}, "
+              "so that repo's `git status` shows them now." for path, changed in result.unlisted]
+    if shown:
+        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline(note)] for note in shown)]
+    end: list[ui.Line] = []
+    if any(outcome.action in ("copy", "link") and outcome.kind in (*planner.KINDS, plugins.KIND) for outcome in result.written):
+        end.append(plugin_view.next_line(result.written, plan.plugins.by_label if plan.plugins is not None else {}))
+    rows = list(rows or [])
     if any(outcome.backup for outcome in result.written):
-        lines.append(f"Backups of what was replaced or removed are in {short(state.share_dir() / 'backups' / result.run)}.")
-    return lines
+        rows.append([ui.muted("Backup"), ui.muted(short(state.share_dir() / "backups" / result.run))])
+    end += ui.columns(rows, gap=3) if rows else []
+    if saved_at:
+        end.append(ui.muted(f"Saved your answers in {short(saved_at)}."))
+    return lines + (["", *end] if end else [])
+
+
+def _setup_lines(plan: planner.Plan, result: apply.Result, found: triggers.Refreshed | None) -> list[ui.Line]:
+    """Sharing as one row of `agt setup`'s report: what it wrote, what keeps it the same, and the notes, unheaded."""
+
+    count, failed = len(result.written), len(result.failed)
+    folders = {label for outcome in result.written for label in outcome.labels}
+    what: list[ui.Piece] = [f"{count} cop{'y' if count == 1 else 'ies'} in {len(folders)} folder{'s' if len(folders) != 1 else ''}"
+                            if count else ui.muted("every folder already has them")]
+    what += [", ", ui.error(f"{failed} failed")] if failed else []
+    sign = ui.Span("error-mark", "✗") if failed and not count else ui.ok("+") if count else ui.muted("·")
+    lines: list[ui.Line] = [["  ", sign, "  ", "Sharing".ljust(len("Claude Code")), "  ", *what]]
+    lines += [["    ", *line] for line in _item_lines(result)]
+    said = []
+    if found is not None:
+        starts = " at each session start in Claude Code" if found.catch_up else ""
+        if found.watcher == "runs":
+            said.append(f"agt keeps them the same from now on: every minute{', and' + starts if starts else ''}.")
+        elif found.watcher == "missing":
+            said.append(f"There's no background watcher here: {found.missing}." + (f" agt catches up{starts}." if starts else ""))
+        elif found.watcher == "off":
+            said.append("The background watcher is off (share.watcher = false)." + (f" agt catches up{starts}." if starts else ""))
+        said += found.problems
+    notes = _kept_text(plan) + planner.note_lines(plan) + (plan.mcp.notes() if plan.mcp is not None else [])
+    return lines + ([""] if said or notes else []) + [["  ", *ui.inline(line)] for line in said] \
+        + [["  ", ui.muted(note)] for note in notes]
+
+
+def _on_its_own(found: triggers.Refreshed | None) -> list[ui.Line]:
+    """What keeps sharing going without you, when this run started or stopped some of it."""
+
+    if found is None or not found.news:
+        return []
+    if not found.enabled:
+        return ["", *(["  ", *ui.inline(line)] for line in _removed_lines(found.lines))]
+    said = {"runs": ["The background watcher checks every minute, and at once when an agents or skills folder changes."],
+            "missing": [f"There's no background watcher here: {found.missing}."],
+            "off": ["The background watcher is off (share.watcher = false)."]}.get(found.watcher, [])
+    saves = [label for label, also in found.catch_up.items() if also]
+    starts = [label for label, also in found.catch_up.items() if not also]
+    if saves:
+        said.append(f"In {planner._and(saves)}, agt also catches up at each session start and each save in Claude Code.")
+    if starts:
+        said.append(f"In {planner._and(starts)}, agt also catches up at each session start.")
+    return ["", ui.bold("Syncs on its own"), *(["  ", *ui.inline(line)] for line in found.problems + said)]
 
 
 def _outcome(outcome: apply.Outcome) -> dict[str, Any]:
@@ -696,16 +924,27 @@ def _enable(args: argparse.Namespace) -> int:
         if args.json:
             _print({**planner.proposal(plan, line), "repos": [str(root) for root in repos]})
         else:
-            print(planner.render_text(plan, line) + ("\n\nRepos to share too: " + ", ".join(short(root) for root in repos)
-                                                   if repos else ""))
+            ui.out(*planner.render(plan, line, intro=None if saved.enabled else _intro(plan)),
+                   *(["", "Repos to share too: " + ", ".join(short(root) for root in repos)] if repos else []))
         if not args.dry_run and not args.json:
             print("\nNothing was written. Add --yes to save these answers and apply the plan.")
         return 0 if args.dry_run else 2
     return _enable_write(args, saved)
 
 
-def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen: bool = False) -> int | None:
-    """`enable --yes`: save your answers and apply the plan. On the screen, None means the plan changed meanwhile."""
+def _intro(plan: planner.Plan) -> str:
+    """What sharing does, in one sentence, for someone who hasn't turned it on yet. Only the kinds every CLI gets:
+    hooks wait for your approval, and plugins install where they fit."""
+
+    kinds = [*plan.options.kinds] + (["MCP servers"] if plan.mcp is not None else []) \
+        + (["shared instructions"] if plan.instructions is not None else [])
+    return f"agt copies your {planner._and(kinds)} between these CLI folders, so every CLI has the same ones."
+
+
+def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen: bool = False,
+                  setup: bool = False) -> int | None:
+    """`enable --yes`: save your answers and apply the plan. On the screen, None means the plan changed meanwhile.
+    `setup`: the report is part of `agt setup`'s, under its headline."""
 
     if apply.in_worker():
         print(IN_WORKER)
@@ -720,8 +959,8 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
         if args.if_plan and args.if_plan != plan.digest:
             if screen:
                 return None
-            print(f"Nothing was written: the plan changed since your dry run (it was {args.if_plan}, now {plan.digest}).")
-            print(planner.render_text(plan, line))
+            ui.out(*planner.render(plan, line, header=[ui.bold("agt share enable"), "  ", ui.warn(
+                "! nothing written: the plan changed since your dry run")]))
             return 1
         if (plan.conflicts or (plan.mcp is not None and plan.mcp.conflicts)) and not (args.if_plan or args.accept_suggested):
             return _needs_choice(plan, line, args.json)
@@ -736,7 +975,8 @@ def _enable_write(args: argparse.Namespace, saved: settings.Settings, *, screen:
     for root in _project_choice(args, saved):
         scope.add(root, "sweep" if args.projects == "all-with-items" else "command")
         repos.append(_sync_scope(argparse.Namespace(json=args.json, dry_run=False), scope.Scope(root), "agt share enable"))
-    _report(plan, result, saved_at, args.json, notes=_refresh_triggers(answers, plan.included), repos=repos)
+    _report(plan, result, saved_at, args.json, title="agt share enable", found=_triggers(answers, plan.included), repos=repos,
+            setup=setup)
     return 1 if result.failed or any(entry.get("result") and entry["result"].failed for entry in repos) else 0
 
 
@@ -752,6 +992,7 @@ def _enable_screen(args: argparse.Namespace, saved: settings.Settings) -> int:
         answered = {value.partition("=")[0] for value in args.resolve}
         open_conflicts = [item for item in plan.conflicts if item.name not in answered and f"{item.kind}/{item.name}" not in answered]
         if open_conflicts:
+            ui.out(_first_choice("agt share enable", len(open_conflicts)), "")
             for item in open_conflicts:
                 choice = _ask_version(item)
                 if choice is None:
@@ -760,10 +1001,11 @@ def _enable_screen(args: argparse.Namespace, saved: settings.Settings) -> int:
                 args.resolve.append(f"{item.name}={choice}")
             continue
         line = _command_line(args, plan.digest)
-        print(planner.render_text(plan, line, header="agt share enable: what sharing would do. "
-                                                     "Nothing is written until you press Enter."))
+        ui.out(*planner.render(plan, line, header=[ui.bold("agt share enable"), "  ", ui.muted(
+            "what sharing would do; nothing is written until you press Enter")], intro=None if saved.enabled else _intro(plan),
+                               apply=False))
         try:
-            answer = input("Enter applies it, p changes what goes where, q quits: ").strip().lower()
+            answer = input("\nApply it? Enter yes · p change it · q quit: ").strip().lower()
         except EOFError:
             answer = "q"
         if answer == "q":
@@ -795,8 +1037,8 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
         vars(args).update(before)
         saved.not_in, saved.only, saved.off = dict(picks[0]), dict(picks[1]), set(picks[2])
 
-    kinds = picker.ListState("Which kinds share?", [picker.Choice(kind, kind, kind in plan.options.kinds) for kind in SUPPORTED_KINDS]
-                             + [picker.Choice(kind, kind, reason="comes in a later phase") for kind in LATER_KINDS], "kinds")
+    kinds = picker.ListState("Which kinds share?", [picker.Choice(kind, kind, kind in plan.options.kinds) for kind in SUPPORTED_KINDS],
+                             verbs=("share", "stop sharing"), enter="next")
     if picker.choose(kinds) == picker.QUIT or not kinds.checked():
         return drop()
     args.kinds = ",".join(kind for kind in SUPPORTED_KINDS if kind in kinds.checked())
@@ -810,14 +1052,17 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
     in_plan = {(provider.cli, str(provider.folder.resolve())) for provider in plan.included}
     labels = {(provider.cli, str(provider.folder.resolve())): provider.label for provider in plan.included}
     choices = []
+    named = [labels.get((row.provider.cli, str(row.provider.folder.resolve())), row.provider.label) for row in rows]
+    widths = (max(map(len, named), default=0), max((len(short(row.provider.folder)) for row in rows), default=0))
     for index, row in enumerate(rows):
         provider = row.provider
         where = (provider.cli, str(provider.folder.resolve()))
-        label = labels.get(where, provider.label)
-        text = f"{label:<16} {short(provider.folder):<22} {row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills"
+        label = named[index]
+        text = (f"{label:<{widths[0]}}  {short(provider.folder):<{widths[1]}}  "
+                f"{row.holds.get('agents', 0)} agents, {row.holds.get('skills', 0)} skills")
         fixed = "sharing now; `agt share cli remove` stops it" if where in sharing else None
-        choices.append(picker.Choice(str(index), text, where in in_plan, row.reason, fixed))
-    folders = picker.ListState("Which CLI folders share?", choices, "folders")
+        choices.append(picker.Choice(str(index), text, where in in_plan, row.reason, fixed, name=label))
+    folders = picker.ListState("Which CLI folders share?", choices, verbs=("joins", "leaves"), enter="next")
     if picker.choose(folders) == picker.QUIT or not folders.checked():
         return drop()
     chosen = [rows[int(key)].provider for key in sorted(folders.checked(), key=int)]
@@ -826,8 +1071,9 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
     args.no_agy = not any(provider.cli == "antigravity" for provider in chosen)
     switches = picker.ListState("Choices", [
         picker.Choice("widen", "Codex agents get every tool (Codex can't limit an agent's tools)",
-                      plan.options.tool_widening == "allow-if-shell"),
-        picker.Choice("auto", "New items go to every CLI (auto copy)", bool(plan.options.auto_copy))], "choices")
+                      plan.options.tool_widening == "allow-if-shell", name="tool widening"),
+        picker.Choice("auto", "New items go to every CLI (auto copy)", bool(plan.options.auto_copy), name="auto copy")],
+        enter="next")
     if picker.choose(switches) == picker.QUIT:
         return drop()
     # Only a switch you flipped changes (auto copy for some kinds stays as it is otherwise).
@@ -840,7 +1086,8 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
     rows = [picker.Row(f"{item.kind}/{item.name}", item.name, {
         label: _grid_cell(item, label, set((current.items.get(item.key) or {}).get("made") or []))
         for label in (provider.label for provider in shown.included)}) for item in shown.items]
-    grid = picker.GridState("What goes where? Enter goes back to the plan.", [p.label for p in shown.included], rows)
+    grid = picker.GridState([ui.bold("What goes where"), "  ", ui.muted("Enter takes your changes back to the plan")],
+                            [p.label for p in shown.included], rows, enter="done", leave="back")
     if picker.choose(grid) == picker.QUIT:
         return drop()
     try:
@@ -851,17 +1098,24 @@ def _enable_lists(args: argparse.Namespace, saved: settings.Settings, plan: plan
         return drop()
 
 
-def _refresh_triggers(saved: settings.Settings, included: list[providers.Provider] | None = None) -> list[str]:
-    """Bring the watcher and the hook entries in line with the settings; the lines say what runs sharing now."""
+def _triggers(saved: settings.Settings, included: list[providers.Provider] | None = None) -> triggers.Refreshed:
+    """Bring the watcher and the hook entries in line with the settings: what runs sharing now, and whether that changed."""
 
     if scope.current().project:
-        return []  # the watcher and the hook entries belong to your user folders
+        return triggers.Refreshed()  # the watcher and the hook entries belong to your user folders
     try:
         if included is None and saved.enabled:
             included = _folders(load_config(), None, False, saved)[1]
-        return triggers.refresh(saved, included or [])
+        return triggers.refreshed(saved, included or [])
     except (OSError, triggers.TriggerError) as exc:
-        return [f"The background side couldn't be set up ({exc}); `agt doctor --fix` tries again."]
+        line = f"The background side couldn't be set up ({exc}); `agt doctor --fix` tries again."
+        return triggers.Refreshed([line], news=True, watcher="failed", problems=[line])
+
+
+def _refresh_triggers(saved: settings.Settings, included: list[providers.Provider] | None = None) -> list[str]:
+    """The lines saying what runs sharing now, after bringing it in line with the settings."""
+
+    return _triggers(saved, included).lines
 
 
 def _sync(args: argparse.Namespace) -> int:
@@ -907,8 +1161,14 @@ def _repo_scopes(saved: settings.Settings) -> list[scope.Scope]:
 
 
 def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, *,
-              save: bool = False, notes: list[str] | None = None) -> int:
-    """A whole sync from these settings: `sync`, and `cli add` / `kinds add`, which `save` theirs first. Listed repos too."""
+              save: bool = False, notes: list[str] | None = None,
+              shown: Callable[[planner.Plan, apply.Result], dict[str, Any]] | None = None,
+              preview: Callable[[planner.Plan], list[ui.Line]] | None = None) -> int:
+    """A whole sync from these settings: `sync`, and `cli add` / `kinds add`, which `save` theirs first. Listed repos too.
+
+    `shown(plan, result)` gives the report's own headline, body, rows or text notes (`_report`); `preview(plan)`, a
+    dry run's own lines.
+    """
 
     def repo_runs(dry_run: bool) -> list[dict[str, Any]]:
         if scope.current().project:
@@ -923,8 +1183,10 @@ def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, 
         if args.json:
             _print({**planner.proposal(plan, command, saves=False), "repos": [_repo_json(entry) for entry in repos]})
         else:
-            print("\n".join([planner.render_text(plan, command, header=f"{command}: dry run, nothing was written.", saves=False),
-                             *(line for entry in repos for line in ["", *_repo_lines(entry, command)])]))
+            ui.out(*(preview(plan) if preview else
+                     planner.render(plan, command, header=[ui.bold(command), "  ", ui.muted("dry run, nothing written")],
+                                    saves=False)),
+                   *(line for entry in repos for line in ["", *_repo_lines(entry, command)]))
         return 0
     if apply.in_worker():
         print(IN_WORKER)
@@ -943,9 +1205,9 @@ def _run_sync(args: argparse.Namespace, saved: settings.Settings, command: str, 
         saved_at = _after_renames(args, saved, current, result) or saved_at
         _remember(plan, current, result)
     repos = repo_runs(False)  # after your folders, so no repo gets ahead of the settings saved above
-    if save:
-        notes = (notes or []) + _refresh_triggers(saved, plan.included)
-    _report(plan, result, saved_at, args.json, title=command, notes=notes, repos=repos)
+    _report(plan, result, saved_at, args.json, title=command, notes=notes, repos=repos,
+            plugin_blocks=command == "agt share kinds add plugins", found=_triggers(saved, plan.included) if save else None,
+            **(shown(plan, result) if shown else {}))
     return 1 if result.failed or any(entry.get("result") and entry["result"].failed for entry in repos) else 0
 
 
@@ -959,10 +1221,14 @@ def _core_text(copy: planner.Physical, kind: str) -> list[str]:
     return text.splitlines()
 
 
-def _diff(item: planner.Item) -> list[str]:
-    first, *others = item.copies
+def _diff(item: planner.Item, toward: planner.Physical | None = None) -> list[str]:
+    """How the copies differ: the first against each other one (`status --diff --json` has always given that), or each
+    other one against `toward`, the newest, so its lines are the green + side for a person."""
+
+    pairs = [(item.copies[0], other) for other in item.copies[1:]] if toward is None else \
+        [(other, toward) for other in item.copies if other is not toward]
     lines = []
-    for other in others:
+    for first, other in pairs:
         lines += list(difflib.unified_diff(_core_text(first, item.kind), _core_text(other, item.kind),
                                            fromfile=f"{'/'.join(first.labels)} {short(first.path)}",
                                            tofile=f"{'/'.join(other.labels)} {short(other.path)}", lineterm=""))
@@ -976,10 +1242,19 @@ def _diff(item: planner.Item) -> list[str]:
     return lines
 
 
-WHO = {"choice": "your choice", "action": "for you to do", "agent": "an agent can do it"}
-TITLES = {"conflict": "Conflict", "delete": "Waiting to be deleted", "unreadable": "Can't read", "new": "New",
-          "failing": "Failing", "frozen": "Frozen", "rename": "Not renamed", "watcher": "Watcher stopped",
-          "changed": "Changed since you approved it", "plugin": "Waiting for your answer"}
+def _home(args: argparse.Namespace) -> int:
+    """`agt share` on its own: the status, then what people come here to do. It's a screen you open to look
+    around, so it exits 0 even when something waits; `agt share status` exits 1 then."""
+
+    _status(argparse.Namespace(**{**vars(args), "diff": False, "json": False}))
+    if settings.load().enabled:
+        ui.out("", *ui.columns([
+            [ui.muted("What goes where"), ui.cmd("agt share pick")],
+            [ui.muted("Take one out of a CLI"), ui.cmd("agt share pick <name> --not-in <cli>")],
+            [ui.muted("Share more kinds"), ui.cmd("agt share kinds add plugins|mcp|hooks|instructions")],
+            [ui.muted("Every command"), ui.cmd("agt share --help")],
+        ], gap=3))
+    return 0
 
 
 def _status(args: argparse.Namespace) -> int:
@@ -1019,39 +1294,14 @@ def _status(args: argparse.Namespace) -> int:
                 "repos": [{key: value for key, value in entry.items() if key != "scope"} for entry in repos],
                 "diffs": {item.name: _diff(item) for item in plan.conflicts} if args.diff else None})
         return code
-    lines = ["agt share is on for " + ", ".join(f"{p.label} ({short(p.folder)})" for p in plan.included) + ".",
-             f"  {len(in_sync)} items in sync, {len(plan.changes)} changes for the next sync, "
-             f"{len(plan.conflicts)} conflicts, {len(plan.waiting)} waiting, {len(pending)} waiting to be deleted, "
-             f"{len(plan.excluded)} not shared."]
-    lines += [f"  {line}" for line in watch.health_lines(saved) if not (health["stopped"] and line.startswith("Watcher stopped"))]
-    if shared is not None:
-        lines.append(f"  {shared.summary()}")
-    if servers is not None:
-        lines += [f"  {line}" for line in servers.summary().splitlines()]
-    if shared_hooks is not None:
-        lines += [f"  {line}" for line in shared_hooks.summary().splitlines()]
-    if shared_plugins is not None:
-        lines += [f"  {line}" for line in shared_plugins.summary().splitlines()]
     by_key = {item.key: item for item in plan.items}
-    for entry in needs:
-        fix = " or ".join(f"`{command}`" for command in entry["fix"])
-        lines.append(f"  {TITLES.get(entry['kind'], entry['kind'])}: {entry['message']}. "
-                     f"{WHO[entry['who']].capitalize()}{': ' + fix if fix else ''}.")
-        if args.diff and entry["kind"] == "conflict" and entry["item"] in by_key:
-            lines += [f"    {line}" for line in _diff(by_key[entry["item"]])]
-    for item in waiting:
-        lines.append(f"  Waiting: {item.name}: {item.decision.reason}.")
-    shown = {entry["message"] for entry in needs}
-    lines += [f"  Note: {note}" for note in plan.notices if not any(note.startswith(message) for message in shown)
-              and "disappeared from" not in note]
-    for entry in repos:
-        lines.append(f"  {entry['line']}")
-        lines += [f"    {TITLES.get(need['kind'], need['kind'])}: {need['message']}."
-                  + (f" Fix: `{need['fix'][0]}`." if need["fix"] else "") for need in entry.get("attention", [])]
-    if plan.changes or (shared is not None and shared.writes) or (servers is not None and servers.writes) \
-            or (shared_plugins is not None and shared_plugins.writes) or any(entry.get("to_write") for entry in repos):
-        lines.append("  `agt share sync` writes the changes.")
-    print("\n".join(lines))
+
+    def diff(entry: dict[str, Any]) -> list[str]:
+        item = by_key.get(entry["item"]) if entry["kind"] == "conflict" else None
+        return _diff(item, planner.newest(item)) if item is not None else []  # toward the newest, as the version question
+
+    ui.out(*status_view.lines(plan, saved, in_sync=len(in_sync), needs=needs, health=health, fresh=waiting, repos=repos,
+                              diff=diff if args.diff else None))
     return code
 
 
@@ -1130,8 +1380,18 @@ def _existing(plan: planner.Plan, name: str) -> str:
 
     key = _item_key(plan, name)
     if _find(plan, key) is None and _not_shared(plan, key) is None:
-        raise ValueError(f"no agent or skill named {name} in the folders sharing")
+        raise _no_item(plan, name)
     return key
+
+
+def _no_item(plan: planner.Plan, name: str) -> ui.Mistake:
+    """No item by that name: the closest one there is, and the command with it."""
+
+    known = sorted({item.name for item in plan.items} | {entry.name for entry in plan.excluded})
+    close = difflib.get_close_matches(name.rpartition("/")[2], known, 1, 0.6)
+    prog = "agt share " + ui.ARGV[1] if ui.ARGV[:1] == ["share"] and len(ui.ARGV) > 1 else "agt share"
+    return ui.Mistake(prog, f"no agent or skill named {name} in the folders sharing", close[0] if close else None, name,
+                      [ui.code("agt share pick"), " lists every item and where it goes."])
 
 
 def _show_picks(args: argparse.Namespace, plan: planner.Plan, key: str | None) -> int:
@@ -1144,7 +1404,7 @@ def _show_picks(args: argparse.Namespace, plan: planner.Plan, key: str | None) -
         item = _find(plan, key)
         if item is None:
             print(f"{key.partition('/')[2]} isn't shared: {_not_shared(plan, key)}. "
-                  f"`agt share pick {key.partition('/')[2]} --in <label>` shares it again.")
+                  f"`agt share pick {key.partition('/')[2]} --in <cli>` shares it again.")
             return 0
         shown = [item]
     if not args.json and _interactive():
@@ -1156,11 +1416,15 @@ def _show_picks(args: argparse.Namespace, plan: planner.Plan, key: str | None) -
                              "cells": {label: {"state": cell.state, "note": cell.note} for label, cell in item.cells.items()}}
                             for item in shown], "retry": retry})
         return 3
-    lines = ["agt share pick: what goes where. Nothing was changed."] + planner.table(plan, shown)
-    lines += ["", f"To change it: {retry}",
-              "  --not-in removes the copy agt made there, with a backup; add --keep-copies to keep it as your own file."]
-    print("\n".join(lines))
-    return 3
+    name = key.partition("/")[2] if key else "<name>"
+    lines: list[ui.Line] = [[ui.bold("agt share pick"), "  ", ui.muted("what goes where; nothing changed")], "",
+                            *planner.table(plan, shown), "", ui.bold("Change one" if key is None else "Change it")]
+    lines += ui.columns([[ui.muted("Add a CLI"), ui.cmd(f"agt share pick {name} --in <cli>")],
+                         [ui.muted("Take a CLI out"), ui.cmd(f"agt share pick {name} --not-in <cli>")],
+                         [ui.muted("Only these CLIs"), ui.cmd(f"agt share pick {name} --only <cli>[,<cli>]")]], gap=3)
+    lines.append(ui.muted("--not-in removes the copy agt made there, with a backup; --keep-copies keeps it as your file."))
+    ui.out(*lines)
+    return 0  # a listing; --json still answers needs_choice with 3
 
 
 def _grid_cell(item: planner.Item, label: str, made: set[str]) -> picker.Cell:
@@ -1173,15 +1437,15 @@ def _grid_cell(item: planner.Item, label: str, made: set[str]) -> picker.Cell:
             return picker.Cell(picker.FIXED, note)
         if label not in made:
             return picker.Cell(picker.FIXED, "your original: agt never removes it")
-        return picker.Cell(picker.ON, "agt's copy; untick to remove it, with a backup")
+        return picker.Cell(picker.ON, "agt's copy; untick to remove it, with a backup", there=True)
     if state in (planner.COPY, planner.UPDATE, planner.CONFLICTED):
-        return picker.Cell(picker.ON, note or "agt copies it there")
+        return picker.Cell(picker.ON, note or "agt copies it there", there=state != planner.COPY and label in made)
     if state == planner.WAITING:
         if note.startswith(planner.NEW_WAITING):
             return picker.Cell(picker.OFF, "new: tick where it should go")
         if note == "its folder is missing or frozen this run":
             return picker.Cell(picker.FIXED, note)
-        return picker.Cell(picker.ON, note)
+        return picker.Cell(picker.ON, note, there=label in made)
     if state == planner.BLOCKED:
         return picker.Cell(picker.BLOCKED, note)
     return picker.Cell(picker.OFF, note or "left out")  # unticked, kept as your own file, or a removal still to finish
@@ -1193,9 +1457,9 @@ def _pick_grid(args: argparse.Namespace, plan: planner.Plan, shown: list[planner
     rows = []
     for item in shown:
         made = set((current.items.get(item.key) or {}).get("made") or [])
-        rows.append(picker.Row(f"{item.kind}/{item.name}", item.name if len({i.name for i in shown}) == len(shown)
-                               else f"{item.kind}/{item.name}", {label: _grid_cell(item, label, made) for label in columns}))
-    grid = picker.GridState("agt share pick: which CLIs get what. Enter applies your changes.", columns, rows)
+        rows.append(picker.Row(f"{item.kind}/{item.name}", item.name, {label: _grid_cell(item, label, made) for label in columns}))
+    grid = picker.GridState([ui.bold("agt share pick"), "  ", ui.muted("which CLIs get what; Enter applies your changes")],
+                            columns, rows)
     changes = grid.changes() if picker.choose(grid) == picker.DONE else {}
     if not changes:
         print("Nothing was changed.")
@@ -1276,9 +1540,11 @@ def _apply_picks(args: argparse.Namespace, picks: dict[str, tuple[list[str], lis
         result = apply.apply(plan, current, op="pick")
         result.replayed = replayed
         _remember(plan, current, result, keys)
-    undo = [f"`agt share undo {outcome.name} --in {label}` brings a removed copy back."
-            for outcome in result.written if outcome.action == "remove" for label in outcome.labels]
-    _report(plan, result, saved_at, args.json, title="agt share pick", notes=undo)
+    removed = [(outcome.name, label) for outcome in result.written if outcome.action == "remove" for label in outcome.labels]
+    undo = [f"`agt share undo {name} --in {label}` brings a removed copy back." for name, label in removed]
+    rows = [[ui.muted("Bring it back" if not index else ""), ui.cmd(f"agt share undo {name} --in {label}")]
+            for index, (name, label) in enumerate(removed)]
+    _report(plan, result, saved_at, args.json, title="agt share pick", notes=undo, text_notes=[], rows=rows)
     return 1 if result.failed else 0
 
 
@@ -1294,7 +1560,7 @@ def _pick(args: argparse.Namespace) -> int:
     only = _label_list(args.only_in, labels, "--only") if args.only_in else None
     if not args.item:
         if to_in or to_out or only:
-            raise ValueError("name the item: agt share pick <item> --in <label>")
+            raise ValueError("name the item: agt share pick <name> --in <cli>")
         return _show_picks(args, plan, None)
     if args.item.startswith(f"{mcp.KIND}/"):
         return _pick_mcp(args, saved, plan, to_in, to_out, only)
@@ -1311,7 +1577,7 @@ def _pick(args: argparse.Namespace) -> int:
         raise ValueError(f"{', '.join(both)} is in both --in and --not-in")
     if _find(plan, key) is None and not (to_in or only):
         print(f"{name} isn't shared ({_not_shared(plan, key)}), so there's nothing to take out. "
-              f"`agt share pick {name} --in <label>` shares it again.")
+              f"`agt share pick {name} --in <cli>` shares it again.")
         return 0
     return _apply_picks(args, {key: (to_in, to_out)}, keep_copies=args.keep_copies,
                         only={key: only} if only is not None else None)
@@ -1320,32 +1586,53 @@ def _pick(args: argparse.Namespace) -> int:
 SHORT_DIFF = 20  # longer differences show as a summary, and `d` shows them
 
 
+def _first_choice(title: str, count: int) -> ui.Line:
+    """The headline above the version questions a screen asks before it shows its plan."""
+
+    return [ui.bold(title), "  ", ui.warn(f"! {count} item{'s need' if count != 1 else ' needs'} your choice first")]
+
+
+def _or(choices: list[str]) -> str:
+    return ", ".join(choices[:-1]) + " or " + choices[-1] if len(choices) > 1 else choices[0]
+
+
+def _ask_label(question: str, answers: list[str]) -> str | None:
+    """One of `answers`, asked until it comes; q, Enter alone or the end of input is None."""
+
+    while True:
+        try:
+            answer = input(question).strip()
+        except EOFError:
+            return None
+        if answer.lower() in ("", "q"):
+            return None
+        if answer in answers:
+            return answer
+
+
+
+
 def _ask_version(item: planner.Item) -> str | None:
     """In a terminal: show the difference (or its summary when it's long) and ask which copy wins. None means quit."""
 
     latest = planner.newest(item)
-    print(f"{item.name} ({item.kind}) differs between its copies:")
-    for number, copy in enumerate(item.copies, 1):
-        print(f"  {number}  {'/'.join(copy.labels):<20} {short(copy.path)}{' (newer)' if copy is latest else ''}")
-    diff = _diff(item)
+    diff = _diff(item, latest)
     changed = [line for line in diff if line[:1] in "+-" and not line.startswith(("+++", "---"))]
-    if len(diff) <= SHORT_DIFF:
-        for line in diff:
-            print(f"    {line}")
-    else:
-        print(f"    {len(changed)} lines differ; d shows them.")
-    numbers = " / ".join(str(number) for number in range(1, len(item.copies) + 1))
+    ui.out([ui.bold(f"{item.kind}/{item.name}"), " differs between its copies"],
+           *ui.columns([[str(number), ", ".join(copy.labels), ui.muted(short(copy.path)), ui.ok("newer") if copy is latest else ""]
+                        for number, copy in enumerate(item.copies, 1)], gap=3),
+           *(status_view.diff_lines(diff) if len(diff) <= SHORT_DIFF else [["    ", ui.muted(f"{len(changed)} lines differ; d shows them.")]]))
+    numbers = _or([str(number) for number in range(1, len(item.copies) + 1)])
     while True:
         try:
-            answer = input(f"Which version should every copy get? {numbers}, s to stop sharing it, "
-                           f"{'d to see the difference, ' if len(diff) > SHORT_DIFF else ''}q to quit: ").strip().lower()
+            answer = input(f"Which version should every copy get? {numbers} · s stop sharing it · "
+                           f"{'d see the difference · ' if len(diff) > SHORT_DIFF else ''}q quit: ").strip().lower()
         except EOFError:
             return None
         if answer == "q":
             return None
         if answer == "d":
-            for line in diff:
-                print(f"    {line}")
+            ui.out(*status_view.diff_lines(diff))
             continue
         if answer == "s":
             return "skip"
@@ -1390,10 +1677,10 @@ def _resolve_instructions(args: argparse.Namespace, saved: settings.Settings) ->
             _print({"error": "needs_choice", "ask": f"The instructions differ between {', '.join(labels)}. Which version "
                     "should every CLI get?", "choices": labels, "retry": "agt share resolve instructions --prefer <label>"}
                    if args.json else f"The instructions differ between {', '.join(labels)}. Answer with "
-                   "`agt share resolve instructions --prefer <label>`.")
+                   "`agt share resolve instructions --prefer <cli>`.")
             return 3
-        answer = input(f"Which version should every CLI get? {' / '.join(labels)}, q to quit: ").strip()
-        if answer not in labels:
+        answer = _ask_label(f"Which version should every CLI get? {_or(labels)} · q quit: ", labels)
+        if answer is None:
             print("Nothing was changed.")
             return 0
         args.prefer = answer
@@ -1464,10 +1751,13 @@ def _resolve_mcp(args: argparse.Namespace, saved: settings.Settings) -> int:
             ask = f"The MCP server {server.name} differs between {', '.join(labels)}. Which version should every CLI get?"
             _print({"error": "needs_choice", "ask": ask, "choices": [*labels, "skip"],
                     "retry": f"agt share resolve {server.key} --prefer <label>"} if args.json else
-                   f"{ask} Answer with `agt share resolve {server.key} --prefer <label>` (or skip).")
+                   f"{ask} Answer with `agt share resolve {server.key} --prefer <cli>` (or skip).")
             return 3
-        args.prefer = input(f"Which version should every CLI get? {' / '.join(labels)}, s to stop sharing it, q to quit: ").strip()
-        args.prefer = "skip" if args.prefer == "s" else args.prefer
+        answer = _ask_label(f"Which version should every CLI get? {_or(labels)} · s stop sharing it · q quit: ", [*labels, "s"])
+        if answer is None:
+            print("Nothing was changed.")
+            return 0
+        args.prefer = "skip" if answer == "s" else answer
     if args.prefer == "skip":
         saved.off.add(server.key)
         settings.save(saved)
@@ -1577,7 +1867,8 @@ def _plugin_entry(plan: planner.Plan, key: str) -> Any:
 
 
 def _plugin_run(args: argparse.Namespace, saved: settings.Settings, key: str, title: str, op: str, *,
-                removing: Any = _REMOVE_ALL, save: bool = False, unstop: frozenset[str] = frozenset()) -> int:
+                removing: Any = _REMOVE_ALL, save: bool = False, unstop: frozenset[str] = frozenset(),
+                notes: list[str] | None = None) -> int:
     """One plugin's run, holding the lock: `pick` (`save` first, and `unstop` the CLIs you picked back) and `rm`."""
 
     if apply.in_worker():
@@ -1599,26 +1890,8 @@ def _plugin_run(args: argparse.Namespace, saved: settings.Settings, key: str, ti
         result = apply.apply(locked, current, op=op)
         result.replayed = replayed
         _remember(plan, current, result)
-    _report(locked, result, saved_at, args.json, title=title)
+    _report(locked, result, saved_at, args.json, title=title, notes=notes)
     return 1 if result.failed else 0
-
-
-def _plugin_cells(entry: Any, plan: Any) -> list[str]:
-    """`pick plugins/<id>` with no flags: where the plugin is, and what each other folder would do with it."""
-
-    lines = [f"Plugin {entry.id}:"]
-    for label in sorted(plan.by_label):
-        copy = entry.copies.get(label)
-        where = (("has it" + ("" if copy.enabled is not False else ", turned off")) if copy else
-                 f"can't: {entry.stays[label]}" if label in entry.stays else
-                 f"waits for your answer: {'; '.join(entry.asks[label])}" if label in entry.asks else
-                 f"the last install failed: {entry.failing[label]}" if label in entry.failing else
-                 "goes there" + (f" (you said yes to: {'; '.join(entry.approved[label])})" if label in entry.approved else "")
-                 if label in entry.sources else "doesn't have it")
-        lines.append(f"  {label:<20} {where}")
-    lines += [f"  {label:<20} installs no plugins" for label in plan.others]
-    lines.append(f"  {entry.held}." if entry.held else f"  {entry.decision.reason or entry.decision.action}.")
-    return lines
 
 
 def _pick_plugin(args: argparse.Namespace, saved: settings.Settings, plan: planner.Plan, to_in: list[str],
@@ -1629,7 +1902,7 @@ def _pick_plugin(args: argparse.Namespace, saved: settings.Settings, plan: plann
     entry = _plugin_entry(plan, args.item)
     key, shared = entry.key, plan.plugins
     if not (to_in or to_out or only):
-        print("\n".join(_plugin_cells(entry, shared)))
+        ui.out(*plugin_view.pick_lines(entry, shared))
         return 0
     both = sorted(set(to_in) & set(to_out))
     if both:
@@ -1671,10 +1944,10 @@ def _pick_plugin(args: argparse.Namespace, saved: settings.Settings, plan: plann
     allowed = set(saved.only.get(key, shared.by_label)) - set(saved.not_in.get(key, []))
     left = {label for label in entry.copies if label not in allowed}
     removing = set() if args.keep_copies else left & plugins.agt_made(entry, state.load())
-    if left - removing:
-        print(f"{entry.name} stays in {', '.join(sorted(left - removing))}: "
-              + ("you kept it there." if args.keep_copies else "you installed it there yourself."))
-    return _plugin_run(args, saved, key, "agt share pick", "pick", removing=removing, save=True, unstop=frozenset(picked))
+    stays = [f"{entry.name} stays in {', '.join(sorted(left - removing))}: "
+             + ("you kept it there." if args.keep_copies else "you installed it there yourself.")] if left - removing else []
+    return _plugin_run(args, saved, key, "agt share pick", "pick", removing=removing, save=True, unstop=frozenset(picked),
+                       notes=stays)
 
 
 def _plugins(args: argparse.Namespace) -> int:
@@ -1687,23 +1960,24 @@ def _plugins(args: argparse.Namespace) -> int:
         return 0
     included = _folders(load_config(), None, False, saved)[1]
     found = plugins.offers(included, saved.off)
+    # The plugins an "x" turned off: named in `apply`, one installs and is offered again (the undo for "x").
+    turned_off = [offer for offer in plugins.offers(included) if f"{plugins.KIND}/{offer.plugin.id}" in saved.off] \
+        if any(key.startswith(f"{plugins.KIND}/") for key in saved.off) else []
     shown = [{"plugin": offer.plugin.id, "from": offer.source_label, "to": offer.label, "key": offer.key,
               "commands": [" ".join([offer.cli, *step]) for step in offer.steps], "why_not": offer.why_not,
               "asks": offer.asks, "failed_before": offer.failed} for offer in found]
     if getattr(args, "plugins_command", None) != "apply":
-        shared = _plan(args, state.load(), saved).plugins if saved.plugins else None
+        plan = _plan(args, state.load(), saved) if saved.plugins else None
+        shared = plan.plugins if plan is not None else None
         if args.json:
             _print({"sharing": saved.plugins, "summary": shared.summary() if shared else None, "offers": shown})
         elif shared is not None:
-            print(shared.summary())
+            ui.out(*plugin_view.page(plan, shared))
         else:
-            print("\n".join(plugins.summary(found)))
-            for offer in found:
-                if not offer.why_not:
-                    print(f"  {offer.key}: " + "; ".join(" ".join([offer.cli, *step]) for step in offer.steps))
-            print("Plugins don't share now; `agt share kinds add plugins` installs them with each sync.")
+            ui.out(*plugin_view.offers_page(found, turned_off))
         return 0
     by_key = {offer.key: offer for offer in found}
+    by_key.update({offer.key: offer for offer in turned_off if offer.key in args.offers})
     unknown = [key for key in args.offers if key not in by_key]
     if unknown:
         raise ValueError(f"{', '.join(unknown)}: not a plugin another CLI could install; `agt share plugins` lists them")
@@ -1713,7 +1987,7 @@ def _plugins(args: argparse.Namespace) -> int:
     if blocked:
         raise ValueError("; ".join(f"{offer.key}: {offer.why_not}" for offer in blocked))
     if not chosen:
-        print("agt share plugins: nothing to install.")
+        ui.out([ui.bold("agt share plugins apply"), "  ", "nothing to install"])
         return 0
     if apply.in_worker():
         print(IN_WORKER)
@@ -1723,19 +1997,18 @@ def _plugins(args: argparse.Namespace) -> int:
     if not args.yes:
         if args.json or not _interactive():
             ask = "Install these plugins? " + ", ".join(f"{offer.plugin.name} in {offer.label}" for offer in chosen)
-            _print({"error": "needs_choice", "ask": ask, "choices": [entry for entry in shown if entry["key"] in
-                                                                    {offer.key for offer in chosen}],
-                    "retry": "agt share plugins apply " + " ".join(offer.key for offer in chosen) + " --yes"}
-                   if args.json else f"Nothing was installed. {ask}? Answer with "
-                   f"`agt share plugins apply {' '.join(offer.key for offer in chosen)} --yes`.")
+            if args.json:
+                _print({"error": "needs_choice", "ask": ask, "choices": [entry for entry in shown if entry["key"] in
+                                                                        {offer.key for offer in chosen}],
+                        "retry": "agt share plugins apply " + " ".join(offer.key for offer in chosen) + " --yes"})
+            else:
+                ui.out(*_apply_choices(chosen))
             return 3
         approved, never = [], []
-        for offer in chosen:
-            steps = "; ".join(" ".join([offer.cli, *step]) for step in offer.steps)
-            missing = f" Note: {'; '.join(offer.asks)}." if offer.asks else ""
+        for index, offer in enumerate(chosen):
+            ui.out(*([""] if index else []), *_apply_offer(offer))
             try:
-                answer = input(f"Install {offer.plugin.name} in {offer.label} ({steps})?{missing} "
-                               "y / n / x never / q quit: ").strip().lower()
+                answer = input("Install it? y yes · n no · x never offer it · q stop: ").strip().lower()
             except EOFError:
                 answer = "q"
             if answer == "q":
@@ -1747,22 +2020,91 @@ def _plugins(args: argparse.Namespace) -> int:
         if never:
             saved.off |= {f"plugins/{offer.plugin.id}" for offer in never}
             settings.save(saved)
-            print("Not offered again: " + ", ".join(offer.plugin.id for offer in never) + ".")
+            ui.out("", *(_never_line(offer, saved.plugins) for offer in {offer.plugin.id: offer for offer in never}.values()))
         chosen = approved
+    if not chosen:
+        ui.out("", [ui.bold("agt share plugins apply"), "  ", "nothing installed"])
+        return 0
     by_label = {provider.label: provider for provider in included}
-    failed = 0
+    outcomes = []
+    asked = not args.yes  # the questions above it
     with apply.lock([provider.folder for provider in included]):  # never at the same time as a sync's installs
         current = state.load()
-        for offer in chosen:
-            ok, lines = plugins.install(offer, by_label[offer.label])
-            failed += not ok
-            if ok:
-                plugins.record_install(current, offer.plugin.id, offer.label)
-            print(f"{'+' if ok else '!'} {offer.plugin.name} in {offer.label}" + "".join(f"\n    {line}" for line in lines))
-        state.save(current)
-    if chosen and not failed:
-        print("Restart those CLIs (or run /reload-plugins in Claude Code) to load them.")
-    return 1 if failed else 0
+        try:
+            with ui.Steps([ui.bold("agt share plugins apply"), "  ",
+                           ui.muted(f"installing {len(chosen)} plugin{'s' if len(chosen) != 1 else ''}")]) as display:
+                for offer in chosen:
+                    provider = by_label[offer.label]
+                    display.start(f"{plugins.KIND}/{offer.plugin.id}", ui.muted(offer.label))
+                    ok, said = plugins.run_steps(offer.plugin, offer.label, provider, offer.steps, display)
+                    display.finish(ok)
+                    if ok:
+                        plugins.record_install(current, offer.plugin.id, offer.label)
+                    outcomes.append(apply.Outcome(plugins.KIND, offer.plugin.id, [offer.label], "copy", provider.folder, ok,
+                                                  f"installed from {offer.plugin.marketplace}" if ok else said[-1]))
+        except KeyboardInterrupt:
+            left = " ".join(offer.key for offer in chosen[len(outcomes):])  # the ones done aren't on offer any more
+            ui.out(["Stopped. Run ", ui.code(f"agt share plugins apply {left} --yes"), " again to finish."], stream=sys.stderr)
+            raise
+        finally:
+            state.save(current)  # what finished is agt's, as a sync's install would be
+    was_off = {offer.key for offer in turned_off}  # before this run: an "x" given just now stays
+    back = {f"{plugins.KIND}/{outcome.name}" for outcome in outcomes
+            if outcome.ok and f"{outcome.name}:{outcome.labels[0]}" in was_off} & saved.off
+    if back:  # installed by name after an "x": offered again from now on
+        saved.off -= back
+        saved_at = settings.save(saved)
+    result = apply.Result("apply", outcomes)
+    lines: list[ui.Line] = [[ui.bold("agt share plugins apply"), "  ", *_written_headline(result)],
+                            "", *_item_lines(result, again=_apply_again)]
+    if result.written:
+        lines += ["", plugin_view.next_line(result.written, by_label)]
+    if back:
+        lines.append(ui.muted(f"Saved your answers in {short(saved_at)}."))
+    ui.out(*([""] if asked else []), *lines)
+    return 1 if result.failed else 0
+
+
+def _apply_again(outcome: apply.Outcome, labels: list[str]) -> ui.Line:
+    """Under a failed `plugins apply` install: the command that tries every CLI of that row again (nothing else
+    retries it while plugins don't share)."""
+
+    keys = " ".join(f"{outcome.name}:{label}" for label in labels)
+    return ["      ", ui.muted("Try again"), "   ", ui.cmd(f"agt share plugins apply {keys} --yes")]
+
+
+def _never_line(offer: plugins.Offer, sharing: bool) -> ui.Line:
+    """An "x" answer stops the plugin in every CLI: say so, and how to take it back."""
+
+    if sharing:
+        return [f"{offer.plugin.name} isn't offered again in any CLI; ",
+                ui.code(f"agt share pick {plugins.KIND}/{offer.plugin.id} --in <cli>"), " brings it back."]
+    return [f"{offer.plugin.name} isn't offered again in any CLI; ", ui.code(f"agt share plugins apply {offer.key} --yes"),
+            " installs it and offers it again."]
+
+
+def _apply_offer(offer: plugins.Offer) -> list[ui.Line]:
+    """One plugin `plugins apply` asks about: the commands it runs, each on its own line, and what it would miss."""
+
+    runs = [" ".join([offer.cli, *step]) for step in offer.steps]
+    lines: list[ui.Line] = [ui.bold(f"{offer.plugin.name} in {offer.label}")]
+    lines += [["  ", ui.muted("runs " if index == 0 else "     "), "  ", ui.cmd(command)] for index, command in enumerate(runs)]
+    lines += [["  ", ui.muted("note "), "  ", status_view._sentence("; ".join(offer.asks))]] if offer.asks else []
+    return lines
+
+
+def _apply_choices(chosen: list[plugins.Offer]) -> list[ui.Line]:
+    """`plugins apply` with no answer to give: the command that installs each, and all of them."""
+
+    rows: list[list[ui.Line]] = []
+    for offer in chosen:
+        rows.append([f"{offer.plugin.name} in {offer.label}", ui.cmd(f"agt share plugins apply {offer.key} --yes")])
+        if offer.asks:
+            rows.append(["", ui.muted(status_view._sentence("; ".join(offer.asks)))])
+    if len(chosen) > 1:
+        rows.append(["All of them", ui.cmd("agt share plugins apply " + " ".join(offer.key for offer in chosen) + " --yes")])
+    return [[ui.bold("agt share plugins apply"), "  ", ui.warn("! nothing installed: name the ones to install")], "",
+            *ui.columns(rows, gap=3)]
 
 
 def _adopt(args: argparse.Namespace) -> int:
@@ -1780,22 +2122,45 @@ def _adopt(args: argparse.Namespace) -> int:
     if args.dry_run:
         found = [{"label": provider.label, "file": str(instructions.file_for(provider))} for provider in chosen
                  if instructions.file_for(provider)]
-        _print({"dry_run": True, "adopt": found} if args.json else
-               "\n".join(["agt share adopt: dry run, nothing was written. It would add agt's block to:"]
-                          + [f"  {entry['label']}: {short(Path(entry['file']))}" for entry in found]))
+        if args.json:
+            _print({"dry_run": True, "adopt": found})
+        else:
+            order = [provider.label for provider in included]
+            ui.out([ui.bold("agt share adopt"), "  ", ui.muted("dry run, nothing written")], "",
+                   "It would add a shared section to:",
+                   *ui.columns([[entry["label"], ui.muted(short(Path(entry["file"])))]
+                                for entry in sorted(found, key=lambda entry: order.index(entry["label"]))], gap=3))
         return 0
     if apply.in_worker():
         print(IN_WORKER)
         return 2
     notes = []
+    done: list[tuple[str, Path, bool]] = []  # label, file, whether it had the section already
     with apply.lock([provider.folder for provider in included]):
         for provider in chosen:
             path, what = instructions.adopt(provider, wrap=args.wrap)
             notes.append(f"{provider.label}: {what} ({short(path)})")
-    if saved.instructions == "off":
+            done.append((provider.label, path, what == "already has agt's block"))
+    turned_on = saved.instructions == "off"
+    if turned_on:
         saved.instructions = "block"
         notes.append("Instructions share now (`instructions = \"block\"`).")
-    return _run_sync(argparse.Namespace(json=args.json, dry_run=False), saved, "agt share adopt", save=True, notes=notes)
+
+    def shown(plan: planner.Plan, result: apply.Result) -> dict[str, Any]:
+        added = sum(not had for _, _, had in done)
+        text = plan.instructions is not None and any(copy.text.strip() for copy in plan.instructions.copies)
+        order = [provider.label for provider in included]
+        rows = [[[ui.muted("·") if had else ui.warn("~"), " ", label], ui.muted(short(path)), ui.muted("already has it") if had else ""]
+                for label, path, had in sorted(done, key=lambda entry: order.index(entry[0]))]
+        said = ("Each one now holds your shared instructions; an edit to the section in any one file reaches the others."
+                if text else "The sections are empty: write your shared instructions in any one of them, and the others get them.")
+        return {"headline": [ui.ok(f"✓ added a shared section to {added} instruction file{'s' if added != 1 else ''}")
+                             if added else "every file already has the shared section"],
+                "body": [*ui.columns(rows, gap=3), "", f"  {said}", *(["  Instructions share now."] if turned_on else [])],
+                "text_notes": [], "hide": {"instructions"}}
+
+    return _run_sync(argparse.Namespace(json=args.json, dry_run=False), saved, "agt share adopt", save=True, notes=notes,
+                     shown=shown)
 
 
 def _resolve(args: argparse.Namespace) -> int:
@@ -1824,7 +2189,7 @@ def _resolve(args: argparse.Namespace) -> int:
         item = _find(plan, key)
         if item is None:
             print(f"{key.partition('/')[2]} isn't shared ({_not_shared(plan, key)}), so it has nothing to resolve. "
-                  f"`agt share pick {key.partition('/')[2]} --in <label>` shares it again.")
+                  f"`agt share pick {key.partition('/')[2]} --in <cli>` shares it again.")
             return 0
         if item not in plan.conflicts:
             print(f"agt share resolve: {item.name} has no conflict; its copies agree.")
@@ -1896,7 +2261,7 @@ def _rm(args: argparse.Namespace) -> int:
     name = key.partition("/")[2]
     if _find(plan, key) is None:
         print(f"{name} isn't shared ({_not_shared(plan, key)}), so agt leaves its copies alone. "
-              f"Delete them by hand, or share it again first with `agt share pick {name} --in <label>`.")
+              f"Delete them by hand, or share it again first with `agt share pick {name} --in <cli>`.")
         return 1
     if apply.in_worker():
         print(IN_WORKER)
@@ -2014,17 +2379,49 @@ class _Part:
     left: list[planner.Left] = dataclasses.field(default_factory=list)
 
 
-def _left_lines(left: list[planner.Left]) -> list[str]:
-    lines = []
-    agt = [entry for entry in left if entry.status == "agt"]
-    for kind in (*planner.KINDS, "instructions"):
-        found = sorted({entry.item.name for entry in agt if entry.item.kind == kind})
-        if found:
-            lines.append(f"  {kind}: {', '.join(found)}")
-    stays = [entry for entry in left if entry.status != "agt"]
-    if stays:
-        lines.append("These stay either way:")
-        lines += [f"  {entry.item.name} in {', '.join(entry.labels)}: {entry.note}" for entry in stays]
+STAYS = [("original", "Your originals stay either way:"), ("edited", "Copies you edited stay as your own files:"),
+         ("shared", "Copies another CLI reads stay:")]
+
+
+def _left_rows(entries: list[planner.Left], by_kind: bool, indent: int) -> list[ui.Line]:
+    """The copies, one row per item with its folders (or, for one CLI, one row per kind with its items)."""
+
+    if by_kind:
+        rows = [[ui.muted(kind), ", ".join(sorted({entry.item.name for entry in entries if entry.item.kind == kind}))]
+                for kind in (*planner.KINDS, "instructions") if any(entry.item.kind == kind for entry in entries)]
+        return ui.columns(rows, indent=indent, gap=3)
+    bare = len({entry.item.kind for entry in entries}) == 1
+    found: dict[str, tuple[list[str], str]] = {}
+    for entry in entries:
+        name = entry.item.name if bare else f"{entry.item.kind}/{entry.item.name}"
+        labels, note = found.get(name, ([], ""))
+        labels += [label for label in entry.labels if label not in labels]
+        if entry.status == "shared":  # "kiro reads claude's folder, so it stays": who depends on it
+            note = entry.note.removesuffix(", so it stays")
+        found[name] = (labels, note)
+    return ui.columns([[name, ui.muted(", ".join(labels)), ui.muted(f"({note})") if note else ""]
+                       for name, (labels, note) in found.items()], indent=indent, gap=3)
+
+
+def _left_lines(parts: list[_Part], user: _Part, heading: str, by_kind: bool) -> list[ui.Line]:
+    """What a turn-off leaves: agt's copies under `heading`, then what stays either way, a repo's under its name."""
+
+    copies: list[ui.Line] = []
+    stays: dict[str, list[ui.Line]] = {}
+    for part in [user, *(part for part in parts if part is not user and part.left)]:
+        indent = 2 if part is user else 4
+        inside = [] if part is user else [f"  In {part.target.name}:"]
+        agt = [entry for entry in part.left if entry.status == "agt"]
+        if agt:
+            copies += inside + _left_rows(agt, by_kind, indent)
+        for status, _ in STAYS:
+            found = [entry for entry in part.left if entry.status == status]
+            if found:
+                stays.setdefault(status, []).extend(inside + _left_rows(found, False, indent))
+    lines: list[ui.Line] = [heading, *copies] if copies else [heading]
+    for status, title in STAYS:
+        if status in stays:
+            lines += ["", title, *stays[status]]
     return lines
 
 
@@ -2036,14 +2433,6 @@ def _stays_lines(left: list[planner.Left], choice: str) -> list[str]:
             + (planner.KEPT if entry.status == "agt" else entry.note)
             for entry in left if entry.status in ("original", "shared")
             or (entry.item.kind == "instructions" and choice == "keep")]
-
-
-def _parts_lines(parts: list[_Part], user: _Part) -> list[str]:
-    lines = _left_lines(user.left)
-    for part in parts:
-        if part is not user and part.left:
-            lines += [f"In {part.target.name}:", *(f"  {line}" for line in _left_lines(part.left))]
-    return lines
 
 
 def _import_left(part: _Part, current: state.State) -> list[planner.Left]:
@@ -2081,8 +2470,11 @@ def _repo_parts(saved: settings.Settings,
 
 
 def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str], labels: set[str], op: str,
-              what: str, retry: str, change, done, repos=None) -> int:
+              what: str, retry: str, change, done, repos=None, *, off: str = "", again: tuple[str, str] | None = None) -> int:
     """Turn off some kinds in some CLIs. `change(saved, current)` makes the settings and state change afterwards.
+
+    A person's report says `off` ("skills don't share any more") as its headline and gives `again` (label, command),
+    the way back, as a row; --json gets `done(removed)` as a note.
 
     The copies agt made there, unchanged since the last sync, stay as your own files or go to the backups:
     `--keep-copies` / `--remove-copies`, or the question in a terminal. An agent without either gets
@@ -2105,14 +2497,16 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
     copies = [{"kind": entry.item.kind, "name": entry.item.name, "labels": entry.labels, "path": str(entry.path),
                "status": entry.status, "note": entry.note, **({"repo": str(part.target.root)} if part.target.project else {})}
               for part in parts for entry in part.left]
+    title = retry.split(" --")[0]
+    by_kind = op == "cli-remove"
+    heading = (f"Turning off {what} leaves the {len(agt)} cop{'y' if len(agt) == 1 else 'ies'} agt made{' there' if by_kind else ''}:"
+               if agt else f"agt made no copies there; turning off {what} removes nothing.")
     if args.dry_run:
         if args.json:
             _print({"dry_run": True, "turn_off": what, "copies": copies,
                     "needs_answer": [] if choice else [{"ask": ask, "choices": ["--keep-copies", "--remove-copies"]}]})
         else:
-            print("\n".join([f"{retry.split(' --')[0]}: dry run, nothing was changed.",
-                             f"Turning off {what} leaves {len(agt)} copies agt made there:" if agt else
-                             f"agt made no copies there; turning off {what} removes nothing.", *_parts_lines(parts, user)]))
+            ui.out([ui.bold(title), "  ", ui.muted("dry run, nothing changed")], "", *_left_lines(parts, user, heading, by_kind))
         return 0
     busy = [(part, why) for part in parts if part is not user and part.left and (why := scope.busy(part.target.root))]
     if busy:
@@ -2120,10 +2514,11 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
                          "then run this again")
     if choice is None:
         if _interactive():
-            print("\n".join([f"Turning off {what} leaves these copies agt made:", *_parts_lines(parts, user)]))
+            ui.out(*_left_lines(parts, user, heading, by_kind), "")
             while choice is None:
                 try:
-                    answer = input("Keep them as your own files, or remove them (with a backup)? k / r, q to quit: ").strip().lower()
+                    answer = input("Keep them as your own files, or remove them with a backup? k keep · r remove · q quit: ")
+                    answer = answer.strip().lower()
                 except EOFError:
                     answer = "q"
                 if answer == "q":
@@ -2137,35 +2532,45 @@ def _turn_off(args: argparse.Namespace, saved: settings.Settings, kinds: set[str
                     {"value": "--remove-copies", "means": "the copies go to the backups"}], "copies": copies,
                     "retry": f"{retry} --keep-copies | --remove-copies"})
             else:
-                print("\n".join(["Nothing was changed: " + ask[0].lower() + ask[1:], *_parts_lines(parts, user),
-                                 f"Answer with `{retry} --keep-copies` or `{retry} --remove-copies`."]))
+                count = f"{len(agt)} cop{'y' if len(agt) == 1 else 'ies'}"
+                ui.out([ui.bold(title), "  ", ui.warn(f"! nothing changed: keep or remove {count}?")], "",
+                       *_left_lines(parts, user, heading, by_kind), "",
+                       *ui.columns([[ui.muted("Keep them as your own files"), ui.cmd(f"{retry} --keep-copies")],
+                                    [ui.muted("Remove them, with a backup"), ui.cmd(f"{retry} --remove-copies")]], gap=3))
             return 3
     if apply.in_worker():
         print(IN_WORKER)
         return 2
-    title = retry.split(" --")[0]
     repo_entries: list[dict[str, Any]] = []
     for part in parts:  # the repos first, so a failure there leaves your settings as they were
-        off, result, saved_at = _turn_off_writes(args, part, op, what, title, choice)
+        off_plan, result, saved_at = _turn_off_writes(args, part, op, what, title, choice)
         if part is not user:
-            off.notices += _stays_lines(part.left, choice)
+            off_plan.notices += _stays_lines(part.left, choice)
         if part is user:
             break
-        repo_entries.append({"scope": part.target, "plan": off, "result": result})
+        repo_entries.append({"scope": part.target, "plan": off_plan, "result": result})
         if result.failed:
             message = (f"Nothing else changed: a removal failed in {part.target.name}, so {what} still shares. "
                        "Run it again to finish.")
             if args.json:
                 _print({"failed": True, "notes": [message], "repos": [_repo_json(entry) for entry in repo_entries]})
             else:
-                print("\n".join([*(line for entry in repo_entries for line in [*_repo_lines(entry, title), ""]), message]))
+                ui.out(*(line for entry in repo_entries for line in [*_repo_lines(entry, title), ""]), message)
             return 1
     notes = ([done(choice == "remove")] if not result.failed else
              [f"Nothing else changed: a removal failed, so {what} still shares. Run it again to finish."])
-    notes += _stays_lines(user.left, choice)
-    if not result.failed:
-        notes += _refresh_triggers(saved)
-    _report(off, result, saved_at, args.json, title=title, notes=notes, repos=repo_entries)
+    stays = _stays_lines(user.left, choice)
+    removed = len(result.written)
+    sections: list[ui.Line] = []
+    for status, heading in STAYS:  # what stays, as the dry run listed it (Notes name the edited copies kept)
+        found = [entry for entry in user.left if entry.status == status and status != "edited"]
+        sections += ["", heading.replace(" either way", ""), *_left_rows(found, False, 2)] if found else []
+    _report(off_plan, result, saved_at, args.json, title=title, notes=notes + stays, repos=repo_entries,
+            found=_triggers(saved) if not result.failed else None,
+            headline=[ui.ok(f"✓ {off}" + (f", removed {removed} cop{'y' if removed == 1 else 'ies'}" if removed else ""))]
+            if off else None, rows=[[ui.muted(again[0]), ui.cmd(again[1])]] if again and not result.failed else None,
+            body=sections[1:] if off and not result.failed else None,
+            text_notes=notes[1:] if off and not result.failed else None)
     return 1 if result.failed else 0
 
 
@@ -2241,7 +2646,10 @@ def _drop_records(current: state.State, label: str) -> None:
 def _disable(args: argparse.Namespace) -> int:
     saved = settings.load()
     if not saved.enabled:
-        print("agt share is already off.")
+        if args.json:
+            print("agt share is already off.")
+        else:
+            ui.out([ui.bold("agt share disable"), "  ", ui.muted("already off")], "", *_turn_on_again())
         return 0
     if not args.remove_copies:
         if apply.in_worker():
@@ -2255,8 +2663,12 @@ def _disable(args: argparse.Namespace) -> int:
         removed = triggers.remove_all() + hooks.remove_all(_folders(load_config(), None, False, saved)[1])
         message = (f"agt share is off. Every copy stays as it is, and your answers stay in {short(at)}: "
                    "`agt share enable` turns it on again.")
-        _print({"enabled": False, "settings": str(at), "message": message, "notes": removed} if args.json
-               else "\n".join([message, *removed]))
+        if args.json:
+            _print({"enabled": False, "settings": str(at), "message": message, "notes": removed})
+            return 0
+        ui.out([ui.bold("agt share disable"), "  ", ui.ok("✓ off")], "",
+               f"  Every copy stays as it is, and your answers stay in {short(at)}.",
+               *(["  ", *ui.inline(line)] for line in _removed_lines(removed)), "", *_turn_on_again())
         return 0
     args.dry_run, args.keep_copies = False, False
     labels = {folder.label for folder in saved.folders}
@@ -2271,7 +2683,33 @@ def _disable(args: argparse.Namespace) -> int:
     hooks.remove_all(_folders(load_config(), None, False, saved)[1])
     return _turn_off(args, saved, set(saved.kinds), labels, "disable", "sharing", "agt share disable --remove-copies", change,
                      lambda removed: "agt share is off; `agt share enable` turns it on again and fills the copies again.",
-                     repos=in_repo)
+                     repos=in_repo, off="off", again=("Turn it on again", "agt share enable"))
+
+
+REMOVED = re.compile(r"Removed (the background watcher|agt's entries from (.+)|agt's hook copies from (.+))\.")
+
+
+def _removed_lines(lines: list[str]) -> list[str]:
+    """What turning sharing off took out, as one sentence; anything else (a file agt couldn't change) as it is."""
+
+    watcher, entries, copies, rest = False, [], [], []
+    for line in lines:
+        match = REMOVED.fullmatch(line)
+        if match is None:
+            rest.append(ui.tilde(line))
+        elif match[2]:
+            entries.append(ui.tilde(match[2]))
+        elif match[3]:
+            copies.append(ui.tilde(match[3]))
+        else:
+            watcher = True
+    parts = (["the background watcher"] if watcher else []) + ([f"agt's entries in {planner._and(entries)}"] if entries else []) \
+        + ([f"agt's hook copies in {planner._and(copies)}"] if copies else [])
+    return ([f"Removed {planner._and(parts)}."] if parts else []) + rest
+
+
+def _turn_on_again() -> list[ui.Line]:
+    return ui.columns([[ui.muted("Turn it on again"), ui.cmd("agt share enable")]], gap=3)
 
 
 def _put_back_replaced(current: state.State) -> None:
@@ -2318,9 +2756,10 @@ def _cli(args: argparse.Namespace) -> int:
         if args.json:
             _print({"enabled": saved.enabled, "folders": listed})
         else:
-            print("\n".join(([] if saved.enabled else [TURNED_OFF if saved.folders else NOT_ENABLED]) +
-                            [f"  {'[x]' if entry['sharing'] else '[ ]'} {entry['label']:<16} {short(Path(entry['path'])):<22} "
-                             f"{entry['status']}" for entry in listed] or ["agt found no CLI folders."]))
+            rows = [[f"{'[x]' if entry['sharing'] else '[ ]'} {entry['label']}", ui.muted(short(Path(entry["path"]))),
+                     ui.ok("sharing") if entry["sharing"] else ui.inline(entry["status"])] for entry in listed]
+            ui.out(*([] if saved.enabled else [TURNED_OFF if saved.folders else NOT_ENABLED]),
+                   *(ui.columns(rows, gap=3) if rows else ["agt found no CLI folders."]))
         return 0
     if not saved.enabled:
         _say_off(args)
@@ -2343,7 +2782,8 @@ def _cli(args: argparse.Namespace) -> int:
                          lambda removed: f"{args.label} doesn't share any more; `agt share cli add {folder.cli} "
                          f"{short(folder.path)}` shares it again" + (" and fills it." if removed else
                                                                      ", and the copies you kept stay your own files."),
-                         repos=in_repo if leaves else None)
+                         repos=in_repo if leaves else None, off=f"{args.label} doesn't share any more",
+                         again=("Share it again", f"agt share cli add {folder.cli} {short(folder.path)}"))
     cli = "antigravity" if args.cli == "agy" else args.cli
     if args.path:
         folder = Path(args.path).expanduser().absolute()
@@ -2387,9 +2827,11 @@ def _repo(args: argparse.Namespace) -> int:
         entries = [{"root": str(target.root), "worktree_of": str(target.main) if target.main else None} for target in found]
         if args.json:
             _print({"enabled": saved.enabled, "repos": entries})
+        elif found:
+            ui.out(*(["  ", short(target.root), *([ui.muted(f"  a worktree of {short(target.main)}")] if target.main else [])]
+                     for target in found))
         else:
-            print("\n".join([f"  {short(target.root)}" + (f"  (a worktree of {short(target.main)})" if target.main else "")
-                             for target in found] or ["No repo shares yet; `agt share repo add <path>` adds one."]))
+            ui.out("No repo shares yet.", *ui.columns([[ui.muted("Add one"), ui.cmd("agt share repo add <path>")]], gap=3))
         return 0
     if not saved.enabled:
         _say_off(args)
@@ -2407,8 +2849,8 @@ def _repo(args: argparse.Namespace) -> int:
         if args.json:
             _print({"added": str(top), **_repo_json(entry)})
         else:
-            print("\n".join([*_repo_lines(entry, "agt share repo add"),
-                             f"\n{short(top)} shares its own agents and skills now; `agt share repo remove {short(top)}` stops it."]))
+            ui.out(*_repo_lines(entry, "agt share repo add"), "",
+                   ui.inline(f"{short(top)} shares its own agents and skills now; `agt share repo remove {short(top)}` stops it."))
         return 1 if entry.get("result") and entry["result"].failed else 0
     real = os.path.realpath(root)
     target = next((entry for entry in scope.scopes(worktrees_join=False) if os.path.realpath(entry.root) == real), None)
@@ -2425,7 +2867,8 @@ def _repo(args: argparse.Namespace) -> int:
         return _turn_off(args, inner, set(inner.kinds), labels, "repo-remove", f"sharing in {target.name}",
                          f"agt share repo remove {short(target.root)}", change,
                          lambda removed: f"{target.name} doesn't share any more; `agt share repo add {short(target.root)}` "
-                                         "shares it again.")
+                                         "shares it again.", off=f"{target.name} doesn't share any more",
+                         again=("Share it again", f"agt share repo add {short(target.root)}"))
 
 
 def _item_scope(args: argparse.Namespace) -> scope.Scope:
@@ -2466,77 +2909,126 @@ def _kinds_command(args: argparse.Namespace) -> int:
         _say_off(args)
         return 0
     kind = args.kind
+    title = f"agt share kinds {args.kinds_command} {kind}"
+    word = {mcp.KIND: "MCP servers"}.get(kind, kind)
+
+    def already(how: str = "") -> int:
+        ui.out([ui.bold(title), "  ", ui.muted(("already on" if args.kinds_command == "add" else "already off") + how)])
+        return 0
+
+    def turned_on(sentence: str = "", body: Callable[[], list[ui.Line]] | None = None):
+        """The report of a kind turned on: its headline, then what it means (`body`, or one sentence)."""
+
+        def shown(plan: planner.Plan, result: apply.Result) -> dict[str, Any]:
+            said = body() if body else [f"  {sentence}"] if sentence else []
+            return {"headline": [ui.ok("✓ hooks are on" if kind == hooks.KIND else f"✓ {word} share now")], "body": said,
+                    "text_notes": [] if sentence or body else None}
+        return shown
+
     if kind == hooks.KIND:
         if args.kinds_command == "add":
             if saved.hooks:
-                print("agt share: hooks already share.")
-                return 0
+                return already()
             saved.hooks = True
-            code = _run_sync(args, saved, f"agt share kinds add {kind}", save=True, notes=[
+
+            def found() -> list[ui.Line]:
+                built = hooks.build(_folders(load_config(), None, False, saved)[1], saved.hook_approvals)
+                running: dict[str, list[str]] = {}
+                for copy in built.copies:
+                    if not copy.waiting:
+                        running.setdefault(copy.hook.name, []).append(copy.label)
+                waiting = [hook for hook in built.hooks if any(why is None and not built._approved(hook, label)
+                                                               for label, why in hook.verdicts.items())]
+                rows = [[ui.muted("Found"), ", ".join(hook.name for hook in built.hooks) if built.hooks
+                         else ui.muted("none in the folders sharing")]]
+                rows += [[ui.muted("Running"), "; ".join(f"{name} in {planner._and(labels)}" for name, labels in running.items())]] \
+                    if running else []
+                lines = ui.columns(rows, gap=3)
+                if waiting:
+                    lines += [f"  {'The others wait' if running else 'None is copied to another CLI'} until you approve "
+                              f"{'them' if running else 'it'} there.", "",
+                              *ui.columns([[ui.muted("Approve one"), ui.cmd("agt share pick hooks/<name> --in <cli>")]], gap=3)]
+                return lines + [["  ", *ui.inline(line)] for line in built.refused + built.problems]
+
+            return _run_sync(args, saved, title, save=True, notes=[
                 "agt lists your hooks and what each one can do in your other CLIs; none is copied until you approve it "
-                "there: `agt share pick hooks/<name> --in <label>`."])
-            if not args.json and not getattr(args, "dry_run", False):
-                print("\n" + hooks.build(_folders(load_config(), None, False, saved)[1], saved.hook_approvals).summary())
-            return code
-        saved.hooks = False
+                "there: `agt share pick hooks/<name> --in <label>`."], shown=turned_on(body=found))
+        was_on, saved.hooks = saved.hooks, False
         at = settings.save(saved)
         removed = hooks.remove_all(_folders(load_config(), None, False, saved)[1])
-        _print({"hooks": "off", "settings": str(at), "removed": removed} if args.json else
-               "\n".join(["agt share: hooks don't share any more; agt's copies of them are gone, and your approvals stay "
-                          "for next time.", *removed]))
+        if args.json:
+            _print({"hooks": "off", "settings": str(at), "removed": removed})
+        elif not was_on and not removed:
+            already()
+        else:
+            ui.out([ui.bold(title), "  ", ui.ok("✓ hooks don't share any more")], "",
+                   "  agt's copies of them are gone, and your approvals stay for next time.",
+                   *(["  ", *ui.inline(line)] for line in _removed_lines(removed)))
         return 0
     if kind == mcp.KIND:
         if args.kinds_command == "add":
             if saved.mcp:
-                print("agt share: MCP servers already share.")
-                return 0
+                return already()
             saved.mcp = True
-            return _run_sync(args, saved, f"agt share kinds add {kind}", save=True, notes=[
-                "MCP servers share between your CLIs' user settings; one with a secret written into it stays where it is."])
-        saved.mcp = False
+            return _run_sync(args, saved, title, save=True, notes=[
+                "MCP servers share between your CLIs' user settings; one with a secret written into it stays where it is."],
+                shown=turned_on("They share between your CLIs' user settings; one with a secret written into it stays "
+                                "where it is."))
+        was_on, saved.mcp = saved.mcp, False
         at = settings.save(saved)
-        _print({"mcp": "off", "settings": str(at)} if args.json else
-               "agt share: MCP servers don't share any more; every CLI keeps the servers it has.")
+        if args.json:
+            _print({"mcp": "off", "settings": str(at)})
+        elif not was_on:
+            already()
+        else:
+            ui.out([ui.bold(title), "  ", ui.ok("✓ MCP servers don't share any more")], "", "  Every CLI keeps the servers it has.")
         return 0
     if kind == "instructions":
         if args.kinds_command == "add":
             if saved.instructions != "off":
-                print(f"agt share: instructions already share ({saved.instructions}).")
-                return 0
+                return already(f" ({saved.instructions})")
             saved.instructions = "block"
-            return _run_sync(args, saved, f"agt share kinds add {kind}", save=True, notes=[
-                "Instructions share agt's block of each CLI's instruction file; `agt share adopt` adds the block to a file."])
+            def adopt(plan: planner.Plan, result: apply.Result) -> dict[str, Any]:
+                waits = [entry for entry in attention.grouped(attention.entries(plan, state.load())) if entry["kind"] == "adopt"]
+                return {**turned_on("agt keeps a shared section in each CLI's instruction file the same everywhere.")(plan, result),
+                        "rows": [[ui.muted("Add the section"), ui.cmd(attention.commands(entry)[0])] for entry in waits],
+                        "named": len(waits)}
+
+            return _run_sync(args, saved, title, save=True, notes=[
+                "Instructions share agt's block of each CLI's instruction file; `agt share adopt` adds the block to a file."],
+                shown=adopt)
         if apply.in_worker():
             print(IN_WORKER)
             return 2
-        saved.instructions = "off"
+        was_on, saved.instructions = saved.instructions != "off", "off"
         at = settings.save(saved)
         # A repo's CLAUDE.md that only points Claude Code at its AGENTS.md is agt's, and goes now.
         repos = [_sync_scope(argparse.Namespace(json=args.json, dry_run=False), target, "agt share kinds remove")
                  for target in _repo_scopes(saved)]
-        message = "agt share: instructions don't share any more; every instruction file keeps its text."
         if args.json:
             _print({"instructions": "off", "settings": str(at), "repos": [_repo_json(entry) for entry in repos]})
+        elif not was_on and not any(entry.get("skipped") or entry["result"].outcomes for entry in repos):
+            already()
         else:
-            print("\n".join([message, *(line for entry in repos if entry.get("skipped") or entry["result"].outcomes
-                                        for line in ["", *_repo_lines(entry, "agt share kinds remove")])]))
+            ui.out([ui.bold(title), "  ", ui.ok("✓ instructions don't share any more")], "",
+                   "  Every instruction file keeps its text.",
+                   *(line for entry in repos if entry.get("skipped") or entry["result"].outcomes
+                     for line in ["", *_repo_lines(entry, "agt share kinds remove")]))
         return 1 if any(entry.get("result") and entry["result"].failed for entry in repos) else 0
     if kind in LATER_KINDS:
-        raise ValueError(f"sharing {kind} comes in a later phase; this build shares agents and skills")
+        raise ValueError(f"agt doesn't share {kind} yet; it shares agents and skills")
     if kind == plugins.KIND:
         return _kinds_plugins(args, saved)
     if kind not in SUPPORTED_KINDS:
         raise ValueError(f"unknown kind {kind}; use agents or skills")
     if args.kinds_command == "add":
         if kind in saved.kinds:
-            print(f"agt share: {kind} already share.")
-            return 0
+            return already()
         saved.kinds = tuple(entry for entry in SUPPORTED_KINDS if entry in saved.kinds or entry == kind)
-        return _run_sync(args, saved, f"agt share kinds add {kind}", save=True,
-                         notes=_kept_there(state.load(), (kind,), {folder.label for folder in saved.folders}))
+        return _run_sync(args, saved, title, save=True,
+                         notes=_kept_there(state.load(), (kind,), {folder.label for folder in saved.folders}), shown=turned_on())
     if kind not in saved.kinds:
-        print(f"agt share: {kind} don't share now.")
-        return 0
+        return already()
     if len(saved.kinds) == 1:
         raise ValueError(f"{kind} is the last kind sharing; `agt share disable` turns sharing off")
 
@@ -2550,18 +3042,22 @@ def _kinds_command(args: argparse.Namespace) -> int:
     return _turn_off(args, saved, {kind}, labels, "kinds-remove", kind, f"agt share kinds remove {kind}", change,
                      lambda removed: f"{kind} don't share any more; `agt share kinds add {kind}` shares them again"
                      + (" and fills the copies." if removed else ", and the copies you kept stay your own files."),
-                     repos=in_repo)
+                     repos=in_repo, off=f"{kind} don't share any more",
+                     again=("Share them again", f"agt share kinds add {kind}"))
 
 
 def _kinds_plugins(args: argparse.Namespace, saved: settings.Settings) -> int:
     """`kinds add plugins`: what it would install, and only after your yes. `kinds remove plugins`: every CLI keeps
     the plugins it has, unless `--remove-copies` uninstalls the ones agt installed."""
 
+    title = f"agt share kinds {args.kinds_command} plugins"
     if args.kinds_command == "remove":
         if not saved.plugins:
-            print("agt share: plugins don't share now.")
+            ui.out([ui.bold(title), "  ", "already off"])
             return 0
-        if getattr(args, "remove_copies", False) and not getattr(args, "dry_run", False):
+        again = [ui.muted("Share them again"), ui.cmd("agt share kinds add plugins")]
+        remove = getattr(args, "remove_copies", False)
+        if remove and not getattr(args, "dry_run", False):
             if apply.in_worker():
                 print(IN_WORKER)
                 return 2
@@ -2572,51 +3068,94 @@ def _kinds_plugins(args: argparse.Namespace, saved: settings.Settings) -> int:
                 off = plan.restricted(set())
                 off.plugins = plugins.removal_only(plan.plugins, {entry.id: plugins.agt_made(entry, current)
                                                                   for entry in plan.plugins.entries})
-                result = apply.apply(off, current, op="kinds-remove", command="agt share kinds remove plugins")
+                result = apply.apply(off, current, op="kinds-remove", command=f"{title} --remove-copies")
                 if result.failed:
-                    _report(off, result, None, args.json, title="agt share kinds remove")
+                    _report(off, result, None, args.json, title=title)
                     return 1
                 saved.plugins = False
                 at = settings.save(saved)
                 attention.save(_plan(args, current, saved), current)
-            _report(off, result, at, args.json, title="agt share kinds remove",
-                    notes=["plugins don't share any more; agt uninstalled the copies it installed."])
+            count = len(result.written)
+            _report(off, result, at, args.json, title=title, text_notes=[],
+                    notes=["plugins don't share any more; agt uninstalled the copies it installed."],
+                    headline=[ui.ok("✓ plugins don't share any more" + (f", removed {count} cop{'y' if count == 1 else 'ies'}"
+                                                                        if count else ""))], rows=[again])
             return 0
         if getattr(args, "dry_run", False):
-            print("agt share kinds remove plugins: dry run; every CLI would keep the plugins it has.")
+            current = state.load()
+            shared = _plan(args, current, saved).plugins
+            made = {entry.name: sorted(plugins.agt_made(entry, current)) for entry in shared.entries}
+            made = {name: labels for name, labels in made.items() if labels}
+            count = sum(len(labels) for labels in made.values())
+            lines: list[ui.Line] = [[ui.bold(title), "  ", ui.muted("dry run, nothing changed")], ""]
+            if not made:
+                lines.append("agt installed no plugins, so every CLI keeps the plugins it has.")
+            else:
+                lines.append(f"Turning off plugins {'removes' if remove else 'leaves'} the {count} install"
+                             f"{'s' if count != 1 else ''} agt made:")
+                lines += ui.columns([[name, ui.muted(", ".join(labels))] for name, labels in made.items()], gap=3)
+                lines += ["", "To apply it:", ["  ", ui.cmd(f"{title} --remove-copies")]] if remove else \
+                    ["Every CLI keeps them.", "",
+                     *ui.columns([[ui.muted("Uninstall them too"), ui.cmd(f"{title} --remove-copies")]], gap=3)]
+            ui.out(*lines)
             return 0
         saved.plugins = False
         at = settings.save(saved)
-        _print({"plugins": "off", "settings": str(at)} if args.json else
-               "agt share: plugins don't share any more; every CLI keeps the plugins it has.")
+        if args.json:
+            _print({"plugins": "off", "settings": str(at)})
+        else:
+            ui.out([ui.bold(title), "  ", ui.ok("✓ plugins don't share any more")], "",
+                   "  Every CLI keeps the plugins it has; agt installs none from now on.", "", *ui.columns([again], gap=3))
         return 0
     if saved.plugins:
-        print("agt share: plugins already share.")
+        ui.out([ui.bold(title), "  ", "already on"])
         return 0
     saved.plugins = True
     note = ["Plugins go between your Claude Code and Codex folders, installed with each CLI's own commands. One that "
             "a CLI would load only part of waits for your answer: `agt share pick plugins/<id> --in <label>`."]
+    text = ["Each sync now installs plugins between your Claude Code and Codex folders, with each CLI's own commands."]
     if getattr(args, "dry_run", False):
-        return _run_sync(args, saved, "agt share kinds add plugins", notes=note)
+        return _run_sync(args, saved, title, notes=note, preview=lambda plan: _plugins_preview(plan, title))
     shared = _plan(args, state.load(), saved).plugins
+    go = [ui.muted("Go ahead"), ui.cmd(f"{title} --yes")]
     if shared.writes and not args.yes:
         installs = ", ".join(f"{entry.name} in {label}" for entry, label in shared.writes)
         if args.json or not _interactive():
             ask = f"Turning plugins on installs {len(shared.writes)} now: {installs}. Go ahead?"
-            _print({"error": "needs_choice", "ask": ask, "summary": shared.summary(),
-                    "retry": "agt share kinds add plugins --yes"} if args.json else
-                   f"Nothing was installed. {ask} Answer with `agt share kinds add plugins --yes`.\n\n{shared.summary()}")
+            if args.json:
+                _print({"error": "needs_choice", "ask": ask, "summary": shared.summary(), "retry": f"{title} --yes"})
+            else:
+                ui.out([ui.bold(title), "  ", ui.warn(f"! nothing installed: turning plugins on installs {len(shared.writes)} now")],
+                       "", *plugin_view.install_rows(shared), "",
+                       *ui.columns([go, [ui.muted("See everything"), ui.cmd(f"{title} --dry-run")]], gap=3))
             return 3
-        print(shared.summary())
+        ui.out(*plugin_view.install_rows(shared))
         try:
-            answer = input(f"\nInstall these {len(shared.writes)} plugins, and share plugins from now on? y / n: ")
+            answer = input("\nInstall these, and share plugins from now on? y yes · n no: ")
         except EOFError:
             answer = ""
         if answer.strip().lower() != "y":
-            print("Nothing was installed; plugins don't share. `agt share kinds add plugins --yes` installs them "
-                  "without asking.")
+            ui.out([ui.bold(title), "  ", "nothing installed; plugins don't share"], "", *ui.columns([go], gap=3))
             return 0
-    return _run_sync(args, saved, "agt share kinds add plugins", save=True, notes=note)
+    return _run_sync(args, saved, title, save=True, notes=note, shown=lambda plan, result: {"text_notes": text})
+
+
+def _plugins_preview(plan: planner.Plan, command: str) -> list[ui.Line]:
+    """`kinds add plugins --dry-run`: what it would install and what waits. The agents and skills it would change
+    come first, when there are any; the folders and what isn't shared aren't changes, so they stay out."""
+
+    lines: list[ui.Line] = [[ui.bold(command), "  ", ui.muted("dry run, nothing written")]]
+    grid = planner.table(plan, [item for item in plan.items if any(cell.state != planner.HAS for cell in item.cells.values())]) \
+        if plan.changes else []
+    lines += ["", *grid] if grid else []
+    lines += ["", *planner.conflict_lines(plan, False)] if plan.conflicts else []
+    for block in (plugin_view.install_rows(plan.plugins), plugin_view.wait_lines(plan, plan.plugins),
+                  plugin_view.short_lines(plan.plugins)):
+        lines += ["", *block] if block else []
+    count = len(plan.changes)
+    total = (f"{count} agent and skill change{'s' if count != 1 else ''} in {len(plan.folders_changed)} folder"
+             f"{'s' if len(plan.folders_changed) != 1 else ''}." if count else "No agent or skill changes.")
+    return lines + ["", [ui.bold(total), " ", ui.muted("To apply it:")], ["  ", ui.cmd(command)]]
 
 
 def _undo_entries(key: str | None, bare: str, label: str | None) -> tuple[dict | None, list[dict], str | None]:
@@ -2699,7 +3238,7 @@ def _undo(args: argparse.Namespace) -> int:
                   f"`agt share pick {name} --in {label}` shares it there.")
         else:
             print(f"agt share undo: nothing to put back; agt has no backup from a change to {name} "
-                  f"(a run that only made new copies leaves none). `agt share pick {name} --not-in <label>` removes a copy.")
+                  f"(a run that only made new copies leaves none). `agt share pick {name} --not-in <cli>` removes a copy.")
         return 0
     if apply.in_worker():
         print(IN_WORKER)
@@ -2806,7 +3345,18 @@ def command(args: argparse.Namespace) -> int:
         from agents_router.share import hook_run
 
         return hook_run.main(list(args.hook_args))
+    global _verbose
+    _verbose = bool(getattr(args, "verbose", False))
     try:
+        return _command(args, action)
+    finally:
+        _verbose = False
+
+
+def _command(args: argparse.Namespace, action: str | None) -> int:
+    try:
+        if action is None:
+            return _home(args)
         if action == "enable":
             return _enable(args)
         if action == "sync":
@@ -2836,6 +3386,7 @@ def command(args: argparse.Namespace) -> int:
                     + [{"kind": kind, "suggested": False, "available": False} for kind in LATER_KINDS],
                     **{key: proposal[key] for key in ("folders", "items", "needs_answer", "excluded")}})
         else:
-            print(planner.render_text(plan, "agt share enable --dry-run"))
+            ui.out(*planner.render(plan, "agt share enable --dry-run", header=[ui.bold("agt share scan"), "  ", ui.muted(
+                "what setup would offer; nothing written")]))
         return 0
     raise ValueError(f"unknown share command {action}")

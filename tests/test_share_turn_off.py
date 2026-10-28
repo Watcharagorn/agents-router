@@ -29,7 +29,8 @@ class CliRemoveTests(TurnOffBase):
         codex = self.user / ".codex" / "agents"
         out = self.share("cli", "remove", "codex", "--remove-copies")
         self.assertIn("codex doesn't share any more", out)
-        self.assertIn("interactive-lesson-site in codex: codex reads claude-lab's folder, so it stays", out)
+        self.assertIn("\nCopies another CLI reads stay:\n  ask-simply                codex   (codex reads claude-lab's folder)\n"
+                      "  interactive-lesson-site   codex   (codex reads claude-lab's folder)\n", out)
         self.assertEqual(list(codex.iterdir()), [])
         self.assertEqual(len(self.backups("dana.toml")), 1)
         self.assertTrue((self.lab / "skills" / "interactive-lesson-site" / "SKILL.md").is_file())
@@ -51,7 +52,7 @@ class CliRemoveTests(TurnOffBase):
             self.assertTrue((self.claude / "agents" / f"{name}.md").is_file(), name)
         self.assertTrue((self.claude / "skills" / "ask-simply" / "SKILL.md").is_file())
         self.assertFalse(os.path.lexists(self.claude / "skills" / "interactive-lesson-site"))  # agt's link
-        self.assertIn("dana in claude: your original stays", out)
+        self.assertIn("\nYour originals stay:\n  agents/dana         claude\n", out)
         self.assertNotIn("claude", self.everywhere("agents/dana"))
         os.rename(self.lab / "agents" / "dana.md", self.lab / "agents" / "reviewer.md")
         age(self.lab / "agents" / "reviewer.md")
@@ -61,7 +62,8 @@ class CliRemoveTests(TurnOffBase):
     def test_keep_copies_leaves_them_as_your_own_files(self):
         self.enable()
         out = self.share("cli", "remove", "kiro", "--keep-copies")
-        self.assertIn("shares it again, and the copies you kept stay your own files.", out)
+        self.assertIn("  dana, day-plan, explorer, ask-simply and interactive-lesson-site stay in kiro as your own files; "
+                      "agt no longer updates them.\n\n  Share it again   agt share cli add kiro ~/.kiro\n", out)
         self.assertTrue((self.user / ".kiro" / "agents" / "dana.json").is_file())
         self.assertEqual(self.record("agents/dana")["released"], ["kiro"])
         self.agent(self.claude, "dana", body="Dana, edited.", tools="Bash, Read")
@@ -165,7 +167,8 @@ class KindsTests(TurnOffBase):
         self.assertIn("Dana's long instructions.", (self.claude / "agents" / "dana.md").read_text(encoding="utf-8"))
         self.assertEqual(self.kiro("dana")["prompt"], "Dana, my way.")
         out = self.share("pick", "dana", "--in", "kiro")  # taken back: it differs, so it's for you to decide
-        self.assertIn("dana (agents)", out)
+        self.assertIn("\n  ! agents/dana   differs between claude-lab, claude, codex and kiro\n\n"
+                      "  Pick a version   agt share resolve dana\n", out)
 
     def test_later_kinds_and_the_last_kind(self):
         self.enable()
@@ -174,7 +177,7 @@ class KindsTests(TurnOffBase):
             self.share("kinds", "add", "commands", code=2)
             self.share("kinds", "remove", "skills", "--keep-copies")
             self.share("kinds", "remove", "agents", "--keep-copies", code=2)
-        self.assertIn("sharing commands comes in a later phase", err.getvalue())
+        self.assertIn("agt doesn't share commands yet; it shares agents and skills", err.getvalue())
         self.assertIn("agents is the last kind sharing", err.getvalue())
 
 
@@ -183,9 +186,9 @@ class DisableTests(TurnOffBase):
         self.enable("--auto-copy", "off")
         before = self.folders()
         out = self.share("disable")
-        self.assertIn("agt share is off. Every copy stays as it is", out)
+        self.assertIn("agt share disable  ✓ off\n\n  Every copy stays as it is", out)
         self.assertEqual(self.folders(), before)
-        self.assertIn("agt share is off. `agt share enable` turns it on again", self.share("sync"))
+        self.assertIn("off; your answers are saved\n  Turn it on again      agt share enable\n", self.share("sync"))
         proposal = json.loads(self.share("enable", "--dry-run", "--json"))
         self.assertEqual([folder["label"] for folder in proposal["folders"] if folder["used"]],
                          ["claude-lab", "claude", "codex", "kiro"])
@@ -197,7 +200,7 @@ class DisableTests(TurnOffBase):
         self.enable()
         self.write_kiro("explorer", prompt="Explore my way.")
         out = self.share("disable", "--remove-copies")
-        self.assertIn("agt share is off", out)
+        self.assertTrue(out.startswith("agt share disable  ✓ off, removed 8 copies\n"), out)
         self.assertIn("explorer in kiro: it has an edit the other copies don't have", out)
         self.assertEqual(self.kiro("explorer")["prompt"], "Explore my way.")
         self.assertFalse((self.user / ".kiro" / "agents" / "dana.json").exists())
@@ -205,7 +208,7 @@ class DisableTests(TurnOffBase):
         self.assertTrue((self.claude / "agents" / "dana.md").exists())
         self.assertTrue((self.lab / "agents" / "day-plan.md").exists())  # your own copy there
         self.assertFalse(settings.load().enabled)
-        self.assertIn("agt share is off", self.share("undo", "dana"))
+        self.assertIn("off; your answers are saved", self.share("undo", "dana"))
         self.share("enable", *FLAGS, "--resolve", "gamma-apikey=skip", "--yes")
         self.assertIn("dana's last backup is from turning sharing off, which undo doesn't reverse", self.share("undo", "dana"))
 
@@ -222,4 +225,4 @@ class DisableTests(TurnOffBase):
         # On again, the two versions are a conflict, never an edit.
         self.share("enable", *FLAGS, "--yes", "--accept-suggested")
         code, out = self.run_share("status")
-        self.assertIn("Conflict: gamma-apikey", out)
+        self.assertIn("  ! skill gamma-apikey, in ", out)
