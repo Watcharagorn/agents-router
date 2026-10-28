@@ -21,32 +21,32 @@ Without a terminal, or to see the plan as text, add `--dry-run`:
 
 ```text
 $ agt share enable --claude-dir ~/.claude --claude-dir ~/.claude-work --codex-dir ~/.codex --kiro-dir ~/.kiro --no-agy --dry-run
-agt share: dry run, nothing was written.
+agt share enable  dry run, nothing written
 
-Folders:
-  [x] claude           ~/.claude              1 agents, 1 skills
-  [x] claude-work      ~/.claude-work         1 agents, 0 skills
-  [x] codex            ~/.codex               0 agents, 0 skills
-  [x] kiro             ~/.kiro                0 agents, 0 skills
+agt copies your agents and skills between these CLI folders, so every CLI has the same ones.
 
-Agents           claude      claude-work codex       kiro
-  planner        +           ·           -1          +
-  reviewer       ·           +           +           +
+Folders
+  [x] claude        ~/.claude        1 agent, 1 skill
+  [x] claude-work   ~/.claude-work   1 agent, 0 skills
+  [x] codex         ~/.codex         0 agents, 0 skills
+  [x] kiro          ~/.kiro          0 agents, 0 skills
 
-Skills           claude      claude-work codex       kiro
-  release-notes  ·           +           +           +
+                   claude  claude-work  codex  kiro
+  Agents
+    planner        +       ·            -¹     +
+    reviewer       ·       +            +      +
+  Skills
+    release-notes  ·       +            +      +
 
-  + copy  ~ update  · has it  x you unticked it  - can't go there  ! conflict  … waiting
-  1. planner in codex: Codex can't limit an agent's tools, and this one has no shell (tool_widening = "allow-if-shell")
+  + copy  · has it  - can't be copied there
+  ¹ Codex can't limit an agent's tools, and this one has no shell (tool_widening = "allow-if-shell").
 
-New folders: ~/.codex/agents, ~/.claude-work/skills, ~/.agents/skills, ~/.kiro/skills
-
-8 changes in 4 folders.
-Plan 3eb6ce30adaa. To apply it:
+8 changes in 4 folders, and 4 new folders: ~/.codex/agents, ~/.claude-work/skills, ~/.agents/skills, ~/.kiro/skills
+To apply exactly this plan:
   agt share enable --yes --if-plan 3eb6ce30adaa --claude-dir '~/.claude' --claude-dir '~/.claude-work' --codex-dir '~/.codex' --kiro-dir '~/.kiro' --no-agy
 ```
 
-The last line applies exactly that plan. `--if-plan` refuses if anything changed since the dry run, and shows the new plan instead. Your answers are saved in `~/.agt/settings.toml`, so later runs don't ask again.
+The last line applies exactly that plan. `--if-plan` refuses if anything changed since the dry run, and shows the new plan instead. When it's applied, agt lists each agent or skill it copied with the folders it went to (`-v` adds each copy's file). Your answers are saved in `~/.agt/settings.toml`, so later runs don't ask again.
 
 Each folder has a short label, used by every other command: `claude` for `~/.claude`, `claude-work` for `~/.claude-work`, and `codex`, `kiro` and `antigravity` for the others. When two folders would get the same label, they're `claude@~/path` instead.
 
@@ -180,7 +180,7 @@ agt keeps its entries' places in each hooks file, since Codex trusts hooks by th
 
 ## Sharing plugins
 
-Plugins are off unless you turn them on: `agt share kinds add plugins`, or `--plugins on` with `enable` or `agt setup`. Turning them on first shows what it would install. In a terminal it asks before installing anything; without one it exits 3 until you add `--yes`, and `--dry-run` only shows the plan. Once on, a plugin you install in one of your Claude Code or Codex folders is installed in the others, with that CLI's own commands: `claude plugin marketplace add` and `claude plugin install`, or `codex plugin marketplace add` and `codex plugin add`. agt then checks `plugin list` shows it.
+Plugins are off unless you turn them on: `agt share kinds add plugins`, or `--plugins on` with `enable` or `agt setup`. Turning them on first shows what it would install. In a terminal it asks before installing anything; without one it exits 3 until you add `--yes`, and `--dry-run` only shows the plan. Once on, a plugin you install in one of your Claude Code or Codex folders is installed in the others, with that CLI's own commands: `claude plugin marketplace add` and `claude plugin install`, or `codex plugin marketplace add` and `codex plugin add`. agt then checks `plugin list` shows it. An install can take minutes, so in a terminal agt shows each one as it runs.
 
 Each plugin is an item named `plugins/<name>@<marketplace>`:
 
@@ -218,7 +218,7 @@ agt share plugins apply                              # asks about each one, in a
 agt share plugins apply formatter@tools:codex --yes  # installs the ones you name
 ```
 
-In a terminal, `apply` asks about each plugin, with the parts it would leave out (`x` means "never offer it again", saved as `"plugins/<id>" = "off"` under `[share.targets]`). Without a terminal, it lists them and exits 3 until you name them with `--yes`.
+In a terminal, `apply` asks about each plugin, with the commands it would run and the parts it would leave out (`x` means "never offer it": it isn't offered again in any CLI, saved as `"plugins/<id>" = "off"` under `[share.targets]`). Without a terminal, it lists them and exits 3 until you name them with `--yes`.
 
 ## What a copy holds
 
@@ -236,14 +236,19 @@ Edit an agent or skill in any CLI. agt spreads the edit on its own ([below](#sta
 
 ```text
 $ agt share status
-agt share is on for claude (~/.claude), claude-work (~/.claude-work), codex (~/.codex), kiro (~/.kiro).
-  2 items in sync, 3 changes for the next sync, 0 conflicts, 0 waiting, 0 waiting to be deleted, 0 not shared.
-  `agt share sync` writes the changes.
+agt share  on, 3 changes to write
+
+  Folders   claude, claude-work, codex, kiro
+  Shared    2 agents and skills in sync, 3 to write
+  Watcher   on, last run 1 min ago: nothing moved
+
+`agt share sync` writes the changes now; the watcher does it within a minute.
 $ agt share sync
-agt share sync: wrote 3 changes in 3 folders.
-  ~ agents/reviewer in claude-work: ~/.claude-work/agents/reviewer.md
-  ~ agents/reviewer in codex: ~/.codex/agents/reviewer.toml
-  ~ agents/reviewer in kiro: ~/.kiro/agents/reviewer.json
+agt share sync  ✓ wrote 3 changes in 3 folders
+
+  ~ agents/reviewer   claude-work, codex, kiro
+
+  Backup   ~/.agents-router/state/share/backups/20261028-100517-37d2a6
 ```
 
 `status` writes nothing. It exits 1 while there's a conflict, an item waiting to be deleted, or a frozen folder (below). A file saved less than 3 seconds ago waits for the next sync.
@@ -256,14 +261,23 @@ agt share sync: wrote 3 changes in 3 folders.
 
 ```text
 $ agt share status
-  Conflict: reviewer differs between claude-work, kiro (the copies were edited differently). Your choice: `agt share resolve reviewer`.
+agt share  on, 1 thing waits for you
+
+  Folders   claude, claude-work, codex, kiro
+  Shared    2 agents and skills in sync
+  Watcher   on, last run 1 min ago: nothing moved
+
+Waiting for you
+  ! agent reviewer, in claude-work and kiro
+    The copies were edited differently.
+    Pick a version   agt share resolve reviewer
 ```
 
-`agt share resolve reviewer` in a terminal shows how the copies differ and asks which one wins. `--prefer <label>` picks one directly, `--prefer newest` takes the newest of the copies in conflict, and `--prefer skip` stops sharing the item and leaves every copy as it is. `--all` resolves every conflict, and `--kind agents` limits `--all` to one kind. `agt share status --diff` shows the differences without changing anything.
+`agt share resolve reviewer` in a terminal shows how the copies differ (the newest copy's lines in green) and asks which one wins. `--prefer <label>` picks one directly, `--prefer newest` takes the newest of the copies in conflict, and `--prefer skip` stops sharing the item and leaves every copy as it is. `--all` resolves every conflict, and `--kind agents` limits `--all` to one kind. `agt share status --diff` shows the differences without changing anything.
 
 ### Choosing where an item goes
 
-`agt share pick` in a terminal opens a grid of items by CLI: the arrow keys move, Space ticks or unticks a cell, `a` ticks and `n` unticks a whole row, Enter saves, and Esc or `q` quits without saving. By command:
+`agt share pick` in a terminal opens a grid of items by CLI: the arrow keys move, Space ticks or unticks a cell, `a` ticks and `n` unticks a whole row, Enter saves, and Esc or `q` quits without saving. The line under the grid names each change before you press Enter ("explorer leaves kiro"). By command:
 
 ```bash
 agt share pick reviewer --not-in kiro        # the copy agt made in Kiro goes to the backups

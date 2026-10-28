@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -469,6 +470,22 @@ def _arrived(label: str, mark: dict[str, Any]) -> list[str]:
 SHOWN_AGAIN = 86400  # a waiting item shows in the first session after it appears, then at most once a day
 
 
+def _session_line(entry: dict) -> str:
+    """One thing that waits, as plain text with the command status shows first. A failure's error is long, so it
+    points to `status` instead: a failed install has several fixes there, a failed write has none to run."""
+
+    if entry["kind"] == "failing" and entry.get("why"):
+        return f"agt share: {entry['message'].removesuffix(': ' + entry['why'])}; `agt share status` shows what to run."
+    if entry["kind"] == "failing":
+        name = entry["item"].partition("/")[2] or entry["item"]
+        folders = entry.get("folders") or []
+        where = f" in {', '.join(folders[:-1])} and {folders[-1]}" if len(folders) > 1 else f" in {folders[0]}" if folders else ""
+        runs = entry.get("runs") or (re.findall(r"in the last (\d+) runs", entry["message"]) or ["3"])[0]
+        return f"agt share: agt couldn't write {name}{where} ({runs} runs in a row); `agt share status` shows why."
+    fixes = attention.commands(entry)
+    return f"agt share: {entry['message']}" + (f"; `{fixes[0]}`" if fixes else "") + "."
+
+
 def attention_lines(limit: int = 3, *, remember: bool = True) -> list[str]:
     """What waits for you, one line each with the command that fixes it.
 
@@ -484,16 +501,16 @@ def attention_lines(limit: int = 3, *, remember: bool = True) -> list[str]:
     location = scope.share_root() / "shown.json"
     shown = fsutil.read_json(location, {}) or {}
     now = time.time()
-    waiting = [entry for entry in attention.load() if entry.get("who") in ("choice", "action")
-               and (not remember or now - (shown.get(entry.get("id")) or 0) >= SHOWN_AGAIN)]
-    lines = [f"agt share: {entry['message']}" + (f"; `{entry['fix'][0]}`" if entry.get("fix") else "") + "."
-             for entry in waiting[:limit]]
+    # A plugin waiting in two CLIs is one line; it shows again when any of its folders is due.
+    waiting = [entry for entry in attention.grouped(attention.load()) if entry.get("who") in ("choice", "action")
+               and (not remember or now - min(shown.get(key) or 0 for key in entry["ids"]) >= SHOWN_AGAIN)]
+    lines = [_session_line(entry) for entry in waiting[:limit]]
     if len(waiting) > limit:
         lines.append(f"agt share: {len(waiting) - limit} more; `agt share status` lists them.")
     if remember and waiting:
         current = {entry.get("id") for entry in attention.load()}
         kept = {key: value for key, value in shown.items() if key in current}  # resolved items are forgotten
-        kept.update({entry["id"]: now for entry in waiting})
+        kept.update({key: now for entry in waiting for key in entry["ids"]})
         fsutil.make_private_dir(location.parent)
         fsutil.write_json(location, kept)
     return lines
@@ -627,6 +644,43 @@ def badge() -> str:
         return "share:!"
     if not saved.enabled:
         return ""
-    count = len([entry for entry in attention.load() if entry.get("who") in ("choice", "action")])
-    count += 1 if saved.watcher and health()["stopped"] else 0
+    count = wait_count(saved)
     return f"share:{count}!" if count else ""
+
+
+def watcher_problems(saved: settings.Settings, found: dict[str, Any] | None = None, *,
+                     check_loaded: bool = True) -> list[tuple[str, str]]:
+    """What's wrong with the background side, as (fix, sentence); fix is "install", "restart" or "repair". Nothing
+    when the watcher is off by your setting or can't run here, except a broken launcher, which session hooks use too.
+    `check_loaded` asks launchd, which takes a process: the badge and the home screen read files only."""
+
+    if not saved.enabled:
+        return []
+    found = health() if found is None else found
+    problems = []
+    if saved.watcher and not triggers.watcher_supported():
+        if not found["installed"]:
+            problems.append(("install", "It isn't installed."))
+        elif found["stopped"]:
+            problems.append(("restart", "It stopped."))
+        elif check_loaded and not triggers.loaded():
+            problems.append(("repair", "launchd doesn't list it, so it isn't running."))
+    if found["launcher_problem"]:
+        problems.append(("repair", f"Its launcher is broken: {found['launcher_problem']}."))
+    return problems
+
+
+def wait_count(saved: settings.Settings, *, found: dict[str, Any] | None = None, watcher: bool = True) -> int:
+    """What waits for you, as status counts it: a plugin waiting in two CLIs once, every listed repo's waits, and the
+    watcher once (unless `watcher` is false). It reads files only: a repo's saved list, never git, so a worktree's
+    waits show in status alone."""
+
+    def waiting() -> int:
+        return len([entry for entry in attention.grouped(attention.load()) if entry.get("who") in ("choice", "action")])
+
+    count = waiting()
+    if not scope.current().project:
+        for entry in scope.listed():
+            with scope.use(scope.Scope(Path(entry["root"]))):
+                count += waiting()
+    return count + (1 if watcher and watcher_problems(saved, found, check_loaded=False) else 0)

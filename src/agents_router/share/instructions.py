@@ -344,7 +344,7 @@ def attention(plan: Plan) -> list[dict[str, Any]]:
     if plan.conflict:
         found.append({"id": f"conflict:{KEY}", "kind": "conflict", "item": KEY, "who": "choice",
                       "message": f"instructions differ between {', '.join(plan.decision.labels)} ({plan.decision.reason})",
-                      "fix": ["agt share resolve instructions --prefer <label>"]})
+                      "fix": ["agt share resolve instructions --prefer <label>"], "folders": list(plan.decision.labels)})
     elif plan.decision is not None and plan.decision.action == engine.WAIT and plan.decision.reason != "saved less than 3 s ago":
         found.append({"id": f"unreadable:{KEY}", "kind": "unreadable", "item": KEY, "who": "action",
                       "message": f"agt can't use the instructions: {plan.decision.reason}", "fix": []})
@@ -352,7 +352,7 @@ def attention(plan: Plan) -> list[dict[str, Any]]:
         for copy in plan.unadopted:
             found.append({"id": f"adopt:{KEY}:{copy.label}", "kind": "adopt", "item": KEY, "who": "choice",
                           "message": f"{copy.label}'s {copy.path.name} has no agt share block, so it doesn't share instructions",
-                          "fix": [f"agt share adopt {copy.label}"]})
+                          "fix": [f"agt share adopt {copy.label}"], "label": copy.label})
     return found
 
 

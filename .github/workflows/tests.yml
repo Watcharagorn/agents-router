@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Dependencies
+        run: python -m pip install "rich>=14.3.4,<16" "rich-argparse>=1.8,<2"
       - name: Core tests
         env:
           PYTHONPATH: ${{ github.workspace }}/src${{ runner.os == 'Windows' && ';' || ':' }}${{ github.workspace }}/tests

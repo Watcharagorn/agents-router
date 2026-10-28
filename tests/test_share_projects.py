@@ -62,6 +62,22 @@ class ProjectTests(ItemBase):
         listed = json.loads(self.share("repo", "list", "--json"))
         self.assertEqual([entry["root"] for entry in listed["repos"]], [os.path.realpath(self.repo)])
 
+    def test_a_repos_wait_in_status_names_the_repo_in_its_commands(self):
+        self.enable()
+        self.share("repo", "add", str(self.repo))
+        self.agent(self.repo / ".claude", "builder", body="Builds it one way.", tools="Bash, Read")
+        kiro = self.repo / ".kiro" / "agents" / "builder.json"
+        data = json.loads(kiro.read_text())
+        data["prompt"] = "Builds it another way."
+        kiro.write_text(json.dumps(data, indent=2) + "\n")
+        age(self.repo / ".claude" / "agents" / "builder.md", kiro)
+        status = self.share("status", code=1)
+        self.assertIn("agt share  on, 1 thing waits for you\n", status)
+        self.assertRegex(status, r"\n  ! agent builder, in [a-z, -]+ \(repo app\)\n    The copies were edited differently\.\n"
+                                 r"    Pick a version +agt share resolve builder --repo \S+/app\n")
+        self.share("sync")  # a sync saves the repo's waits
+        self.assertEqual(watch.badge(), "share:1!")  # the badge reads them too, without git
+
     def test_edits_in_a_repo_spread_and_status_names_the_repo(self):
         self.enable()
         self.share("repo", "add", str(self.repo))
@@ -71,8 +87,8 @@ class ProjectTests(ItemBase):
         kiro.write_text(json.dumps(data, indent=2) + "\n")
         age(kiro)
         status = self.share("status")
-        self.assertIn("Repo ", status)
-        self.assertIn("2 changes for the next sync", status.split("Repo ")[1])  # to claude and codex
+        self.assertIn("agt share  on, 2 changes to write\n", status)  # to claude and codex
+        self.assertRegex(status, r"\n  Repos +app  \d+ in sync, 2 to write\n")
         self.share("sync")
         self.assertIn("Builds the app, fast.", (self.repo / ".claude" / "agents" / "builder.md").read_text())
         self.assertIn("builder.md", self.git("status", "--porcelain"))  # your review is git diff; nothing is staged

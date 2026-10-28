@@ -426,7 +426,7 @@ def attention(plan: Plan) -> list[dict[str, Any]]:
         found.append({"id": f"changed:{copy.hook.key}:{copy.label}", "kind": "changed", "item": copy.hook.key,
                       "who": "choice", "message": f"hook {copy.hook.name} changed since you approved it for {copy.label}; "
                                                   "its copy there does nothing until you approve it again",
-                      "fix": [f"agt share pick {copy.hook.key} --in {copy.label}"]})
+                      "fix": [f"agt share pick {copy.hook.key} --in {copy.label}"], "label": copy.label, "why": "changed"})
     for problem in plan.problems:
         found.append({"id": f"unreadable:hooks:{problem.partition(':')[0]}", "kind": "unreadable", "item": "hooks",
                       "who": "action", "message": f"agt can't read hooks in {problem}", "fix": []})

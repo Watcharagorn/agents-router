@@ -14,7 +14,7 @@ if __name__ == "__main__":
     sys.path[:] = [entry for entry in sys.path if Path(entry or ".").resolve() != here]
     sys.path.insert(0, str(here.parent))
     try:
-        from agents_router.cli import main
+        from agents_router.entry import main
 
         code = main(sys.argv[1:])
     except BaseException:

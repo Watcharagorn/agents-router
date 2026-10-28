@@ -155,7 +155,7 @@ class AntigravityAgentInstallTests(SetupBase):
     def test_dry_run_creates_no_companion_files(self):
         code, out = self.run_cli("--host", "antigravity", "--dry-run")
         self.assertEqual(code, 0, out)
-        self.assertIn("would install relay agent agt-claude", out)
+        self.assertIn("relay agents agt-claude, agt-codex, agt-antigravity in ", out)
         self.assertFalse(self.plugin().exists())
 
     def test_failed_main_plugin_install_does_not_install_companion(self):

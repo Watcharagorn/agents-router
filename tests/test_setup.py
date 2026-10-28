@@ -124,9 +124,9 @@ class PluginInstallTests(SetupBase):
         code, out = self.run_cli("--dry-run", "--account", f"max-2={self.root / 'acct'}")
         self.assertEqual(code, 0, out)
         self.assertIn("dry run", out)
-        for text in ("would run `claude plugin marketplace add Watcharagorn/agents-router`",
-                     "would run `codex plugin add agents-router@agents-router`",
-                     "would run `agy plugin install https://github.com/Watcharagorn/agents-router`",
+        for text in ("claude plugin marketplace add Watcharagorn/agents-router",
+                     "codex plugin add agents-router@agents-router",
+                     "agy plugin install https://github.com/Watcharagorn/agents-router",
                      "would register and sync"):
             self.assertIn(text, out)
         for folder in (self.claude_dir, self.codex_dir, self.agy_dir):
@@ -307,19 +307,19 @@ class UpdateTests(SetupBase):
         self.log.unlink()
         code, out = self.run_update("--dry-run")
         self.assertIn("would run `python -c print('reinstalled')`", out.replace(Path(sys.executable).stem, "python"))
-        self.assertIn("would run `agy plugin install https://github.com/Watcharagorn/agents-router`", out)
+        self.assertRegex(out, r"\+  Antigravity  agy plugin install https://github.com/Watcharagorn/agents-router\n")
         self.assertTrue(all("list" in c["argv"] for c in self.calls()))
         code, out = self.run_update("--no-package", "--host", "antigravity")
         self.assertEqual(code, 0, out)
         self.assertNotIn("agt:", out)
-        self.assertIn("ran `agy plugin install", out)
+        self.assertRegex(out, r"\+  Antigravity  agy plugin install ")
 
     def test_nothing_installed_and_unknown_package(self):
         code, out = self.run_update(info=("unknown", None))
         self.assertEqual(code, 1)
         self.assertIn("couldn't tell how the package was installed", out)
         self.assertIn("pipx install --force git+https://github.com/Watcharagorn/agents-router", out)
-        self.assertIn("Run `agt setup`", out)
+        self.assertIn("  Plugin   no host has it yet; `agt setup` installs it\n", out)
 
     def test_settings_route_needs_a_restart(self):
         self.run_cli("--host", "claude", "--claude-route", "settings")
@@ -334,7 +334,7 @@ class UpdateTests(SetupBase):
         method, argv = setup.detect_install("/home/u/.local/pipx/venvs/agents-router", "/x/site-packages", None, None, "py")
         self.assertEqual((method, argv[1:]), ("pipx", ["install", "--force", url]))
         method, argv = setup.detect_install("/home/u/.local/share/uv/tools/agents-router", "/x", None, None, "py")
-        self.assertEqual((method, argv[1:]), ("uv", ["tool", "install", "--force", url]))
+        self.assertEqual((method, argv[1:]), ("uv", ["tool", "install", "--force", "--compile-bytecode", url]))
         user_site = str(self.root / "user-site")
         method, argv = setup.detect_install("/usr", str(self.root / "user-site"), None, user_site, "py")
         self.assertEqual(method, "pip-user")

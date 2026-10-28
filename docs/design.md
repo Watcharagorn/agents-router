@@ -56,7 +56,7 @@ One Python package with two front ends over the same functions:
 - an MCP server (stdio) for every MCP host;
 - an `agt` command-line helper. People can run it directly, and the Claude Code plugin hooks call it (`agt hook await`, `agt hook pending`).
 
-Python because the existing adapter, its reviewer and tests are Python. The core uses only the standard library, including a small MCP server, so installing it pulls in nothing else.
+Python because the existing adapter, its reviewer and tests are Python. The core uses only the standard library, including a small MCP server. The one dependency is rich (with rich-argparse for help), which only `ui.py` imports, and only to draw output for a person at a terminal; hooks, the MCP server and agents never load it.
 
 ### Job API
 

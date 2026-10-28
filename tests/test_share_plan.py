@@ -124,6 +124,9 @@ class DryRunTests(MacCopy):
         self.assertIn("dana in claude-lab, codex, kiro: no `tracker` server (no CLI here has one)" + left.format("tracker"), notes)
         self.assertIn("dana in claude-lab, codex, kiro: no `brave-search` server (no CLI here has one)" + left.format("brave-search"), notes)
         self.assertIn("explorer in kiro: no `brave-search` server (no CLI here has one)" + left.format("brave-search"), notes)
+        _, text = self.run_share("enable", *FLAGS, "--dry-run")  # a person reads one sentence
+        self.assertIn("\n  dana, day-plan and explorer use servers no CLI here has (tracker, brave-search), so their Kiro copies "
+                      "leave out those tools.\n", text)
 
     def test_a_server_one_folder_has_is_found_by_name_only(self):
         (self.user / ".claude.json").write_text(json.dumps({"mcpServers": {"tracker": {"command": "tracker", "env": {"TOKEN": "x"}}}}),
@@ -131,13 +134,18 @@ class DryRunTests(MacCopy):
         notes = [note for item in self.dry_run()["items"] for note in item["notes"]]
         self.assertIn("dana in claude-lab, codex, kiro: no `tracker` server (Phase 3 brings it along); the Kiro copy leaves out its tracker tools",
                       notes)
+        _, text = self.run_share("enable", *FLAGS, "--dry-run")
+        self.assertIn("\n  dana and day-plan use tracker, which only claude has; `agt share kinds add mcp` shares it.\n", text)
+        _, text = self.run_share("enable", *FLAGS, "--mcp", "on", "--dry-run")  # on, but its secret keeps it in claude
+        self.assertRegex(text, r"\n  dana and day-plan use tracker, which stays in claude \(.+\), so their Kiro copies leave out "
+                               r"its tracker tools\.\n")
 
     def test_skip_unticks_one_cell_and_shows_what_it_would_save(self):
         proposal = self.dry_run("--skip", "dana@codex")
         self.assertEqual(proposal["summary"], "8 changes in 4 folders, 1 conflicts")
         self.assertEqual(self.cells(proposal, "dana")["codex"], "skipped")
         _, text = self.run_share("enable", *FLAGS, "--skip", "dana@codex", "--dry-run")
-        self.assertIn("Would save in your user settings:\n  dana: not in codex", text)
+        self.assertIn("Would save in your user settings\n  dana: not in codex", text)
 
     def test_resolve_picks_a_version_for_a_conflict(self):
         proposal = self.dry_run("--resolve", "gamma-apikey=claude-lab")
@@ -158,15 +166,18 @@ class DryRunTests(MacCopy):
     def test_text_table_and_command(self):
         code, text = self.run_share("enable", *FLAGS, "--dry-run")
         self.assertEqual(code, 0)
-        self.assertIn("agt share: dry run, nothing was written.", text)
-        self.assertIn("claude-lab  claude      codex       kiro", text)  # columns follow the --claude-dir order
-        self.assertRegex(text, r"\n  dana +\+ +· +\+ +\+")
-        self.assertRegex(text, r"\n  interactive-lesson-site +· +\+ +· +\+")
-        self.assertIn("explorer in codex: Codex has a built-in agent named explorer", text)
-        self.assertIn("gamma-apikey (skills):", text)
-        self.assertIn("9 changes in 4 folders.", text)
+        self.assertIn("agt share enable  dry run, nothing written\n", text)
+        self.assertIn("claude-lab  claude  codex  kiro\n", text)  # columns follow the --claude-dir order
+        self.assertRegex(text, r"\n    dana +\+ +· +\+ +\+\n")
+        self.assertRegex(text, r"\n    interactive-lesson-site +· +\+ +· +\+\n")
+        self.assertRegex(text, r"\n    explorer +· +· +-¹ +\+\n")
+        self.assertIn("\n  + copy  · has it  - can't be copied there  ! conflict\n", text)  # only the marks it uses
+        self.assertIn("\n  ¹ Codex has a built-in agent named explorer.\n", text)
+        self.assertIn("\n1 conflict: nothing is written for it until you pick a version\n  ! skills/gamma-apikey\n", text)
+        self.assertIn("\n    Pick one           --resolve gamma-apikey=<cli>\n", text)
+        self.assertIn("\n9 changes in 4 folders, and 2 new folders: ~/.codex/agents, ~/.kiro/skills\n", text)
         digest = self.dry_run()["plan"]
-        self.assertIn(f"Plan {digest}. To apply it:", text)
+        self.assertIn(f"To apply exactly this plan:\n  agt share enable --yes --if-plan {digest} ", text)
         self.assertIn(f"  agt share enable --yes --if-plan {digest} --claude-dir '~/.claude-lab'", text)
 
     def test_the_plan_id_changes_when_an_item_changes(self):
@@ -216,7 +227,7 @@ class DryRunTests(MacCopy):
         for args in (["sync"], ["sync", "--dry-run"], ["status"]):
             with self.subTest(args=args):
                 code, out = self.run_share(*args)
-                self.assertEqual((code, out.strip()), (0, "agt share isn't enabled yet. `agt share enable --dry-run` shows what it would do."))
+                self.assertEqual((code, out), (0, "agt share  not set up yet\n  See what it would do  agt share enable --dry-run\n"))
 
     def test_bad_flags_are_errors(self):
         err = io.StringIO()
@@ -226,7 +237,7 @@ class DryRunTests(MacCopy):
                 with self.subTest(args=args):
                     code, _ = self.run_share("enable", *args, "--dry-run")
                     self.assertEqual(code, 2)
-        self.assertIn("later phase", err.getvalue())
+        self.assertIn("agt doesn't share commands yet", err.getvalue())
         self.assertIn("hooks aren't a kind of item", err.getvalue())
         self.assertIn("no folder labelled nowhere", err.getvalue())
 

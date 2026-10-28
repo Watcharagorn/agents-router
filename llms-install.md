@@ -1,6 +1,6 @@
 # Installing Agents Router (for AI agents)
 
-Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer and has no dependencies.
+Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer; its one dependency, rich (for color in a terminal), installs with it.
 
 1. Install the `agt` command:
 
@@ -32,7 +32,7 @@ Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigrav
 
 5. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
 
-6. Run `agt doctor --runtime <runtime>` for each runtime set up (`claude`, `codex`, `antigravity`). Plain `agt doctor` checks Claude only. To update later, run `agt update`.
+6. Run `agt doctor`. It checks every runtime that's installed; `--runtime <runtime>` checks one (`claude`, `codex`, `antigravity`). To update later, run `agt update`.
 
 For an MCP client without a plugin system (Cline, Cursor and others), add a stdio server instead of step 2:
 

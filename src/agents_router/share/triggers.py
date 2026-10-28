@@ -26,6 +26,7 @@ file up before changing it. `share disable` removes all of it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -485,21 +486,54 @@ def _record(files: list[dict[str, str]]) -> None:
 # All of it ---------------------------------------------------------------------------
 
 
+@dataclass
+class Refreshed:
+    """What `refresh` did: one line per trigger (for --json), and what a person reads.
+
+    `news`: this run installed or removed the watcher, or added or removed a session-start or save entry. A new list
+    of folders for the watcher to watch isn't news.
+    """
+
+    lines: list[str] = field(default_factory=list)
+    news: bool = False
+    enabled: bool = True  # false: sharing is off, and `lines` say what was taken out
+    watcher: str = "off"  # runs, off, missing (it can't run here), or failed
+    missing: str = ""  # why it can't run here, as the end of "There's no background watcher here: …"
+    catch_up: dict[str, bool] = field(default_factory=dict)  # label -> saves too (Claude Code), in folder order
+    problems: list[str] = field(default_factory=list)
+
+
 def refresh(saved: share_settings.Settings, included: list[providers.Provider]) -> list[str]:
     """Make the launcher, the watcher and the hook entries match the settings. Returns one line per trigger.
 
     With sharing off it removes them all. A hooks file agt can't read is left as it is and named.
     """
 
+    return refreshed(saved, included).lines
+
+
+def refreshed(saved: share_settings.Settings, included: list[providers.Provider]) -> Refreshed:
+    """`refresh`, saying what changed and what runs now."""
+
     if not saved.enabled:
-        return remove_all()
-    lines = []
+        lines = remove_all()
+        return Refreshed(lines, news=bool(lines), enabled=False)
+    found = Refreshed()
+    lines = found.lines
     write_launcher()
     if saved.watcher:
+        had = plist_path().exists()
         running, line = install_watcher(included)
         lines.append(line[0].upper() + line[1:] + ".")
+        why = watcher_supported()
+        found.watcher = "runs" if running else "missing" if why else "failed"
+        found.missing = ("it needs macOS" if why and "macOS" in why else "agt's home is in a temp folder" if why else "")
+        found.news = running and not had
+        if found.watcher == "failed":
+            found.problems.append(lines[-1][:-1] + "; `agt doctor --fix` tries again.")
     elif remove_watcher():
         lines.append("The background watcher is off (`watcher = false`); it was removed.")
+        found.news = True
     files = []
     for provider in included:
         path = _hooks_file(provider.cli, provider.folder)
@@ -512,22 +546,25 @@ def refresh(saved: share_settings.Settings, included: list[providers.Provider]) 
         else:
             wanted = {}
         try:
-            set_entries(path, wanted, provider.label)
+            found.news = set_entries(path, wanted, provider.label) or found.news
         except TriggerError as exc:
             lines.append(f"{provider.label}: {exc}.")
+            found.problems.append(lines[-1])
             continue
         if wanted:
             files.append({"cli": provider.cli, "label": provider.label, "path": str(path)})
             what = "session start" + (" and saves in Claude Code" if "PostToolUse" in wanted else "")
             lines.append(f"{provider.label}: agt catches up at each {what} ({providers._short(path)}).")
+            found.catch_up[provider.label] = "PostToolUse" in wanted
     for entry in _recorded():  # folders that stopped sharing, or switches turned off
         if not any(entry.get("path") == kept["path"] for kept in files):
             try:
-                set_entries(Path(entry["path"]), {}, entry.get("label") or "hooks")
+                found.news = set_entries(Path(entry["path"]), {}, entry.get("label") or "hooks") or found.news
             except (TriggerError, KeyError):
                 pass
     _record(files)
-    return lines
+    found.news = found.news or bool(found.problems)  # a watcher or entry that didn't take is news every time
+    return found
 
 
 def remove_all() -> list[str]:

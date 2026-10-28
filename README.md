@@ -5,7 +5,7 @@ Give your coding agent subagents that run in your other agent CLIs and on your o
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: early development](https://img.shields.io/badge/status-early%20development-orange.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
-![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
+![Dependencies: rich](https://img.shields.io/badge/dependencies-rich-brightgreen.svg)
 
 Your main session, in Claude Code, Codex or Antigravity, can start subagents. Each subagent is a real Claude Code, Codex or Antigravity session running in the background on one of your accounts. Every account uses the same MCP servers, skills, plugins and instructions you already set up, so nothing has to be configured twice. When an account runs out of quota, the work moves to the next one and carries on.
 
@@ -39,7 +39,7 @@ flowchart LR
 - Mixing CLIs. A Claude Code session can hand a task to Codex or Gemini (through Antigravity). The subagent gets your Claude MCP servers and is told where your instructions and skills live.
 - Safety checks. `read` jobs get read-only tools only, and `edit` jobs run in each CLI's own auto-review mode. Gemini workers, which have none on Windows, run behind a review gate of fixed rules plus a separate reviewer model, and `edit` jobs inside Antigravity's sandbox. Skipping permissions is an explicit choice per job.
 - No tokens touched. Every model call comes from the vendor's own CLI with your own login. Nothing reads, copies or forwards credentials.
-- Nothing to install besides Python 3.11. Pure standard library, with its own small MCP server.
+- Nothing to install besides Python 3.11. The one dependency, [rich](https://github.com/Textualize/rich), draws the colors and tables you see in a terminal; agents and hooks get plain text and never load it. agt has its own small MCP server.
 
 ## Install
 
@@ -118,7 +118,7 @@ If you're the agent, do this. No slash commands are needed.
 
 5. Show the user the "Still needed from you" list from the output. Typical items: browser logins for accounts that aren't logged in (`agt accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code) so the plugin loads, and putting `agt` on PATH.
 
-6. Run `agt doctor --runtime <runtime>` for each runtime you set up (`claude`, `codex`, `antigravity`; no model calls). Plain `agt doctor` checks Claude only. Adding `--live` runs one tiny job per account in that runtime and uses a little quota.
+6. Run `agt doctor` (no model calls). It checks every runtime that's installed; `--runtime <runtime>` checks one (`claude`, `codex`, `antigravity`). Adding `--live` runs one tiny job per account in one runtime, Claude unless you name another, and uses a little quota.
 
 If `agt setup` fails for a host, these are the commands it runs, so you can run them yourself:
 

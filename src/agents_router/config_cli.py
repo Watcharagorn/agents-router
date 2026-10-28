@@ -1,8 +1,8 @@
 """`agt config show|set|unset`: see and change agt's settings, one key at a time.
 
-`show` lists every setting in effect in this workspace and where each value
-comes from: the default, an environment variable, or a file (user, workspace,
-local). `set` and `unset` change one line of one file, keep your comments,
+`show` lists the settings set in this workspace (`--all`: every one) and
+where each value comes from: an environment variable, a file (user,
+workspace, local), or the default. `set` and `unset` change one line of one file, keep your comments,
 save a backup in `<AGT_HOME>/state/backups/settings/`, and log the change.
 
 Where a change goes: `.agt/settings.toml` in a workspace, your user file in
@@ -33,7 +33,7 @@ import sys
 import time
 from typing import Any
 
-from agents_router import config, fsutil, hosts, levels, plans, synclog
+from agents_router import config, fsutil, hosts, levels, plans, synclog, ui
 from agents_router.share import codex_toml, gitexclude, toolmap
 from agents_router.share import settings as share_settings
 
@@ -304,7 +304,10 @@ def _key(name: str) -> Key:
     key = KEYS.get(name)
     if key is None:
         close = [known for known in KEYS if known.split(".")[-1] == name] or difflib.get_close_matches(name, KEYS, 3, 0.8)
-        hint = f"; did you mean {' or '.join(close)}?" if close else "; `agt config show` lists them"
+        if len(close) == 1:
+            raise ui.Mistake("agt config", f"agt has no setting {name}", close[0], name,
+                             [ui.code("agt config show --all"), " lists every setting."])
+        hint = f"; did you mean {' or '.join(close)}?" if close else "; `agt config show --all` lists them"
         raise ValueError(f"agt has no setting {name}{hint}")
     return key
 
@@ -509,24 +512,57 @@ def _show(args: argparse.Namespace) -> int:
         print(json.dumps({"workspace": str(workspace.root) if workspace else None, "files": shown_files,
                           "error": error, "notes": notes, "settings": rows}, indent=2, ensure_ascii=False, default=str))
         return 2 if error else 0
-    print(f"Workspace: {workspace.root}" if workspace else "No workspace here (your home folder): user settings only.")
+    explicit = [row for row in rows if row["source"] != "default"]
+    every = getattr(args, "all", False)
+    shown = rows if every else explicit
+    where = (f"settings in effect in {ui.short_path(workspace.root)}" if workspace else
+             "settings in effect, outside any workspace")
+    lines: list[ui.Line] = [[ui.bold("agt config"), "  ", ui.muted(where)], "", ui.bold("Settings files")]
+    files_rows = []
     for entry in shown_files:
-        state = "" if entry["exists"] else " (not there yet)"
+        state = "" if entry["exists"] else "not there yet"
         if entry.get("read_from"):
-            state = f" (none; reads the main checkout's {entry['read_from']})"
-        print(f"  {entry['level']:<9}  {entry['file']}{state}")
+            state = "none; agt reads the main checkout's"
+        files_rows.append([entry["level"], ui.muted(ui.short_path(entry["file"])), ui.muted(state)])
+    lined = ui.columns(files_rows, gap=3)
+    for line, entry in zip(lined, shown_files):
+        lines.append(line)
+        if entry.get("read_from"):
+            width = max(ui.cell_len(entry["level"]) for entry in shown_files) + 5
+            lines.append([" " * width, ui.muted(ui.short_path(entry["read_from"]))])
     if error:
-        print(f"\nProblem: {error}\nUntil it's fixed, jobs don't start here; the values below are agt's defaults.")
-    width = min(44, max(len(row["key"]) + 3 + len(row["shown"]) for row in rows))
-    print()
-    for row in rows:
-        where = row["source"] if row["file"] is None else f"{row['source']} ({row['file']}{':' + str(row['line']) if row['line'] else ''})"
-        if row["changed_by"]:
-            where += f"; change it {'with ' if row['changed_by'].startswith('agt') else ''}{row['changed_by']}"
-        print(f"{row['key']} = {row['shown']}".ljust(width) + "  " + where)
-    for note in notes:
-        print(f"Note: {note}")
+        lines += ["", [ui.error("Problem:"), f" {error}"],
+                  "Until it's fixed, jobs don't start here, and agt can't show your settings."]
+    if shown:
+        lines += ["", ui.bold("Every setting" if every else "Set explicitly")]
+        lines += ui.columns([[row["key"], ui.tilde(row["shown"]), ui.muted(_where(row)), _changed_by(row)] for row in shown], gap=3)
+    if not every and not error:
+        rest = len(rows) - len(explicit)
+        lines += ["", [ui.muted(f"{rest} more setting{'s use their' if rest != 1 else ' uses its'} defaults; "),
+                       ui.code("agt config show --all"), ui.muted(" lists every one.")]]
+    if notes:
+        lines += ["", *([ui.warn("Note:"), " ", *ui.inline(ui.tilde(note))] for note in notes)]
+    ui.out(*lines)
     return 2 if error else 0
+
+
+def _where(row: dict[str, Any]) -> str:
+    """Where a value comes from, short: "user, line 4", "from CLAUDE_CONFIG_DIR", "default"."""
+
+    if row["source"].startswith("environment ("):
+        return "from " + row["source"].removeprefix("environment (").removesuffix(")")
+    return row["source"] + (f", line {row['line']}" if row["line"] else "")
+
+
+def _changed_by(row: dict[str, Any]) -> ui.Line:
+    """For a key `agt config set` doesn't change: what does (for share.enabled, the command that flips it now)."""
+
+    found = row["changed_by"]
+    if not found:
+        return ""
+    if row["key"] == "share.enabled":
+        return ui.cmd("agt share disable" if row["value"] else "agt share enable")
+    return ui.cmd(found) if found.startswith("agt") else ui.muted(found)
 
 
 SHARE_COMMANDS = {
@@ -556,28 +592,60 @@ def share_command(args: argparse.Namespace) -> int:
         command = SHARE_COMMANDS.get(key.name) or ("agt share disable" if share.enabled else "agt share enable")
         rows.append({"key": key.name, "value": value, "shown": _text(key, value), "source": level, "command": command})
     picks = len(share.off | set(share.not_in) | set(share.only))
+    plugins = KEYS["share.plugins"]
     rows += [
         {"key": "share.folders", "value": [folder.label for folder in share.folders],
          "shown": ", ".join(folder.label for folder in share.folders) or "none", "source": "user" if share.folders else "default",
          "command": "agt share cli add|remove <label>"},
         {"key": "share.targets", "value": picks, "shown": f"{picks} item pick{'s' if picks != 1 else ''}",
          "source": "user" if picks else "default", "command": "agt share pick <item> --in|--not-in|--only <label>"},
+        {"key": plugins.name, "value": share.plugins, "shown": _text(plugins, share.plugins),
+         "source": _source(plugins, [layer] if layer else [])[0], "command": "agt share kinds add|remove plugins"},
     ]
     if args.json:
         print(json.dumps({"file": str(user), "settings": rows}, indent=2, ensure_ascii=False, default=str))
         return 0
-    print(f"Share settings, from {user}{'' if layer else ' (not there yet)'}:")
-    width = min(44, max(len(row["key"]) + 3 + len(row["shown"]) for row in rows))
-    for row in rows:
-        print(f"{row['key']} = {row['shown']}".ljust(width) + f"  {row['source']}; change it with {row['command']}")
+    by_key = {row["key"]: row for row in rows}
+    shown = [by_key[f"share.{name}"] for name in SHARE_ORDER]
+    cells = [[row["key"].partition(".")[2], row["shown"] if row["key"] != "share.targets" else _picked(picks),
+              ui.cmd(SHARE_TEXT[row["key"]]) if SHARE_TEXT[row["key"]].startswith("agt") else ui.muted(SHARE_TEXT[row["key"]])]
+             for row in shown]
+    lined = ui.columns(cells, gap=3)
+    mine = [line for line, row in zip(lined, shown) if row["source"] == "user"]
+    rest = [line for line, row in zip(lined, shown) if row["source"] != "user"]
+    lines: list[ui.Line] = [[ui.bold("agt share settings"), "  ", ui.muted(ui.short_path(user) + ("" if layer else " (not there yet)"))]]
+    for title, found in (("Set by you", mine), ("Defaults", rest)):
+        lines += ["", ui.bold(title), *found] if found else []
+    lines += ["", [ui.muted("Set a value with "), ui.code("agt config set share.<setting> <value>"), ui.muted(".")]]
+    ui.out(*lines)
     return 0
+
+
+SHARE_ORDER = ("enabled", "kinds", "folders", "targets", "auto_copy", "tool_widening", "instructions", "mcp", "hooks", "plugins",
+               "worktrees", *share_settings.SWITCHES)
+SHARE_TEXT = {  # what changes each one: the command, or the values `agt config set` takes
+    "share.enabled": "agt share enable | disable",
+    "share.kinds": "agt share kinds add | remove <kind>",
+    "share.folders": "agt share cli add | remove <cli>",
+    "share.targets": "agt share pick <name>",
+    "share.auto_copy": "on | off | <kinds>",
+    "share.tool_widening": " | ".join(toolmap.TOOL_WIDENING),
+    **{f"share.{kind}": f"agt share kinds add | remove {kind}" for kind in ("instructions", "mcp", "hooks", "plugins")},
+    "share.worktrees": " | ".join(share_settings.WORKTREES),
+    **{f"share.{name}": "true | false" for name in share_settings.SWITCHES},
+}
+
+
+def _picked(count: int) -> str:
+    return f"{count} item{'s' if count != 1 else ''} picked" if count else "none"
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("config", help="See and change agt's settings (show, set, unset).",
                             description=__doc__.split("\n\n", 1)[0])
     actions = parser.add_subparsers(dest="config_action", required=True)
-    show = actions.add_parser("show", help="Every setting in effect here, with where it comes from.")
+    show = actions.add_parser("show", help="The settings set here, with where each comes from; --all lists every one.")
+    show.add_argument("--all", action="store_true", help="Every setting, defaults too.")
     show.add_argument("--json", action="store_true")
     for name, help_text in (("set", "Change one setting."), ("unset", "Remove one setting from one file.")):
         action = actions.add_parser(name, help=help_text)

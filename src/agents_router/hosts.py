@@ -33,6 +33,17 @@ def detect_host(client_name: str | None = None, env: dict[str, str] | None = Non
     return "unknown"
 
 
+def agent_running(env: dict[str, str] | os._Environ | None = None) -> bool:
+    """Whether an agent rather than a person runs this command: a host CLI's session or an agt worker."""
+
+    env = os.environ if env is None else env
+    try:
+        depth = int(env.get("AGT_DEPTH") or 0)
+    except ValueError:
+        depth = 0
+    return bool(env.get("AGT_JOB_ID")) or depth > 0 or detect_host(env=dict(env)) != "unknown"
+
+
 def _existing(paths: list[Path]) -> list[str]:
     seen: list[str] = []
     for path in paths:
