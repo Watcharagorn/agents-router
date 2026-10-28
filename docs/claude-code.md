@@ -1,8 +1,10 @@
-# Claude Code: setup and use
+# Claude Code subagents and multiple accounts: setup and use
 
 This guide sets up Agents Router so a Claude Code session can hand work to `claude -p` workers running under your other Claude accounts, with the same MCP servers, plugins, skills and settings on every account.
 
 Every worker is the official `claude` CLI with your own login, the same as opening a terminal yourself. Anthropic documents running several accounts with separate config folders; see [provider terms](research/provider-terms.md) for the sources.
+
+For workers in other CLIs, see [Codex](codex.md), [Gemini through Antigravity](gemini.md) and [Kiro](kiro.md). To keep your agents and skills the same in every CLI, see [Sharing agents and skills](share.md).
 
 ## Requirements
 
@@ -71,13 +73,14 @@ In Claude Code, ask for delegation in plain words ("have a subagent review the a
 
 ### Subagents in the agent list
 
-The plugin adds three agent types, one per CLI:
+The plugin adds four agent types, one per CLI:
 
 | Agent type | Runs the task in | Color |
 |---|---|---|
 | `agents-router:agt-claude` | Claude Code (`claude -p`) on one of your Claude accounts | orange |
 | `agents-router:agt-codex` | Codex (`codex exec`) on one of your ChatGPT accounts | green |
 | `agents-router:agt-antigravity` | Antigravity (`agy`) on your Google account | blue |
+| `agents-router:agt-kiro` | Kiro CLI (`kiro-cli chat --no-interactive`) on your one Kiro login; see [Kiro](kiro.md) | green |
 
 Claude starts them with its Agent tool like any other subagent, so they show up in the agent list and in the desktop app's task list, and Claude gets the usual notice when one finishes. The task description reads `<model> · <access> · <task>`, for example `Opus 5.5 · edit · fix the login test`, so you can see which model works on what. Subagents start them the same way. A job started with `agt run` in a shell or with `subagent_start` doesn't appear in the agent list, so the skill and the rules template tell Claude to always use the relay agents in Claude Code.
 

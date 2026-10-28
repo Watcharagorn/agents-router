@@ -1,4 +1,4 @@
-# Codex: setup and use
+# Codex CLI subagents: setup and use
 
 Agents Router can run `codex exec` workers the same way it runs `claude -p` workers: in the background, on one of your accounts, with one shared setup. The host can be Claude Code (through the plugin) or any MCP host, Codex included.
 

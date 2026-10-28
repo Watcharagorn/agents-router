@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Notes for AI agents that install Agents Router for a user or work on this repository.
+Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and runs subagents in those CLIs on your own accounts. These are notes for AI agents that install it for a user or work on this repository.
 
 ## Installing for a user
 
@@ -13,6 +13,8 @@ agt setup --dry-run --account <name>=<folder> ...
 agt setup --account <name>=<folder> ...
 agt doctor                       # every runtime that's installed
 ```
+
+The full flow, with the `--if-plan` confirmation step, is in the README's [For AI agents](README.md#for-ai-agents) section. Agents Router isn't on PyPI; the PyPI package named `agt` is a different project.
 
 Plain `agt doctor` checks every runtime that's installed. `agt doctor --runtime <runtime>` checks one (`claude`, `codex`, `antigravity`), and `--json` prints the report as JSON.
 

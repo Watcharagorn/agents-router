@@ -5,22 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agents-router"
 version = "0.9.1"
-description = "Let your coding agent delegate tasks to other installed agent CLIs, each in its own harness under your own login, with one shared setup across accounts."
+description = "Keep agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and run subagents in those CLIs on your own accounts."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Watcharagorn" }]
-keywords = ["mcp", "subagents", "claude-code", "codex", "coding-agents", "multi-account"]
+keywords = [
+    "claude-code", "codex", "codex-cli", "kiro", "kiro-cli", "antigravity", "gemini", "mcp", "mcp-server",
+    "subagents", "agent-skills", "coding-agents", "ai-agents", "multi-account",
+]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development",
 ]
 dependencies = ["rich>=14.3.4,<16", "rich-argparse>=1.8,<2"]
 
 [project.urls]
 Homepage = "https://github.com/Watcharagorn/agents-router"
+Repository = "https://github.com/Watcharagorn/agents-router"
+Documentation = "https://github.com/Watcharagorn/agents-router/blob/main/docs/README.md"
 
 [project.scripts]
 agt = "agents_router.entry:main"

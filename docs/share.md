@@ -1,4 +1,4 @@
-# Sharing agents and skills
+# Sharing agents and skills between Claude Code, Codex, Kiro and Antigravity
 
 `agt share` keeps your agents and skills the same in every agent CLI you use. Write an agent in Claude Code and it appears in Codex, Kiro and your other Claude folders too, each in that CLI's own format. Edit it in any of them and the edit reaches the others on its own, within a minute (within seconds for a save in Claude Code).
 

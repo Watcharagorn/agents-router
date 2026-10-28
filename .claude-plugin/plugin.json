@@ -1,12 +1,12 @@
 {
   "name": "agents-router",
   "version": "0.9.1",
-  "description": "Start subagents in other installed agent CLIs (Claude Code first) under your own accounts, with one shared setup of MCP servers, plugins, skills and settings across all of them.",
+  "description": "Keep agents, skills, MCP servers and instructions in sync between Claude Code, Codex, Kiro and Antigravity, and start subagents in those CLIs under your own accounts, with one shared setup across them.",
   "author": { "name": "Watcharagorn", "url": "https://github.com/Watcharagorn" },
   "homepage": "https://github.com/Watcharagorn/agents-router",
   "repository": "https://github.com/Watcharagorn/agents-router",
   "license": "Apache-2.0",
-  "keywords": ["subagents", "multi-account", "mcp", "delegation", "claude-code", "codex"],
+  "keywords": ["subagents", "multi-account", "mcp", "delegation", "claude-code", "codex", "kiro", "antigravity", "gemini", "skills", "agents", "sync"],
   "mcpServers": {
     "agents-router": {
       "command": "agt",

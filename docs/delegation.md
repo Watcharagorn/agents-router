@@ -101,7 +101,7 @@ The main limit must be at least 1. The helper limit must be at least 0.
 The template includes the depth lines to put at the top of every subagent prompt.
 It tells the agent to split large tasks and pass any waiting dependency back to its parent.
 Worker restrictions on starting jobs still apply.
-These limits guide the agent; they do not change the host's own nesting settings.
+These limits guide the agent; they do not change the host's own nesting settings. The job caps agt enforces are in [configuration](configuration.md#limits).
 
 ## Web research
 

@@ -1,4 +1,4 @@
-# Configuration
+# Configuration: settings files, limits and environment
 
 Agents Router keeps its jobs, state and account folders under `~/.agents-router/` (or `AGT_HOME`), and your settings in `settings.toml` files: one for you, and one or two per workspace. `agt config` shows and changes them, `agt accounts add` writes your account entries, and editing the files by hand is fine too.
 
