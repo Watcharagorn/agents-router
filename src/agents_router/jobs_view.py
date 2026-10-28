@@ -9,7 +9,7 @@ import re
 import time
 from typing import Any, Callable
 
-from agents_router import jobs, ui
+from agents_router import jobs, messages, ui
 
 
 def _status(job_id: str) -> dict[str, Any]:
@@ -82,10 +82,14 @@ def run_frame(job_id: str) -> Callable[[str, float], list[ui.Line]]:
     return draw
 
 
-def end_lines(summary: dict[str, Any]) -> list[ui.Line]:
-    """How a job ended, in one line, with how to see it again: `summary` is `tools.summarize` of its result."""
+def end_lines(summary: dict[str, Any], said: tuple[list[ui.Line], list[list[ui.Line]]] | None = None,
+              again: bool = True) -> list[ui.Line]:
+    """How a job ended, in one line, with how to see it again: `summary` is `tools.summarize` of its result. `said`:
+    what the job said and asked, when not the summary's (`conversation`); `again` false leaves out the line that
+    points to `agt result`, for `agt result` itself."""
 
     job_id = summary.get("job_id", "")
+    said_lines, answers = said or told(summary)
     spent = ui.took(float(summary.get("elapsed_seconds") or 0))
     facts = ["".join(who(summary, bold=False))]
     facts += [model(summary.get("worker") or {})] if (summary.get("worker") or {}).get("model") else []
@@ -94,23 +98,23 @@ def end_lines(summary: dict[str, Any]) -> list[ui.Line]:
     facts += [f"${cost:.2f}"] if isinstance(cost, (int, float)) and cost >= 0.005 else []
     tail = ui.muted(" · " + " · ".join(fact for fact in facts if fact))
     state, outcome = summary.get("state"), summary.get("outcome")
-    if state in jobs.ACTIVE_STATES:
-        return [[ui.Span("warn-mark", "…"), f" still running after {spent}", tail],
-                *ui.columns([[ui.muted("Look again"), ui.cmd(f"agt status {job_id}")]], gap=3)]
+    if state in jobs.ACTIVE_STATES:  # what it said so far, too: the summary took it, so this is where it shows
+        return [[ui.Span("warn-mark", "…"), f" still running after {spent}", tail], *said_lines,
+                *ui.columns([*answers, [ui.muted("Look again"), ui.cmd(f"agt status {job_id}")]], gap=3)]
     if outcome == "success":
         lines: list[ui.Line] = [[ui.Span("ok-mark", "✓"), f" done in {spent}", tail]]
     else:
         lines = [[ui.Span("error-mark", "✗"), " ", ui.error(str(outcome or state or "failed")), f" after {spent}", tail]]
         lines += [["  ", *ui.inline(str(summary["message"]))]] if summary.get("message") else []
-    said, answers = told(summary)
-    lines += said + ui.columns(answers, gap=3)
+    lines += said_lines + ui.columns(answers, gap=3)
     lines += [["  ", ui.muted(note)] for note in summary.get("warnings") or []]
     attempts = summary.get("attempts") or []
     if attempts:
         lines.append(["  ", ui.muted("Tried " + ", then ".join(f"{attempt.get('account')} ({attempt.get('outcome')})"
                                                                for attempt in attempts) + ".")])
-    lines.append(["  ", ui.code(f"agt result {job_id}"),
-                  ui.muted(" shows it again." if outcome == "success" else " shows what it got.")])
+    if again:
+        lines.append(["  ", ui.code(f"agt result {job_id}"),
+                      ui.muted(" shows it again." if outcome == "success" else " shows what it got.")])
     return lines
 
 
@@ -125,6 +129,26 @@ def told(summary: dict[str, Any], indent: str = "  ") -> tuple[list[ui.Line], li
     lines += [[indent, ui.hang("It asks: "), f'"{question.get("text") or ""}"'] for question in asked]
     answers = [[ui.muted("Answer"), ui.cmd(f'agt message {summary.get("job_id", "")} "<your answer>" --reply-to {question["id"]}')]
                for question in asked]
+    return lines, answers
+
+
+def conversation(job_id: str, indent: str = "  ") -> tuple[list[ui.Line], list[list[ui.Line]]]:
+    """Everything the job said and asked, oldest first, with the answers it got, and an "Answer" row for each open
+    question. Read without marking anything shown, so the agent that started the job still gets it: `agt result` is
+    where a person sees the whole of it again."""
+
+    replies = messages.answers(job_id)
+    lines: list[ui.Line] = []
+    answers: list[list[ui.Line]] = []
+    for item in messages.outbox(job_id):
+        text = f'"{item.get("text") or ""}"'
+        if item.get("kind") != "question":
+            lines.append([indent, ui.hang("It said: "), text])
+        elif item.get("id") in replies:
+            lines += [[indent, ui.hang("It asked: "), text], [indent + "  ", ui.hang("Answered: "), f'"{replies[item["id"]]}"']]
+        else:
+            lines.append([indent, ui.hang("It asks: "), text])
+            answers.append([ui.muted("Answer"), ui.cmd(f'agt message {job_id} "<your answer>" --reply-to {item["id"]}')])
     return lines, answers
 
 

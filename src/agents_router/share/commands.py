@@ -518,7 +518,9 @@ def _item_lines(result: apply.Result, hide: set[str] = frozenset(), held: list[l
     for outcome in result.written:
         if outcome.kind in hide:
             continue
-        groups.setdefault((MARKS.get(outcome.action, "?"), _what(outcome), outcome.message, False), []).append(outcome)
+        # A plugin's message shows only with -v ("installed from tools"), so without it one row holds every CLI.
+        message = "" if outcome.kind == plugins.KIND and not _verbose else outcome.message
+        groups.setdefault((MARKS.get(outcome.action, "?"), _what(outcome), message, False), []).append(outcome)
     for outcome in result.failed:
         groups.setdefault(("✗", _what(outcome), outcome.message, True), []).append(outcome)
     rows: list[list[ui.Line]] = []
@@ -1958,6 +1960,9 @@ def _plugins(args: argparse.Namespace) -> int:
         return 0
     included = _folders(load_config(), None, False, saved)[1]
     found = plugins.offers(included, saved.off)
+    # The plugins an "x" turned off: named in `apply`, one installs and is offered again (the undo for "x").
+    turned_off = [offer for offer in plugins.offers(included) if f"{plugins.KIND}/{offer.plugin.id}" in saved.off] \
+        if any(key.startswith(f"{plugins.KIND}/") for key in saved.off) else []
     shown = [{"plugin": offer.plugin.id, "from": offer.source_label, "to": offer.label, "key": offer.key,
               "commands": [" ".join([offer.cli, *step]) for step in offer.steps], "why_not": offer.why_not,
               "asks": offer.asks, "failed_before": offer.failed} for offer in found]
@@ -1969,9 +1974,10 @@ def _plugins(args: argparse.Namespace) -> int:
         elif shared is not None:
             ui.out(*plugin_view.page(plan, shared))
         else:
-            ui.out(*plugin_view.offers_page(found))
+            ui.out(*plugin_view.offers_page(found, turned_off))
         return 0
     by_key = {offer.key: offer for offer in found}
+    by_key.update({offer.key: offer for offer in turned_off if offer.key in args.offers})
     unknown = [key for key in args.offers if key not in by_key]
     if unknown:
         raise ValueError(f"{', '.join(unknown)}: not a plugin another CLI could install; `agt share plugins` lists them")
@@ -2013,8 +2019,8 @@ def _plugins(args: argparse.Namespace) -> int:
                 never.append(offer)
         if never:
             saved.off |= {f"plugins/{offer.plugin.id}" for offer in never}
-            at = settings.save(saved)
-            ui.out("", *(_never_line(offer, saved.plugins, at) for offer in {offer.plugin.id: offer for offer in never}.values()))
+            settings.save(saved)
+            ui.out("", *(_never_line(offer, saved.plugins) for offer in {offer.plugin.id: offer for offer in never}.values()))
         chosen = approved
     if not chosen:
         ui.out("", [ui.bold("agt share plugins apply"), "  ", "nothing installed"])
@@ -2042,11 +2048,19 @@ def _plugins(args: argparse.Namespace) -> int:
             raise
         finally:
             state.save(current)  # what finished is agt's, as a sync's install would be
+    was_off = {offer.key for offer in turned_off}  # before this run: an "x" given just now stays
+    back = {f"{plugins.KIND}/{outcome.name}" for outcome in outcomes
+            if outcome.ok and f"{outcome.name}:{outcome.labels[0]}" in was_off} & saved.off
+    if back:  # installed by name after an "x": offered again from now on
+        saved.off -= back
+        saved_at = settings.save(saved)
     result = apply.Result("apply", outcomes)
     lines: list[ui.Line] = [[ui.bold("agt share plugins apply"), "  ", *_written_headline(result)],
                             "", *_item_lines(result, again=_apply_again)]
     if result.written:
         lines += ["", plugin_view.next_line(result.written, by_label)]
+    if back:
+        lines.append(ui.muted(f"Saved your answers in {short(saved_at)}."))
     ui.out(*([""] if asked else []), *lines)
     return 1 if result.failed else 0
 
@@ -2059,15 +2073,14 @@ def _apply_again(outcome: apply.Outcome, labels: list[str]) -> ui.Line:
     return ["      ", ui.muted("Try again"), "   ", ui.cmd(f"agt share plugins apply {keys} --yes")]
 
 
-def _never_line(offer: plugins.Offer, sharing: bool, at: Path) -> ui.Line:
+def _never_line(offer: plugins.Offer, sharing: bool) -> ui.Line:
     """An "x" answer stops the plugin in every CLI: say so, and how to take it back."""
 
-    key = f"{plugins.KIND}/{offer.plugin.id}"
     if sharing:
-        return [f"{offer.plugin.name} isn't offered again in any CLI; ", ui.code(f"agt share pick {key} --in <cli>"),
-                " brings it back."]
-    return [f"{offer.plugin.name} isn't offered again in any CLI. To offer it again, delete the line ",
-            ui.code(f'"{key}" = "off"'), f" under [share.targets] in {short(at)}."]
+        return [f"{offer.plugin.name} isn't offered again in any CLI; ",
+                ui.code(f"agt share pick {plugins.KIND}/{offer.plugin.id} --in <cli>"), " brings it back."]
+    return [f"{offer.plugin.name} isn't offered again in any CLI; ", ui.code(f"agt share plugins apply {offer.key} --yes"),
+            " installs it and offers it again."]
 
 
 def _apply_offer(offer: plugins.Offer) -> list[ui.Line]:

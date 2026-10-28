@@ -170,8 +170,9 @@ def page(plan: Any, shared: plugins.Plan) -> list[ui.Line]:
     return lines
 
 
-def offers_page(found: list[plugins.Offer]) -> list[ui.Line]:
-    """With plugins off: each plugin another CLI could install, what it would miss there, and the ways to start."""
+def offers_page(found: list[plugins.Offer], turned_off: list[plugins.Offer] | None = None) -> list[ui.Line]:
+    """With plugins off: each plugin another CLI could install, what it would miss there, and the ways to start.
+    `turned_off`: what an "x" in `plugins apply` keeps off, and the command that brings one back."""
 
     ready = [offer for offer in found if not offer.why_not]
     head: list[ui.Piece] = [ui.bold("agt share plugins"), "  "]
@@ -203,7 +204,15 @@ def offers_page(found: list[plugins.Offer]) -> list[ui.Line]:
     rows = [[ui.muted("Install them with each sync"), ui.cmd("agt share kinds add plugins")],
             [ui.muted("Choose one at a time now"), ui.cmd("agt share plugins apply")]] if ready \
         else [[ui.muted("Share plugins from now on"), ui.cmd("agt share kinds add plugins")]]
-    return lines + ["", *ui.columns(rows, gap=3)]
+    lines += ["", *ui.columns(rows, gap=3)]
+    back = {offer.plugin.id: offer for offer in turned_off or [] if not offer.why_not}
+    if back:  # weeks later, nobody remembers pressing "x"
+        names = [offer.plugin.name for offer in back.values()]
+        one = len(back) == 1
+        lines += ["", [ui.muted(f"You turned off {status_view._and(names)}; "),
+                       ui.code(f"agt share plugins apply {next(iter(back.values())).key if one else '<plugin>:<cli>'} --yes"),
+                       ui.muted(f" installs {'it' if one else 'one'} and offers it again.")]]
+    return lines
 
 
 # `agt share pick plugins/<id>` ------------------------------------------------------------------

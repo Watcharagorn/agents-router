@@ -746,7 +746,12 @@ def run_steps(plugin: Plugin, label: str, provider: providers.Provider, commands
 
 
 def uninstall(plugin_id: str, provider: providers.Provider, display: ui.Steps | None = None) -> tuple[bool, str]:
-    """`claude plugin uninstall --scope user` or `codex plugin remove`, then check `plugin list` no longer shows it."""
+    """`claude plugin uninstall --scope user` or `codex plugin remove`, then check `plugin list` no longer shows it.
+
+    When the command fails, `plugin list` decides: a plugin it doesn't show is gone already (the CLI says "not
+    installed", in words that change between versions), and retrying could never work. A list agt can't read keeps
+    it a failure.
+    """
 
     from agents_router import setup
     from agents_router.config import load_config
@@ -761,6 +766,10 @@ def uninstall(plugin_id: str, provider: providers.Provider, display: ui.Steps | 
         display.now(_doing(provider.cli, step))
     code, stdout, stderr = setup.run_command([*binary, *step], env, timeout=300)
     if code != 0:
+        if display is not None:
+            display.now(f"{provider.cli} plugin list")
+        if _listed(binary, env, plugin_id) is False:
+            return True, f"already gone: {provider.cli} plugin list doesn't show it"
         return False, f"`{' '.join([provider.cli, *step])}` failed (exit {code}): {setup._last_line(stdout, stderr)}"
     if display is not None:
         display.now(f"{provider.cli} plugin list")

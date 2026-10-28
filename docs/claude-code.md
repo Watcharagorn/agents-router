@@ -108,7 +108,7 @@ The relay agents are built on the same jobs as the MCP tools, which work in ever
 | `subagent_list` | Recent jobs |
 | `subagent_accounts` | Accounts, logins, usage with reset times, and cooldowns |
 
-From a terminal, the same jobs are available through `agt run` (add `--follow` to watch each step), `agt start`, `agt follow`, `agt status`, `agt result`, `agt cancel`, `agt jobs` (the jobs started in this folder's workspace; `--all` for every job), `agt wait` and `agt message`. `agt --home <folder>` uses a different Agents Router folder for one command. In a terminal, `agt run` and `agt wait` show the job working (its time and tool uses), then one line saying how it ended; Ctrl-C stops watching and leaves the job running. Agents, pipes and `--json` get the JSON summary instead, as before.
+From a terminal, the same jobs are available through `agt run` (add `--follow` to watch each step), `agt start`, `agt follow`, `agt status`, `agt result`, `agt cancel`, `agt jobs` (the jobs started in this folder's workspace; `--all` for every job), `agt wait` and `agt message`. `agt --home <folder>` uses a different Agents Router folder for one command. In a terminal, `agt run` and `agt wait` show the job working (its time and tool uses), then one line saying how it ended; Ctrl-C stops watching and leaves the job running. `agt result` shows the result and everything the job said and asked, with the answers it got, without taking any of it from the agent that started the job. Agents, pipes and `--json` get the JSON summary instead, as before.
 
 `access` controls permissions:
 

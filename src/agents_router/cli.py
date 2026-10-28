@@ -547,7 +547,19 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_result(args: argparse.Namespace) -> int:
-    _print(tools.call("subagent_result", {"job_id": args.job_id, "max_chars": args.max_chars}))
+    """`agt result`: for a person at a terminal, the result, how the job ended and everything it said and asked, read
+    without taking anything from the agent that started it. Agents, pipes and --json get the JSON summary."""
+
+    if args.json or not ui.live_on(sys.stdout):
+        _print(tools.call("subagent_result", {"job_id": args.job_id, "max_chars": args.max_chars}))
+        return 0
+    from agents_router import jobs_view
+
+    data = jobs.read_result(args.job_id, 1_000_000)  # all of it, as `agt run` prints it
+    if data.get("result"):
+        print(data["result"])
+    ui.out(*jobs_view.end_lines(tools.summarize(data, take=False), jobs_view.conversation(args.job_id), again=False),
+           stream=sys.stderr)
     return 0
 
 
@@ -725,7 +737,8 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--wait", type=float, default=0)
     result = sub.add_parser("result", help="Show a job's result.")
     result.add_argument("job_id")
-    result.add_argument("--max-chars", type=int, default=20000)
+    result.add_argument("--max-chars", type=int, default=20000, help="With --json: cut the result at this length.")
+    result.add_argument("--json", action="store_true", help="Print the JSON summary, as for an agent or a pipe.")
     cancel = sub.add_parser("cancel", help="Stop a job.")
     cancel.add_argument("job_id")
     wait = sub.add_parser("wait", help="Wait until a job finishes or sends a message.")

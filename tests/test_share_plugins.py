@@ -211,9 +211,17 @@ class PluginTests(PluginBase):
         self.assertIn("formatter in codex\n  runs   codex plugin marketplace add example/tools\n", out)  # each command it runs
         self.assertIn("\n  + plugins/formatter@tools   claude-lab\n", out)
         self.assertIn("plugins/formatter@tools", settings.load().off)
-        self.assertIn('\nformatter isn\'t offered again in any CLI. To offer it again, delete the line '
-                      '`"plugins/formatter@tools" = "off"` under [share.targets] in ~/.agt/settings.toml.\n', out)
+        self.assertIn("\nformatter isn't offered again in any CLI; `agt share plugins apply formatter@tools:codex --yes` "
+                      "installs it and offers it again.\n", out)
         self.assertEqual(sorted(self.offers()), ["drafts@elsewhere:claude-lab", "drafts@elsewhere:codex"])
+        self.assertTrue(self.share("plugins").endswith(  # weeks later, the page still says how to bring it back
+            "\n\nYou turned off formatter; `agt share plugins apply formatter@tools:codex --yes` installs it and offers "
+            "it again.\n"))
+        out = self.share("plugins", "apply", "formatter@tools:codex", "--yes")  # the undo for "x"
+        self.assertIn("\n  + plugins/formatter@tools   codex\n", out)
+        self.assertTrue(out.endswith("\nSaved your answers in ~/.agt/settings.toml.\n"), out)
+        self.assertNotIn("plugins/formatter@tools", settings.load().off)
+        self.assertNotIn("You turned off", self.share("plugins"))
 
     def test_try_again_names_every_cli_that_failed(self):
         from agents_router.share import apply, commands
@@ -501,7 +509,22 @@ class PluginSyncTests(PluginBase):
 
     def test_a_failed_uninstall_gives_the_command_to_try_again(self):
         self.turn_on()
-        out = self.share("rm", "plugins/formatter@tools", code=1)  # the fake claude doesn't know your own install
+        with patch.dict(os.environ, {"FAKE_HOST_FAIL": "remove"}):  # codex's copy stays listed
+            out = self.share("rm", "plugins/formatter@tools", code=1)
+        self.assertIn("  ✗ plugins/formatter@tools   codex\n", out)
+        self.assertIn("\n      Try again   agt share rm plugins/formatter@tools\n", out)
+
+    def test_an_uninstall_the_cli_says_isnt_needed_counts_as_removed(self):
+        self.turn_on()
+        out = self.share("rm", "plugins/formatter@tools", "-v")  # the fake claude's list doesn't show your own install
+        self.assertNotIn("✗", out)
+        self.assertNotIn("Try again", out)
+        self.assertIn("  - plugins/formatter@tools   claude\n      already gone: claude plugin list doesn't show it\n", out)
+
+    def test_an_uninstall_with_a_list_agt_cant_read_stays_a_failure(self):
+        self.turn_on()
+        with patch.object(plugins, "_listed", return_value=None):
+            out = self.share("rm", "plugins/formatter@tools", code=1)
         self.assertIn("  ✗ plugins/formatter@tools   claude\n", out)
         self.assertIn("\n      Try again   agt share rm plugins/formatter@tools\n", out)
 

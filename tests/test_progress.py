@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from agents_router import cli, jobs, jobs_view, ui
+from agents_router import cli, jobs, jobs_view, messages, ui
 
 
 class Terminal(io.StringIO):
@@ -134,6 +134,26 @@ class RunTests(TempHome):
         self.assertEqual(self.agt("wait", job_id, person=True)[1], long + "\n")  # all of it, not the JSON's 20,000
         code, _, err = self.agt("run", "--json", "--cwd", str(self.project), "again", person=True)
         self.assertTrue(err.startswith("Started "), err)  # --json: today's output
+
+    def test_result_shows_a_person_everything_the_job_said_and_takes_none_of_it(self):
+        self.write_config(accounts=("a1",))
+        _, _, err = self.agt("run", "--cwd", str(self.project), "do the task", person=True)
+        job_id = re.search(r"`agt result (\S+)`", err).group(1)
+        messages.post_from_worker(job_id, "Found two more failing tests.")
+        asked = messages.post_from_worker(job_id, "Update the docs too?", kind="question")
+        still = messages.post_from_worker(job_id, "Bump the version?", kind="question")
+        messages.post_to_worker(job_id, "Yes, the README only.", reply_to=asked["id"])
+        code, out, err = self.agt("result", job_id, person=True)
+        self.assertEqual((code, out), (0, "done on a1\n"))
+        self.assertEqual(err.splitlines()[1:], [
+            '  It said: "Found two more failing tests."', '  It asked: "Update the docs too?"',
+            '    Answered: "Yes, the README only."', '  It asks: "Bump the version?"',
+            f'  Answer   agt message {job_id} "<your answer>" --reply-to {still["id"]}'])  # no "shows it again" here
+        self.assertEqual(self.agt("result", job_id, person=True)[2], err)  # it took nothing: the same again
+        summary = json.loads(self.agt("result", job_id)[1])  # a pipe: today's JSON, and the agent still gets them
+        self.assertEqual([item["text"] for item in summary["messages"]],
+                         ["Found two more failing tests.", "Update the docs too?", "Bump the version?"])
+        self.assertNotIn("messages", json.loads(self.agt("result", job_id, "--json", person=True)[1]))  # given once
 
     def test_ctrl_c_only_stops_watching(self):
         self.write_config(accounts=("a1",))
