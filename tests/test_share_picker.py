@@ -215,6 +215,7 @@ class KeyTests(unittest.TestCase):
         self.assertEqual([keys(data) for data in ("\xe0H", "\x00P", "\xe0K", "\xe0M", "\r", " ", "\x1b", "a")],
                          ["up", "down", "left", "right", "enter", "space", "esc", "a"])
 
+    @unittest.skipIf(os.name == "nt", "Windows reads keys with msvcrt and never changes the terminal's mode")
     def test_the_terminal_is_put_back_whatever_happens(self):
         termios, tty = MagicMock(), MagicMock()
         termios.tcgetattr.return_value = ["saved"]
