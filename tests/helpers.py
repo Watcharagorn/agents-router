@@ -22,6 +22,19 @@ def fake_launchd(root: Path) -> dict[str, str]:
             "FAKE_LAUNCHCTL_STATE": str(root / "launchctl-state.json"), "FAKE_LAUNCHCTL_RECORD": str(root / "launchctl.jsonl"),
             "FAKE_OSASCRIPT_RECORD": str(root / "osascript.jsonl"), "AGT_SPAWN_RECORD": str(root / "spawned.jsonl")}
 
+
+def set_times(path, when: float) -> None:
+    """Make `path` look saved at `when`: a link's own times, never its target's.
+
+    Windows can't set a link's own times, so there links are left alone; agt reads the target's times anyway.
+    """
+
+    if os.utime in os.supports_follow_symlinks:
+        os.utime(path, (when, when), follow_symlinks=False)
+    elif not os.path.islink(path):
+        os.utime(path, (when, when))
+
+
 # Variables of the session that runs the tests (an agent CLI, an agt worker, a git hook).
 DROPPED_PREFIXES = ("CLAUDE", "CODEX_", "AGY_", "AGT_", "KIRO_", "ANTHROPIC_", "OPENAI_")
 DROPPED = {"AGY_CMD", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
@@ -100,6 +113,8 @@ class TempHome(unittest.TestCase):
     def setUp(self):
         # A job runner that is still finishing can hold its log open for a moment on Windows.
         self._temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        # Cleanups, not tearDown: they still run when a subclass's setUp fails, so no patch leaks into later tests.
+        self.addCleanup(self._temp.cleanup)
         self.root = Path(self._temp.name).resolve()
         self.home = self.root / "agt"
         self.primary = self.root / "primary"
@@ -120,13 +135,10 @@ class TempHome(unittest.TestCase):
             },
         )
         self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(stop_job_runners, self.home)  # runs first: cleanups go last in, first out
         for key in ("AGT_DEPTH", "FAKE_CLAUDE_LIMITED", "FAKE_CLAUDE_SCENARIO"):
             os.environ.pop(key, None)
-
-    def tearDown(self):
-        stop_job_runners(self.home)
-        self._env.stop()
-        self._temp.cleanup()
 
     def write_config(self, accounts=("a1", "a2"), failover="on-limit", extra=""):
         lines = [
@@ -158,6 +170,8 @@ class ShareHome(unittest.TestCase):
 
     def setUp(self):
         self._temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        # Cleanups, not tearDown: they still run when a subclass's setUp fails, so no patch leaks into later tests.
+        self.addCleanup(self._temp.cleanup)
         self.root = Path(self._temp.name).resolve()
         self.user = self.root / "home"
         self.user.mkdir()
@@ -175,23 +189,20 @@ class ShareHome(unittest.TestCase):
             "FAKE_HOST_LOG": str(self.root / "host-log.jsonl"), **fake_launchd(self.root),
         })
         self._env.start()
+        self.addCleanup(self._env.stop)
         # Nothing a test runs may wait for typing: a prompt it reaches gets end-of-input.
         self._stdin = patch("sys.stdin", io.StringIO(""))
         self._stdin.start()
+        self.addCleanup(self._stdin.stop)
         # agt share's run lock goes in the temp folder; keep it inside this test's folder too.
         (self.root / "tmp").mkdir()
         self._tempdir = patch.object(tempfile, "tempdir", str(self.root / "tmp"))
         self._tempdir.start()
+        self.addCleanup(self._tempdir.stop)
         for key in list(os.environ):
             if key in ("AGY_CMD", "CLAUDE_CODE_EXECPATH", "AGT_DEPTH", "AGT_JOB_ID", "AGT_AGY_COMMAND",
                        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE") or key.startswith("AGY_REVIEW_"):
                 os.environ.pop(key)
-
-    def tearDown(self):
-        self._tempdir.stop()
-        self._stdin.stop()
-        self._env.stop()
-        self._temp.cleanup()
 
     def assert_inside(self, *paths):
         for path in paths:

@@ -10,6 +10,7 @@ import time
 import tomllib
 from unittest.mock import patch
 
+from helpers import set_times
 from test_share_plan import FLAGS, MacCopy
 
 from agents_router import fsutil
@@ -23,7 +24,7 @@ def age(*paths, seconds=60):
 
     then = time.time() - seconds
     for path in paths:
-        os.utime(path, (then, then), follow_symlinks=False)
+        set_times(path, then)
 
 
 class SyncTests(MacCopy):
