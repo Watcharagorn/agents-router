@@ -666,6 +666,7 @@ class ProfileEdgeTests(ProfileBase):
 
 
 @unittest.skipIf(os.name == "nt", "launchd and the passwd database are macOS and Unix only")
+@unittest.skipUnless(hasattr(os, "getuid"), "the account's own home folder comes from pwd, which Windows lacks")
 class SandboxGuardTests(unittest.TestCase):
     def test_a_borrowed_home_never_reaches_the_real_launchd(self):
         import pwd
@@ -675,7 +676,9 @@ class SandboxGuardTests(unittest.TestCase):
         self.assertTrue(triggers._borrowed_home())  # the tests' HOME is a throwaway folder
         with patch.dict(os.environ, {"HOME": pwd.getpwuid(os.getuid()).pw_dir}):
             self.assertFalse(triggers._borrowed_home())
-        with patch.dict(os.environ), patch.object(triggers, "_in_temp", return_value=False):
+        # As on macOS, so the borrowed home is the only reason left, on every OS the tests run on.
+        with (patch.dict(os.environ), patch.object(triggers, "_in_temp", return_value=False),
+              patch.object(triggers.sys, "platform", "darwin")):
             for key in ("AGT_LAUNCHCTL", "AGT_OSASCRIPT"):
                 os.environ.pop(key, None)  # as in a worker, whose environment agt cleans
             self.assertIsNone(triggers._launchctl_command())
