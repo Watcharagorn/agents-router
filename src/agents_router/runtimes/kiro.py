@@ -9,7 +9,8 @@ Built from Kiro's docs (kiro.dev/docs/cli/headless) and checked only against
   headless runs need it). agt never handles the key and refuses extra Kiro
   accounts.
 - **Access.** Headless Kiro can't ask, so every tool is either trusted up front
-  or refused. `read` jobs trust Kiro's file-reading tools; `edit` jobs also
+  or refused. `read` jobs trust Kiro's file-reading and web tools (search and
+  fetch change nothing on your machine); `edit` jobs also
   trust file writes, but not the shell (a shell gate through Kiro's hooks waits
   for a live check); `full` trusts every tool (`--trust-all-tools`).
 - **Tool names** follow Kiro's agent engine (`chat.agentEngine` in
@@ -51,7 +52,7 @@ WORKER_NOTE = (
 LIMIT_RE = re.compile(r"(?i)usage limit|limit (?:reached|exceeded)|quota|throttl|too many requests|\b429\b|rate.?limit")
 AUTH_RE = re.compile(r"(?i)not logged in|kiro-cli login|log ?in again|unauthori[sz]ed|authenticat|KIRO_API_KEY|expired token")
 EXIT_MESSAGES = {3: "a required MCP server didn't start", 4: "Kiro couldn't find the agent it was asked to use"}
-READ_TOOLS = ("Read", "Glob", "Grep")
+READ_TOOLS = ("Read", "Glob", "Grep", "WebSearch", "WebFetch")
 WRITE_TOOLS = ("Write",)
 
 

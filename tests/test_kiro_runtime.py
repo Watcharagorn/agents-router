@@ -36,9 +36,9 @@ class KiroUnitTests(unittest.TestCase):
         self._temp.cleanup()
 
     def test_tools_follow_access_and_the_engine(self):
-        self.assertEqual(kiro.access_args("read", "v2"), ["--trust-tools=fs_read,glob,grep"])
-        self.assertEqual(kiro.access_args("edit", "v2"), ["--trust-tools=fs_read,glob,grep,fs_write"])
-        self.assertEqual(kiro.access_args("edit", "v3"), ["--trust-tools=read,glob,grep,write"])
+        self.assertEqual(kiro.access_args("read", "v2"), ["--trust-tools=fs_read,glob,grep,web_search,web_fetch"])
+        self.assertEqual(kiro.access_args("edit", "v2"), ["--trust-tools=fs_read,glob,grep,web_search,web_fetch,fs_write"])
+        self.assertEqual(kiro.access_args("edit", "v3"), ["--trust-tools=read,glob,grep,web_search,web_fetch,write"])
         self.assertEqual(kiro.access_args("full", "v3"), ["--trust-all-tools"])
         for access in ("read", "edit"):
             self.assertNotIn("execute_bash", kiro.access_args(access, "v2")[0])  # no shell without a gate
@@ -53,7 +53,7 @@ class KiroUnitTests(unittest.TestCase):
     def test_launch(self):
         launch = self.runtime.launch(self.config, self.account, spec(model="claude-sonnet", effort="high"), "Count the files.", {})
         self.assertEqual(launch.argv[2:5], ["chat", "--no-interactive", "--wrap"])
-        self.assertIn("--trust-tools=fs_read,glob,grep", launch.argv)
+        self.assertIn("--trust-tools=fs_read,glob,grep,web_search,web_fetch", launch.argv)
         self.assertEqual(launch.argv[launch.argv.index("--model") + 1], "claude-sonnet")
         self.assertEqual(launch.argv[launch.argv.index("--effort") + 1], "high")
         self.assertNotIn("Count the files.", launch.argv)  # the task goes on stdin, never the command line
@@ -105,7 +105,7 @@ class KiroJobTests(TempHome):
         self.assertEqual((status["state"], status["outcome"]), ("done", "success"), status)
         self.assertEqual(jobs.read_result(status["job_id"])["result"], "Looked at it.\nDone: count the files")
         record = self.records()[-1]
-        self.assertIn("--trust-tools=fs_read,glob,grep", record["argv"])
+        self.assertIn("--trust-tools=fs_read,glob,grep,web_search,web_fetch", record["argv"])
         self.assertIn("count the files", record["stdin"])
 
     def test_the_relay_path_follows_a_kiro_job(self):

@@ -197,7 +197,7 @@ Your normal config folder (`~/.claude`, `~/.codex`) is the one pool. Each extra 
 
 | Access | Claude Code | Codex | Antigravity | Kiro |
 |---|---|---|---|---|
-| `read` | Read-only tools and shell commands; a hook blocks writes and secret paths | Read-only sandbox | Plan mode behind the review gate | Read and search files |
+| `read` | Read-only tools and shell commands; a hook blocks writes and secret paths | Read-only sandbox | Plan mode behind the review gate | Read and search files; search and fetch from the web |
 | `edit` | Claude Code's auto mode | Workspace-write sandbox with Codex's auto-review | Edits in the project, commands in agy's sandbox, behind the review gate | Read and write files; no shell (use `full` for commands) |
 | `full` | Skips permission checks | Bypasses approvals and sandbox | No gate, no sandbox | Trusts all tools |
 
@@ -217,7 +217,7 @@ Your normal config folder (`~/.claude`, `~/.codex`) is the one pool. Each extra 
 <details>
 <summary><b>Can Claude Code run Codex as a subagent?</b></summary>
 
-Yes. Ask your session ("have Codex review this branch") or run `agt run --runtime codex --access read "<task>"`. The worker is the official `codex exec` with your login; its result comes back to your session. Gemini (through Antigravity CLI, `agy`) works the same way; Kiro CLI support hasn't been run live yet. See [Codex](docs/codex.md).
+Yes. Ask your session ("have Codex review this branch") or run `agt run --runtime codex --access read "<task>"`. The worker is the official `codex exec` with your login; its result comes back to your session. Gemini (through Antigravity CLI, `agy`) works the same way; Kiro CLI works too; it has had a first live run (see [Kiro](docs/kiro.md#checked-live)). See [Codex](docs/codex.md).
 
 </details>
 

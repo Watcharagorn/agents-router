@@ -1,6 +1,6 @@
 ---
 name: agt-kiro
-description: Runs a task in the Kiro CLI (`kiro-cli chat --no-interactive`) on the user's one Kiro login (Agents Router). The worker reads your CLAUDE.md files and skills from a note it gets. Use it when the user asks for Kiro. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "auto · read · review the auth module". Begin the prompt with optional lines like model=MODEL, access=read (read, edit or full; edit can't run shell commands in Kiro), effort=high, cwd=PATH, timeout=SECONDS, window=SECONDS (default 60), override=USER_WORDS (only with the user's request for more jobs), then the complete, self-contained task.
+description: Runs a task in the Kiro CLI (`kiro-cli chat --no-interactive`) on the user's one Kiro login (Agents Router). The worker reads your CLAUDE.md files and skills from a note it gets. Use it when the user asks for Kiro. Start it in the background. Set the Agent description to "<model> · <access> · <task in a few words>", e.g. "auto · read · review the auth module". Begin the prompt with optional lines like model=MODEL, access=read (read, edit or full; read can search the web, edit can't run shell commands in Kiro), effort=high, cwd=PATH, timeout=SECONDS, window=SECONDS (default 60), override=USER_WORDS (only with the user's request for more jobs), then the complete, self-contained task.
 model: haiku
 effort: low
 color: green
