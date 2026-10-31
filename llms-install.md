@@ -10,6 +10,8 @@ Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in
 
    Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Agents Router isn't on PyPI; don't `pip install agt`, which is a different project.
 
+   Already installed but `agt guide` doesn't exist (older than 0.10)? Run `agt update` first.
+
 2. Run `agt guide setup` and follow it. It prints the steps that match the installed version:
    - one combined question for the person;
    - the plugin in every CLI and Claude Code profile;

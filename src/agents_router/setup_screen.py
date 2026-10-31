@@ -106,12 +106,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=True, claude_route=args.claude_route,
                                    claude_profiles=args.claude_profiles or "all")
     screen: dict[str, Any] = {"setup": report, "setup_code": code}
-    # The plan id covers the Claude profiles and their real folders too, so --if-plan refuses a changed set.
+    # The plan id covers the Claude profiles and their real folders too, so --if-plan refuses a changed set,
+    # and where the plugin comes from (AGT_PLUGIN_SOURCE), which the settings route writes without a command.
     from agents_router.profiles import canonical
 
     profiles = [[str(canonical(item["folder"])), item["selected"]] for item in report.claude]
+    source = setup.plugin_source()
     if args.share == "off":
-        content: dict[str, Any] = {"share": "off", "setup": sorted(report.done), "claude": profiles}
+        content: dict[str, Any] = {"share": "off", "setup": sorted(report.done), "claude": profiles, "source": source}
         screen["digest"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
         return screen
     saved = settings.load()
@@ -122,7 +124,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     repos = share._project_choice(sargs, saved)
     screen.update(saved=saved, sargs=sargs, plan=plan, repos=repos, switches=_switches(args, saved, plan))
     content = {"share": plan.digest, "repos": sorted(str(root) for root in repos), "switches": screen["switches"],
-               "setup": sorted(report.done), "claude": profiles}
+               "setup": sorted(report.done), "claude": profiles, "source": source}
     screen["digest"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
     return screen
 

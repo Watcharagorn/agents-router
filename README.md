@@ -45,7 +45,8 @@ Paste this into Claude Code, Codex or Antigravity:
 Install and set up Agents Router for me from https://github.com/Watcharagorn/agents-router.
 If `agt` isn't installed, install it with
 `uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router` (or pipx),
-asking for any sandbox permission you need. Then run `agt guide setup` and follow it: do the
+asking for any sandbox permission you need. If `agt` is there but has no `agt guide` command
+(older than 0.10), run `agt update` first. Then run `agt guide setup` and follow it: do the
 routine steps yourself, show me the remaining choices together once, apply what I pick, and
 tell me only what's left for me (logins, reloads). If you can't run commands, read
 skills/agents-router-setup/SKILL.md in that repo instead.

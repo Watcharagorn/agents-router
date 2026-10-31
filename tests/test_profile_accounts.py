@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from helpers import FAKE_CLAUDE, fake_launchd, stop_job_runners
 
+FAKE_HOST = Path(__file__).resolve().parent / "fake_host.py"
+
 from agents_router import accounts, hooks, jobs, profiles
 from agents_router.config import load_config, set_session
 from agents_router.runtimes.base import JobSpec
@@ -35,6 +37,11 @@ class ProfileHome(unittest.TestCase):
         self._env = patch.dict(os.environ, {
             "HOME": str(self.home), "USERPROFILE": str(self.home), "AGT_HOME": str(self.agt),
             "AGT_CLAUDE_COMMAND": json.dumps([sys.executable, str(FAKE_CLAUDE)]),
+            # Reports and doctor check every runtime: fakes for the others too, so a real codex, agy or kiro-cli
+            # on PATH never runs.
+            **{f"AGT_{kind.upper()}_COMMAND": json.dumps([sys.executable, str(FAKE_HOST), kind])
+               for kind in ("codex", "agy", "kiro")},
+            "CODEX_HOME": str(self.root / "codex"), "FAKE_AGY_HOME": str(self.root / "agy"),
             "FAKE_CLAUDE_RECORD": str(self.record),
             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
             **fake_launchd(self.root),
@@ -224,6 +231,39 @@ class SingleProfileTests(ProfileHome):
 
         with self.assertRaisesRegex(ValueError, "No other Claude profile can take this job"):
             tools._call("subagent_start", {"prompt": "x", "cwd": str(self.project)}, client="claude-code")
+
+
+class ReviewFixTests(ProfileHome):
+    """From a plain terminal: every name for the primary folder means the same account, with the same limits."""
+
+    def test_a_workspace_that_picks_primary_gets_the_primary_folder(self):
+        os.environ["CLAUDE_CONFIG_DIR"] = str(self.ntb)  # the primary is ~/.claude-ntb, found as claude-ntb
+        runtime = self.claude()
+        runtime.picked = ["primary"]
+        self.assertEqual([account.home for account in runtime.worker_accounts()], [self.ntb])
+
+    def test_an_ignored_primary_never_comes_back_as_the_fallback(self):
+        self.profile(".claude-ntb", TEAM, logged_in=False)
+        self.profile(".claude-personal", MAX, logged_in=False)
+        runtime = self.claude('[claude]\nignore = ["claude"]\n')  # ~/.claude: the primary and the only login
+        self.assertEqual(runtime.worker_accounts(), [])
+
+    def test_the_primary_limits_hold_under_its_profile_name(self):
+        runtime = self.claude('[claude]\nprimary_models = ["haiku"]\n')
+        self.assertEqual(runtime.find("primary").models, ["haiku"])
+        self.assertEqual(runtime.find("claude").models, ["haiku"])  # the same folder under its profile name
+        default = next(account for account in runtime.worker_accounts() if profiles.same_folder(account.home, self.default))
+        self.assertEqual(default.models, ["haiku"])
+
+    def test_an_expired_window_never_hides_a_current_one(self):
+        from agents_router import limits
+
+        runtime = self.claude()
+        account = runtime.find("claude")  # ~/.claude and ~/.claude-personal share one Max login
+        now = time.time()
+        usage = {"claude": {"windows": {"five_hour": {"utilization": 1.0, "resets_at": now - 60}}},
+                 "claude-personal": {"windows": {"five_hour": {"utilization": 0.99, "resets_at": now + 3600}}}}
+        self.assertEqual(limits.utilization(accounts.account_record(runtime, account, usage), now), 0.99)
 
 
 class UsageTests(ProfileHome):

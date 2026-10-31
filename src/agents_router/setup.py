@@ -32,7 +32,7 @@ import time
 from typing import Any
 
 from agents_router import ui
-from agents_router.config import NAME_RE, Account, Config, homes_dir, save_accounts
+from agents_router.config import NAME_RE, Account, Config, homes_dir, save_accounts, shared_claude_folders
 from agents_router.fsutil import copy_exclusive, is_link, no_window_kwargs, same_path, write_json, write_private
 from agents_router.runtimes import get_runtime
 from agents_router.runtimes.base import JobSpec, clean_environment
@@ -364,7 +364,7 @@ def claude_profiles(config: Config, *, unknown: bool = False, every: bool = Fals
                    if every or account.logged_in is True or (unknown and account.logged_in is None)]
     if every:  # a folder that has the plugin but no login on record still gets updates and checks
         candidates += [Account(name=profiles.label(folder), home=folder, setup="own", found=True)
-                       for folder in profiles.candidate_folders() if has_plugin(folder)]
+                       for folder in profiles.candidate_folders(extra=shared_claude_folders()) if has_plugin(folder)]
     chosen: list[Account] = [this]  # the session's own folder, even if `ignore` names it
     for account in candidates:
         if _ignored(runtime_config, account) or _under(account.home, homes_dir()):
@@ -377,15 +377,7 @@ def claude_profiles(config: Config, *, unknown: bool = False, every: bool = Fals
 def _ignored(runtime_config: Any, account: Account) -> bool:
     """Whether `[claude] ignore` names this profile, by name, folder label or folder."""
 
-    from agents_router import profiles
-
-    for item in runtime_config.ignore or []:
-        if "/" in item or "\\" in item or item.startswith("~"):
-            if profiles.same_folder(account.home, Path(item).expanduser()):
-                return True
-        elif item in (account.name, profiles.label(account.home)):
-            return True
-    return False
+    return runtime_config.ignores(account)
 
 
 def pick_profiles(config: Config, selector: str | None, *, unknown: bool = False) -> list[Account]:

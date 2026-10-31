@@ -11,6 +11,8 @@ uv tool install --managed-python git+https://github.com/Watcharagorn/agents-rout
 agt guide setup
 ```
 
+If `agt` is installed but has no `agt guide` command (older than 0.10), run `agt update` first.
+
 `agt guide setup` prints the steps for the installed version, and you follow them:
 - the dry run;
 - one combined question;
@@ -59,7 +61,7 @@ scripts/sandbox.sh check       # shows the sandbox and the real setup apart
 scripts/sandbox.sh destroy     # logs the sandbox profiles out, then removes it and its launchers
 ```
 
-The launchers `claude-agt-a`, `claude-agt-b` and `agt-sandbox` are linked into `~/.local/bin` and work from any terminal. Each sets the sandbox up for its own process only, so `claude` and `agt` in that terminal stay the user's real ones. They start in the sandbox's work folder, `$TMPDIR/agt-sandbox-work` (`scripts/sandbox.sh check` prints it), unless started inside the sandbox. It lies outside the home folder because Claude Code reads every `CLAUDE.md` from a session's folder up to `/`, so a folder under the home would load the user's own `~/.claude/CLAUDE.md` into sandbox sessions. Claude Code also lists the folder a session starts in as a project, and `agt share` offers those, so a session started in a real repo would put that repo in the sandbox's reach. `scripts/sandbox.sh add-profile NAME` adds a profile `.claude-NAME` with its launcher `claude-agt-NAME`.
+The launchers `claude-agt-a`, `claude-agt-b` and `agt-sandbox` are linked into `~/.local/bin` and work from any terminal. Each sets the sandbox up for its own process only, so `claude` and `agt` in that terminal stay the user's real ones. They start in the sandbox's work folder, `agt-sandbox-work-<number>` in `$TMPDIR` (`scripts/sandbox.sh check` prints it), unless started inside the sandbox. It lies outside the home folder because Claude Code reads every `CLAUDE.md` from a session's folder up to `/`, so a folder under the home would load the user's own `~/.claude/CLAUDE.md` into sandbox sessions. Claude Code also lists the folder a session starts in as a project, and `agt share` offers those, so a session started in a real repo would put that repo in the sandbox's reach. `scripts/sandbox.sh add-profile NAME` adds a profile `.claude-NAME` with its launcher `claude-agt-NAME`.
 
 What the sandbox keeps apart:
 - The sandbox's `PATH` holds its own `agt` and links to the real `claude`, `codex` and `agy`.

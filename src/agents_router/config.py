@@ -62,6 +62,18 @@ def cache_dir() -> Path:
     return home() / "cache"
 
 
+def shared_claude_folders() -> list[Path]:
+    """Claude folders outside the home folder that `agt share` was told about (`[[share.folders]]`)."""
+
+    try:
+        from agents_router.share import settings as share_settings
+
+        return [Path(folder.path).expanduser() for folder in share_settings.load(share_settings.path()).folders
+                if folder.cli == "claude"]
+    except Exception:
+        return []
+
+
 def homes_dir() -> Path:
     return home() / "homes"
 
@@ -170,15 +182,9 @@ class RuntimeConfig:
 
     def _discover(self) -> list[Account]:
         from agents_router import profiles
+        from agents_router.profiles import same_folder
 
-        extra: list[Path] = []
-        try:
-            from agents_router.share import settings as share_settings
-
-            extra = [Path(folder.path).expanduser() for folder in share_settings.load(share_settings.path()).folders
-                     if folder.cli == "claude"]
-        except Exception:
-            pass
+        extra = shared_claude_folders()
         ignored = [item for item in self.ignore or [] if "/" in item or "\\" in item or item.startswith("~")]
         skip = [account.home for account in self.accounts] + [Path(item) for item in ignored]
         if homes_dir().is_dir():
@@ -194,8 +200,12 @@ class RuntimeConfig:
         for profile in profiles.discover(extra=extra, skip=skip, check=check):
             if profile.name in (self.ignore or []) or any(profile.name == account.name for account in self.accounts):
                 continue
-            found.append(Account(name=profile.name, home=profile.home, setup="own", found=True, login=profile.login,
-                                 org_type=profile.org_type, logged_in=profile.logged_in))
+            account = Account(name=profile.name, home=profile.home, setup="own", found=True, login=profile.login,
+                              org_type=profile.org_type, logged_in=profile.logged_in)
+            if same_folder(account.home, self.primary):
+                # The primary folder under its profile name: the same limits as `primary`, whichever name a job uses.
+                account = replace(account, is_primary=True, **self._primary_limits(set_only=True))
+            found.append(account)
         found.sort(key=lambda account: (not profiles.is_default(account.home), account.name))
         return found
 
@@ -226,17 +236,44 @@ class RuntimeConfig:
         names = [other.name for other in self.all_accounts() if other.login == account.login]
         return names if account.name in names else [account.name, *names]
 
+    def _primary_limits(self, set_only: bool = False) -> dict[str, Any]:
+        limits = dict(plan=self.plan, max_jobs=self.primary_max_jobs, max_effort=self.primary_max_effort,
+                      models=self.primary_models)
+        return {key: value for key, value in limits.items() if value is not None} if set_only else limits
+
     def primary_account(self) -> Account:
         from agents_router.profiles import same_folder
 
-        limits = dict(plan=self.plan, max_jobs=self.primary_max_jobs, max_effort=self.primary_max_effort,
-                      models=self.primary_models)
         for account in self.all_accounts():
             if same_folder(account.home, self.primary):
                 # The primary folder is a known profile: one name for it, whoever calls.
-                changed = {key: value for key, value in limits.items() if value is not None}
-                return replace(account, is_primary=True, **changed)
-        return Account(name="primary", home=self.primary, is_primary=True, **limits)
+                return replace(account, is_primary=True, **self._primary_limits(set_only=True))
+        return Account(name="primary", home=self.primary, is_primary=True, **self._primary_limits())
+
+    def named(self, account: Account, name: str) -> bool:
+        """Whether `name` (from `accounts`, `order`, `ignore` or a job) means this account.
+
+        Its own name; `primary` for the primary folder, whatever name it goes by; its folder label
+        (`claude-ntb`) or the short form (`ntb`) for a profile; or its folder.
+        """
+
+        from agents_router import profiles
+
+        if "/" in name or "\\" in name or name.startswith("~"):
+            return profiles.same_folder(account.home, Path(name).expanduser())
+        if name == account.name:
+            return True
+        if name == "primary":
+            return profiles.same_folder(account.home, self.primary)
+        if self.runtime != "claude":
+            return False
+        label = profiles.label(account.home)
+        return name == label or (account.found and label in (f"claude-{name}", f"claude{name}"))
+
+    def ignores(self, account: Account) -> bool:
+        """Whether `[claude] ignore` names this account."""
+
+        return any(self.named(account, item) for item in self.ignore or [])
 
     def worker_accounts(self) -> list[Account]:
         """Accounts that unpinned jobs may use, in configuration order.
@@ -250,8 +287,12 @@ class RuntimeConfig:
         found: list[Account] = []
         logins: set[str] = set()
         order = self.order or []
+
+        def rank(item: Account) -> int:
+            return next((index for index, name in enumerate(order) if self.named(item, name)), len(order))
+
         # One folder per login; with `order`, the one it lists first.
-        ranked = sorted(self.found_accounts(), key=lambda item: order.index(item.name) if item.name in order else len(order))
+        ranked = sorted(self.found_accounts(), key=rank)
         for account in ranked:
             if account.logged_in is not True or (account.login and account.login in logins):
                 continue  # logged out or unknown; or a second folder with a login already listed
@@ -264,20 +305,27 @@ class RuntimeConfig:
             pool = [account for account in (*registered, *found)
                     if not self.is_session(account) and not (account.found and login and account.login == login)]
             if self.picked:
-                return [account for account in pool if account.name in self.picked]
+                return [account for account in pool if self._picked(account)]
             return pool
         if self.picked:
             chosen = [account for account in (self.primary_account(), *self.accounts, *found)
-                      if account.name in self.picked and account.enabled]
+                      if self._picked(account) and account.enabled]
             if chosen:
-                return chosen
+                from agents_router.profiles import same_folder
+
+                return [account for index, account in enumerate(chosen)
+                        if not any(same_folder(account.home, other.home) for other in chosen[:index])]
         accounts = [*registered, *found]
         if self.include_primary or not accounts:
             primary = self.primary_account()
-            from agents_router.profiles import same_folder
+            if self.include_primary or not self.ignores(primary):  # `ignore` keeps it out of the fallback too
+                from agents_router.profiles import same_folder
 
-            accounts = [primary, *(account for account in accounts if not same_folder(account.home, primary.home))]
+                accounts = [primary, *(account for account in accounts if not same_folder(account.home, primary.home))]
         return accounts
+
+    def _picked(self, account: Account) -> bool:
+        return any(self.named(account, name) for name in self.picked or [])
 
     def pool_accounts(self) -> list[Account]:
         """Accounts that may run workers, pinned or not (doctor --live checks these)."""

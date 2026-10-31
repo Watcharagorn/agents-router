@@ -171,13 +171,21 @@ def account_record(runtime: RuntimeConfig, account: Account, usage: dict[str, An
         own = current(account.name)
         return own if own is not None else (records[0] if records else None)
     merged: dict[str, Any] = {"windows": {}, "pools": {}}
+    now = time.time()
+
+    def used(window: dict[str, Any]) -> float:
+        # A window that has reset since it was recorded counts for nothing, so it never hides a current one.
+        resets = window.get("resets_at")
+        if isinstance(resets, (int, float)) and resets <= now:
+            return -1.0
+        return float(window["utilization"]) if isinstance(window.get("utilization"), (int, float)) else -1.0
+
     for record in records:
         for name, window in (record.get("windows") or {}).items():
             if not isinstance(window, dict):
                 continue
             current = merged["windows"].get(name)
-            used = window.get("utilization") if isinstance(window.get("utilization"), (int, float)) else -1
-            if current is None or used > (current.get("utilization") if isinstance(current.get("utilization"), (int, float)) else -1):
+            if current is None or used(window) > used(current):
                 merged["windows"][name] = window
         for key in ("cooldown_until", "last_used"):
             value = record.get(key)

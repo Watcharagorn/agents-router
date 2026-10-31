@@ -648,6 +648,15 @@ class ProfileEdgeTests(ProfileBase):
             cli.main(["update", "--no-package", "--host", "claude"])
         self.assertIn(bare, [Path(c["folder"]) for c in self.calls() if c["argv"][:2] == ["plugin", "update"]])
 
+    def test_update_reaches_a_shared_claude_folder_with_the_plugin_but_no_login(self):
+        outside = self.root / "team-profile"  # a Claude folder `agt share` knows, outside the home folder
+        (outside / "plugins").mkdir(parents=True)
+        (outside / "plugins" / "installed_plugins.json").write_text(json.dumps(
+            {"version": 2, "plugins": {"agents-router@agents-router": [{"scope": "user", "version": "0.0.1"}]}}), encoding="utf-8")
+        with patch.object(setup, "shared_claude_folders", return_value=[outside]):
+            folders = [account.home for account in setup.claude_profiles(load_config(), every=True)]
+        self.assertIn(outside, folders)
+
     def test_the_settings_route_command_applies_its_own_plan(self):
         proposal = self.proposal("--claude-route", "settings")
         self.assertIn("--claude-route settings", proposal["command"])
@@ -693,6 +702,16 @@ class PluginSourceTests(SetupBase):
         data = json.loads((self.root / "declared" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(data["extraKnownMarketplaces"]["agents-router"],
                          {"source": {"source": "directory", "path": str(REPO_ROOT)}})
+
+    def test_the_plan_id_changes_with_the_plugin_source(self):
+        # The settings route writes the source without running a command, so only the plan id can catch a change.
+        def plan(source):
+            with patch.dict(os.environ, {"AGT_PLUGIN_SOURCE": source}):
+                code, out = self.run_cli("--host", "claude", "--share", "off", "--dry-run", "--json", "--claude-route", "settings")
+            self.assertEqual(code, 0, out)
+            return json.loads(out)["plan"]
+
+        self.assertNotEqual(plan(str(self.root / "clone-a")), plan(str(self.root / "clone-b")))
 
 
 def ui_path(folder):

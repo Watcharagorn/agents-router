@@ -5,7 +5,7 @@ description: Install, set up, update, repair or uninstall Agents Router (agt) fo
 
 # Agents Router setup
 
-When `agt` runs here, run `agt guide setup` and follow what it prints: it's the guide for the installed version. If `agt` is missing, install it first (it needs git, and uv or pipx):
+When `agt` runs here, run `agt guide setup` and follow what it prints: it's the guide for the installed version. If `agt` is missing, install it first (it needs git, and uv or pipx). If `agt` is there but has no `agt guide` command (older than 0.10), run `agt update` first:
 
 ```bash
 uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router

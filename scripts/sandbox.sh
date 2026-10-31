@@ -31,6 +31,8 @@ if [ "${1:-}" = "--dir" ]; then
   DIR="$2"
   shift 2
 fi
+case "$DIR" in /*) ;; *) DIR="$PWD/$DIR" ;; esac  # the scripts it writes hold absolute paths
+DIR="${DIR%/}"
 ACTION="${1:-}"
 NAME="${2:-}"
 MARK=".agt-sandbox"
@@ -39,10 +41,18 @@ LINKS="$HOME/.local/bin"  # where the default sandbox's launchers are linked; it
 # CLAUDE.md from a session's folder up to /, so one under your home would load your own ~/.claude/CLAUDE.md
 # into every sandbox session. Claude Code also lists that folder as a project, and agt share offers those.
 WORK="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}")"
-WORK="${WORK%/}/$(basename "$DIR")-work"
+# One per sandbox folder, so two sandboxes never share one; destroy removes it only when it has the marker.
+WORK="${WORK%/}/$(basename "$DIR")-work-$(printf '%s' "$DIR" | cksum | cut -d' ' -f1)"
+WORK_MARK=".agt-sandbox-work"
 KEYCHAIN_PASSWORD="agt-sandbox"  # guards only the sandbox's test logins, in a file under the sandbox
 
 die() { echo "sandbox: $*" >&2; exit 1; }
+
+# These paths are written into shell scripts (env.sh, the wrappers, the launchers): no character the shell
+# would read again.
+case "$DIR$REPO" in
+  *[\$\`\"\'\\]* | *$'\n'*) die "the sandbox folder and this repository's path can't contain \$, \`, quotes, backslashes or line breaks" ;;
+esac
 
 real_home() {
   if [ -n "${AGT_SANDBOX:-}" ]; then
@@ -61,6 +71,7 @@ write_env() {
   uv_cache="$(uv cache dir)"
   uv_python="$(uv python dir)"
   mkdir -p "$WORK"
+  touch "$WORK/$WORK_MARK"
   canonical="$(cd "$DIR" && pwd -P)"
   cat > "$DIR/env.sh" <<ENV
 # Agents Router sandbox. The launchers (claude-agt-*, agt-sandbox) source it for their own process;
@@ -87,7 +98,7 @@ export FAKE_OSASCRIPT_RECORD="$DIR/launchd/osascript.jsonl"
 unset -f claude codex 2>/dev/null || true  # your shell's own wrappers; bin/claude and bin/codex guard the sandbox
 # Start in the work folder unless already inside the sandbox or it. It's outside your home folder, so no real
 # CLAUDE.md is above it, and no real repo becomes a sandbox project (agt share offers those).
-mkdir -p "$WORK"
+[ -d "$WORK" ] || { mkdir -p "$WORK" && touch "$WORK/$WORK_MARK"; }
 case "\$(pwd -P)/" in "$canonical"/* | "\$(cd "$WORK" && pwd -P)"/*) ;; *) cd "$WORK" ;; esac
 PS1="(agt-sandbox) \${PS1:-\$ }"
 echo "agt sandbox: HOME=\$HOME, agt \$(command -v agt), CLAUDE_CONFIG_DIR=\$CLAUDE_CONFIG_DIR"
@@ -130,8 +141,19 @@ REAL="$1"
 SANDBOX_HOME="$2"
 case "\${1:-}" in --version|-v|--help|-h) exec "\$REAL" "\$@" ;; esac
 refuse() { echo "agt-sandbox: claude refused: \$1. Run claude-agt-a or claude-agt-b (or set CLAUDE_CONFIG_DIR=\$SANDBOX_HOME/.claude-a)." >&2; exit 1; }
+real_dir() {  # the real path of folder \$1, or of its existing parent plus its name; fails otherwise
+  local raw="\${1%/}" name parent
+  [ -n "\$raw" ] || return 1
+  case "\$raw" in /*) ;; *) raw="\$PWD/\$raw" ;; esac
+  if [ -d "\$raw" ]; then (cd "\$raw" && pwd -P); return; fi
+  name="\${raw##*/}"
+  parent="\${raw%/*}"
+  case "\$name" in "" | . | ..) return 1 ;; esac
+  [ -d "\${parent:-/}" ] || return 1
+  printf '%s/%s\n' "\$(cd "\${parent:-/}" && pwd -P)" "\$name"
+}
 [ -n "\${CLAUDE_CONFIG_DIR:-}" ] || refuse "no CLAUDE_CONFIG_DIR (the sandbox uses named profiles only)"
-dir="\$(cd "\$CLAUDE_CONFIG_DIR" 2>/dev/null && pwd -P || printf '%s' "\${CLAUDE_CONFIG_DIR%/}")"
+dir="\$(real_dir "\$CLAUDE_CONFIG_DIR")" || refuse "\$CLAUDE_CONFIG_DIR isn't a folder, and neither is the folder it would be made in"
 case "\$dir" in
   "\$SANDBOX_HOME/.claude") refuse "the sandbox uses named profiles only, not its default .claude" ;;
   "\$SANDBOX_HOME"/*) exec "\$REAL" "\$@" ;;
@@ -148,8 +170,19 @@ write_codex() {
 REAL="$1"
 SANDBOX_HOME="$2"
 case "\${1:-}" in --version|-V|--help|-h) exec "\$REAL" "\$@" ;; esac
+real_dir() {  # the real path of folder \$1, or of its existing parent plus its name; fails otherwise
+  local raw="\${1%/}" name parent
+  [ -n "\$raw" ] || return 1
+  case "\$raw" in /*) ;; *) raw="\$PWD/\$raw" ;; esac
+  if [ -d "\$raw" ]; then (cd "\$raw" && pwd -P); return; fi
+  name="\${raw##*/}"
+  parent="\${raw%/*}"
+  case "\$name" in "" | . | ..) return 1 ;; esac
+  [ -d "\${parent:-/}" ] || return 1
+  printf '%s/%s\n' "\$(cd "\${parent:-/}" && pwd -P)" "\$name"
+}
 home="\${CODEX_HOME:-\$HOME/.codex}"
-home="\$(cd "\$home" 2>/dev/null && pwd -P || printf '%s' "\${home%/}")"
+home="\$(real_dir "\$home")" || { echo "agt-sandbox: codex refused: CODEX_HOME isn't a folder, and neither is the folder it would be made in." >&2; exit 1; }
 case "\$home" in
   "\$SANDBOX_HOME"/*) exec "\$REAL" -c 'cli_auth_credentials_store="file"' "\$@" ;;
   *) echo "agt-sandbox: codex refused: CODEX_HOME \$home is outside the sandbox." >&2; exit 1 ;;
@@ -408,7 +441,8 @@ destroy() {
     fi
   )
   unlink_launchers all
-  rm -rf "$DIR" "$WORK"
+  rm -rf "$DIR"
+  if [ -e "$WORK/$WORK_MARK" ]; then rm -rf "$WORK"; fi
   echo "Removed $DIR."
 }
 
