@@ -94,6 +94,11 @@ def cmd_accounts(args: argparse.Namespace) -> int:
     runtime_config = config.runtime(args.runtime)
     runtime = get_runtime(args.runtime)
 
+    if action == "remove" and args.runtime == "claude":
+        found = next((item for item in runtime_config.found_accounts() if item.name == args.name), None)
+        if found is not None:
+            return _ignore_profile(runtime_config, found)
+
     if action == "reset":
         # The primary account can cool down too, so 'primary' is a valid name here.
         if not args.name or runtime_config.find(args.name) is None:
@@ -138,7 +143,17 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 1
 
     if action == "login":
-        return _login(runtime_config, runtime, account)
+        code = _login(runtime_config, runtime, account)
+        if args.runtime == "claude":
+            from agents_router import profiles
+
+            profiles.forget(account.home)
+        return code
+    if account.found and action in ("sync", "enable", "disable"):
+        print(f"'{args.name}' is one of your own Claude profiles ({ui.short_path(str(account.home))}): agt runs it "
+              "with its own setup and keeps nothing to sync or switch. `agt accounts remove "
+              f"{args.name}` makes agt leave it alone.")
+        return 1
     if action == "sync":
         _print_setup(runtime.prepare(runtime_config, account, _probe_spec(args.runtime, args.cwd)))
         return 0
@@ -154,6 +169,28 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 0
     print(f"Unknown action: {action}")
     return 2
+
+
+def _ignore_profile(runtime_config: Any, account: Any) -> int:
+    """Add a found Claude profile to `[claude] ignore` in the user settings, so agt leaves it alone."""
+
+    from agents_router import config as config_module, levels, synclog
+
+    location = config_module.user_settings_path()
+    try:
+        text = location.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    folder = ui.short_path(str(account.home))
+    current = list(runtime_config.ignore or [])
+    if folder not in current:
+        current.append(folder)
+    synclog.notice_file(location, "user", None)
+    written = levels.write(location, levels.set_line(text, "claude", "ignore", json.dumps(current), location))
+    synclog.saved(written)
+    print(f"agt leaves {account.name} ({folder}) alone from now on: added to [claude] ignore in {location}. "
+          "The folder itself is unchanged.")
+    return 0
 
 
 def _probe_spec(runtime: str, cwd: str | None = None) -> JobSpec:
@@ -288,6 +325,12 @@ def _account_rows(entry: dict[str, Any], *, method: bool = False) -> list[ui.Lin
 
     row: list[ui.Line] = [entry["name"], ui.muted(ui.short_path(entry.get("home") or "")), _login_state(entry)]
     detail: list[ui.Piece] = []
+    if entry.get("this_session"):
+        detail.append(ui.bold("this session (doesn't take its own jobs)"))
+    elif entry.get("same_login_as"):
+        detail.append(ui.muted(f"same login as {entry['same_login_as']} (used only when named)"))
+    elif entry.get("found"):
+        detail.append(ui.muted("your profile, own setup"))
     if method:
         row.append(ui.muted(str((entry.get("auth") or {}).get("authMethod") or "")))
         running = entry.get("running_jobs") or 0
@@ -329,6 +372,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                              f"install {label}, or set [{name}] binary in {ui.short_path(user_settings_path())}"))
             continue
         for entry in report.get("accounts", []):
+            if entry.get("found") and not (entry.get("auth") or {}).get("loggedIn"):
+                continue  # a profile of yours that's logged out: listed, never used, not a problem
             if not (entry.get("auth") or {}).get("loggedIn") and entry.get("enabled", True):
                 problems.append((f"{label} account {entry['name']} is not logged in.", _login_fix(name, entry["name"])))
     if getattr(args, "json", False):
@@ -341,7 +386,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         runtime_config, runtime = config.runtime(name), get_runtime(name)
         for account in runtime_config.pool_accounts():
             copies = runtime.fallback_copies(account) if hasattr(runtime, "fallback_copies") else sync.fallback_copies(account.home)
-            if copies and not account.is_primary:
+            if copies and not account.is_primary and account.setup != "own":
                 notes.append(f"account '{account.name}' has copies instead of links (they don't follow later edits "
                              f"until the next sync): {', '.join(copies)}")
         if name == "codex" and os.name == "nt":
@@ -614,7 +659,11 @@ def cmd_launch(args: argparse.Namespace, extra: list[str]) -> int:
             print(f"No {args.runtime} account named '{args.account}'.")
             return 1
     else:
-        ranked, _ = accounts.ranked_accounts(runtime_config)
+        try:
+            ranked, _ = accounts.ranked_accounts(runtime_config)
+        except ValueError as exc:
+            print(exc)
+            return 1
         if not ranked:
             print(f"Every {args.runtime} account is cooling down after a usage limit.")
             return 1

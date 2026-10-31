@@ -94,7 +94,8 @@ class JobSpec:
     timeout_seconds: int = 1800
     add_dirs: list[str] = field(default_factory=list)
     resume_session: str | None = None
-    resume_account: str | None = None  # account folder that holds resume_session
+    resume_account: str | None = None  # name of the account that holds resume_session
+    resume_home: str | None = None  # that account's folder: the transcript lives there, whatever it's called now
     parent: dict[str, Any] | None = None  # host CLI of the main session and its context paths
     depth: int = 1
     created: float = 0.0

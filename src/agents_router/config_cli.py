@@ -96,6 +96,12 @@ def _runtime_keys(runtime: str) -> list[Key]:
         Key(r + "capacity_retries", "int", "Retries when the service is out of capacity.", minimum=0),
         Key(r + "capacity_retry_seconds", "int", "The first wait before a capacity retry; it doubles each time.", minimum=1),
     ]
+    if runtime == "claude":
+        keys += [
+            Key(r + "order", "names", "The Claude profiles unpinned jobs try, first to last (unset: agt's own accounts, "
+                "then your other profiles by name)."),
+            Key(r + "ignore", "names", "Claude profiles (names or folders) agt leaves alone.", user_only=True),
+        ]
     if runtime in ("codex", "antigravity"):
         keys.append(Key(r + "share_parent_mcp", "bool", "Give workers started from Claude Code its MCP servers."))
     if runtime == "codex":

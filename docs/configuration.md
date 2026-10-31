@@ -168,6 +168,17 @@ When no extra accounts are configured, workers run on the primary account. That 
 
 `max_jobs_per_account` is unset by default, so there's no cap on jobs per account (see Limits for per-account caps). Several Claude Code processes writing one account's `.claude.json` at once have corrupted it in the past; the reported issues are closed, but the fixes aren't verified. Set `max_jobs_per_account = 1` under `[claude]` to run one worker per account folder again. Under `[antigravity]`, 1 also gives workers the parent channel ([Antigravity](gemini.md)).
 
+## Claude profiles
+
+Your own Claude Code folders are found with no settings (see [Claude Code](claude-code.md#2-your-other-profiles-work-with-no-setup)). Two optional keys under `[claude]`:
+
+| Key | Meaning |
+|---|---|
+| `order` | The profiles unpinned jobs try, first to last, e.g. `["claude", "claude-work"]`. Unset: agt's own accounts least used first, then your profiles by name. |
+| `ignore` | Profiles agt leaves alone, by name or folder (`"~/.claude-old"`). User settings only. `agt accounts remove <profile>` adds one. |
+
+An account table may say `setup = "own"`: agt runs that folder with its own setup and links nothing into it. `agt accounts add NAME --home <folder>` sets it for a Claude folder you already use; folders under `~/.agents-router/homes` stay `linked`.
+
 ## Reasoning summaries
 
 `[codex] reasoning_summary` defaults to `"detailed"`. Allowed values are `"detailed"`, `"concise"`, `"auto"`, `"none"` and `"off"`. New runs and resumes get `-c model_reasoning_summary="<value>"` unless your Codex config already sets it (including project config and the active profile). `"none"` requests no summaries; `"off"` adds nothing. Other runtimes do not accept this key. See [Codex reasoning summaries](codex.md#reasoning-summaries) for model support and display details.

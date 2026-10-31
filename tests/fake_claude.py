@@ -23,6 +23,16 @@ def emit(event):
 
 def main():
     argv = sys.argv[1:]
+    if argv[:2] == ["auth", "status"]:
+        # Logged in when the folder has a `logged_in` file. Like the macOS keychain, ~/.claude's login is
+        # found only without CLAUDE_CONFIG_DIR: naming the default folder looks for another entry.
+        configured = os.environ.get("CLAUDE_CONFIG_DIR")
+        default = Path.home() / ".claude"
+        folder = Path(configured) if configured else default
+        hidden = bool(configured) and folder.resolve() == default.resolve()
+        print(json.dumps({"loggedIn": not hidden and (folder / "logged_in").exists(), "authMethod": "claude.ai",
+                          "configDirectory": str(folder)}))
+        return 0
     if os.environ.get("FAKE_CLAUDE_SCENARIO") == "nostdin":
         time.sleep(120)  # never reads its prompt, like a hung CLI
         return 0

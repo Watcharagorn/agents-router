@@ -24,7 +24,7 @@ import time
 from typing import Any, Callable, Iterator
 
 from agents_router import levels, limits, quota, synclog
-from agents_router.config import jobs_dir, load_config, state_dir
+from agents_router.config import jobs_dir, load_config, session_folder, set_session, state_dir
 from agents_router.fsutil import (
     file_lock,
     kill_tree,
@@ -97,6 +97,9 @@ def _create_job(
         synclog.refused(str(exc), workspace)
         raise
     synclog.notice(workspace)
+    host = host or detect_host()
+    session = session_folder(host)
+    set_session(config, session)  # the calling session's own profile never takes its delegated jobs
     runtime_config = config.runtime(runtime)
     depth = int(os.environ.get("AGT_DEPTH", "0") or 0)
     if depth >= config.max_depth:
@@ -125,6 +128,7 @@ def _create_job(
 
     resume_session = None
     resume_account = None
+    resume_home = None
     if resume_job:
         previous = read_status(resume_job)
         closed = read_json(job_dir(resume_job) / "inbox-closed.json", {}) or {}
@@ -139,6 +143,9 @@ def _create_job(
         if previous.get("runtime") != runtime:
             raise ValueError("resume_job belongs to a different runtime")
         resume_account = closed.get("account") or previous.get("account")
+        resume_home = closed.get("home") or next(
+            (attempt.get("home") for attempt in reversed(previous.get("attempts") or [])
+             if isinstance(attempt, dict) and attempt.get("account") == resume_account and attempt.get("home")), None)
         if not hasattr(get_runtime(runtime), "transfer_session"):
             # The session lives in one account's folder and can't be moved: stay there.
             account = resume_account or account
@@ -164,7 +171,8 @@ def _create_job(
         add_dirs=directories,
         resume_session=resume_session,
         resume_account=resume_account,
-        parent=host_context(host or detect_host(), str(path.resolve())),
+        resume_home=resume_home,
+        parent={**host_context(host, str(path.resolve())), "config_dir": str(session) if session else None},
         depth=depth + 1,
         created=time.time(),
     )
@@ -394,15 +402,32 @@ def _started_in(workspace: levels.Workspace, seen: dict[str, str | None]) -> Cal
     return check
 
 
-def list_jobs(limit: int = 20, workspace: levels.Workspace | None = None) -> list[dict[str, Any]]:
-    """The newest jobs; with `workspace`, the newest started in it or its worktrees."""
+def started_from(job_id: str, session: Path | None) -> bool:
+    """Whether a job was started from this Claude folder's session. Jobs that don't record one match any."""
+
+    if session is None:
+        return True
+    try:
+        parent = read_spec(job_id).parent
+    except (OSError, ValueError, TypeError):
+        return True
+    folder = parent.get("config_dir") if isinstance(parent, dict) else None
+    if not folder:
+        return True
+    from agents_router.profiles import same_folder
+
+    return same_folder(folder, session)
+
+
+def list_jobs(limit: int = 20, workspace: levels.Workspace | None = None, session: Path | None = None) -> list[dict[str, Any]]:
+    """The newest jobs; with `workspace`, the newest started in it or its worktrees; with `session`, from that Claude folder."""
 
     keep = _started_in(workspace, {}) if workspace is not None else (lambda status: True)
     jobs = []
     for status in _statuses():
         if len(jobs) == limit:
             break
-        if keep(status):
+        if keep(status) and started_from(str(status.get("job_id") or ""), session):
             jobs.append(
                 {key: status.get(key) for key in ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd", "override")}
             )

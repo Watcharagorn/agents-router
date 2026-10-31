@@ -26,7 +26,7 @@ import time
 from typing import Any
 
 from agents_router import ui
-from agents_router.config import NAME_RE, Account, Config, save_accounts
+from agents_router.config import NAME_RE, Account, Config, homes_dir, save_accounts
 from agents_router.fsutil import copy_exclusive, is_link, no_window_kwargs, same_path, write_json, write_private
 from agents_router.runtimes import get_runtime
 from agents_router.runtimes.base import JobSpec, clean_environment
@@ -403,6 +403,8 @@ def register_account(config: Config, runtime: str, name: str, home: Path) -> tup
         raise ValueError("Kiro keeps one login on this machine (outside ~/.kiro), so agt can't keep a second one apart. "
                          "Kiro jobs run on your login; see docs/kiro.md.")
     runtime_config = config.runtime(runtime)
+    # An existing Claude Code profile (any folder outside agt's own) keeps its own setup: agt links nothing into it.
+    own = runtime == "claude" and not _under(home, homes_dir()) and _profile(home, runtime_config.primary)
     if same_path(home, runtime_config.primary.expanduser().resolve()):
         raise ValueError(f"{home} is the primary {runtime} setup. Extra accounts need their own folder.")
     if runtime == "antigravity":
@@ -418,9 +420,27 @@ def register_account(config: Config, runtime: str, name: str, home: Path) -> tup
     for account in runtime_config.accounts:
         if same_path(account.home, home):
             return "exists", account
-    account = Account(name=name, home=home)
+    account = Account(name=name, home=home, setup="own" if own else "linked")
     runtime_config.accounts.append(account)
+    runtime_config._found = None  # the profile is registered now, not found
     return "added", account
+
+
+def _profile(home: Path, primary: Path) -> bool:
+    """Whether a folder is a Claude Code profile you already use (logged in before, the default, or your primary)."""
+
+    from agents_router import profiles
+
+    return (profiles.is_default(home) or profiles.same_folder(home, primary)
+            or bool(profiles.account_info(home)["login"]))
+
+
+def _under(path: Path, folder: Path) -> bool:
+    try:
+        Path(path).expanduser().resolve().relative_to(Path(folder).expanduser().resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def guess_runtime(folder: Path) -> str:

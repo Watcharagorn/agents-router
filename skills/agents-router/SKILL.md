@@ -72,6 +72,7 @@ Put the user's own words in `override`, for example the relay line `override=use
 | `success` | Check the work |
 | `usage_limit` | The selected account hit a limit. Unpinned jobs try other accounts when failover is enabled. Check the message for reset times. |
 | `no_account` | All accounts are busy or cooling down; wait or tell the user |
+| refused: "this session runs in" / "No other Claude profile" | The profile this session runs in never takes its own jobs. Name another profile (`account=claude-work`; `subagent_accounts` lists them), use a built-in subagent, or start it with `runtime` codex. |
 | `auth` | For an extra account, ask the user to run `agt accounts login <name>`; add `--runtime codex` or `--runtime antigravity` for non-Claude accounts. For a primary login, use the vendor CLI (`claude auth login`, `codex login` or `agy`). |
 | `timeout`, `max_turns` | Narrow the task or raise the limit |
 | `error`, `lost` | Read `message` and `warnings`; retry once at most. `model at capacity after N retries` means agt already waited and retried, and the model stayed overloaded. Fall back as your delegation rules say; do not manage another retry timer. |

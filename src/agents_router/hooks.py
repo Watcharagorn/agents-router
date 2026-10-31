@@ -176,8 +176,12 @@ def _same_dir(left: str, right: str) -> bool:
     return bool(left) and bool(right) and norm(left) == norm(right)
 
 
-def pending_jobs(cwd: str, limit: int = MAX_PENDING_JOBS) -> list[dict[str, Any]]:
-    """Finished jobs for `cwd` whose result was never delivered, newest first."""
+def pending_jobs(cwd: str, limit: int = MAX_PENDING_JOBS, session: Path | None = None) -> list[dict[str, Any]]:
+    """Finished jobs for `cwd` whose result was never delivered, newest first.
+
+    With `session` (a Claude folder), only jobs started from that folder: two sessions open in
+    one project with different profiles each hear about their own jobs.
+    """
 
     folder = jobs_dir()
     if not folder.is_dir():
@@ -190,7 +194,8 @@ def pending_jobs(cwd: str, limit: int = MAX_PENDING_JOBS) -> list[dict[str, Any]
             status = jobs.read_status(path.name)
         except ValueError:
             continue
-        if status.get("state") == "done" and _same_dir(str(status.get("cwd") or ""), cwd):
+        if (status.get("state") == "done" and _same_dir(str(status.get("cwd") or ""), cwd)
+                and jobs.started_from(path.name, session)):
             found.append(status)
 
     def finished(status: dict[str, Any]) -> float:
@@ -200,7 +205,9 @@ def pending_jobs(cwd: str, limit: int = MAX_PENDING_JOBS) -> list[dict[str, Any]
 
 
 def pending_context(payload: dict[str, Any]) -> dict[str, Any] | None:
-    found = pending_jobs(str(payload.get("cwd") or os.getcwd()))
+    from agents_router.config import session_folder
+
+    found = pending_jobs(str(payload.get("cwd") or os.getcwd()), session=session_folder("claude"))
     if not found:
         return None
     lines = ["Agents Router jobs that finished without their result being collected (newest first):"]

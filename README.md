@@ -74,9 +74,10 @@ Per host details: [docs/hosts.md](docs/hosts.md).
 | See what sharing would do | `agt share enable --dry-run` | [Sharing](docs/share.md#turning-it-on) |
 | Turn sharing on | `agt share enable`, then Enter | [Sharing](docs/share.md#turning-it-on) |
 | Check what's in sync | `agt share status` | [Sharing](docs/share.md#everyday-use) |
-| Add a Claude account | `agt accounts add max-2` | [Claude Code](docs/claude-code.md#2-add-your-other-accounts) |
+| Use your other Claude profiles | Nothing to set up: `account=claude-work` | [Claude Code](docs/claude-code.md#2-your-other-profiles-work-with-no-setup) |
+| Add a Claude account | `agt accounts add max-2` | [Claude Code](docs/claude-code.md#3-add-more-accounts) |
 | Add a Codex account | `agt accounts add plus-2 --runtime codex` | [Codex](docs/codex.md#extra-accounts) |
-| Test every account | `agt doctor --live --runtime <runtime>` (one tiny job each; uses a little quota) | [Claude Code](docs/claude-code.md#3-check) |
+| Test every account | `agt doctor --live --runtime <runtime>` (one tiny job each; uses a little quota) | [Claude Code](docs/claude-code.md#4-check) |
 | Preview delegation rules | `agt rules` | [Delegation rules](docs/delegation.md) |
 
 ## Supported CLIs
