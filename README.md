@@ -39,21 +39,42 @@ flowchart LR
 
 ## Install
 
-| Step | Command |
-|---|---|
-| 1. Install `agt` | `uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router` |
-| 2. Set up every installed CLI | `agt setup` |
-| Later: update everything | `agt update` |
+Paste this into Claude Code, Codex or Antigravity:
 
-- **No uv yet:** [install it](https://docs.astral.sh/uv/getting-started/installation/) (`brew install uv` on a Mac), or use pipx: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git.
+```text
+Install and set up Agents Router for me from https://github.com/Watcharagorn/agents-router.
+If `agt` isn't installed, install it with
+`uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router` (or pipx),
+asking for any sandbox permission you need. Then run `agt guide setup` and follow it: do the
+routine steps yourself, show me the remaining choices together once, apply what I pick, and
+tell me only what's left for me (logins, reloads). If you can't run commands, read
+skills/agents-router-setup/SKILL.md in that repo instead.
+```
+
+Your agent installs `agt` and puts the plugin in every CLI and Claude Code profile you have (`~/.claude`, `~/.claude-work` and so on). It then asks you once about sharing and options. Browser logins and reloading your sessions are left to you; it lists them at the end.
+
+- **Needs:** git, and [uv](https://docs.astral.sh/uv/getting-started/installation/) (`brew install uv` on a Mac) or pipx.
 - **Not on PyPI:** the PyPI package named `agt` is a different project.
-- **`agt` not found:** run `uv tool update-shell` (or `pipx ensurepath`) and open a new terminal.
-- **What `agt setup` does:** installs the plugin in each installed CLI, registers the logged-in account folders you name with `--account`, suggests what to share, and lists what's left for you. Enter applies it; `--dry-run` only shows it.
+- **Later:** `agt update` updates `agt` and the plugin everywhere it is.
 
 <details>
-<summary>Install the plugin by hand</summary>
+<summary>Install it yourself in a terminal</summary>
 
-| Host | Command |
+| Step | Command |
+|---|---|
+| 1. Install `agt` | `uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router` (or `pipx install git+https://github.com/Watcharagorn/agents-router`) |
+| 2. Set up every installed CLI and Claude profile | `agt setup` (Enter applies it; `--dry-run` only shows it) |
+| Later: update everything | `agt update` |
+
+- **`agt` not found:** run `uv tool update-shell` (or `pipx ensurepath`) and open a new terminal.
+- **What `agt setup` does:**
+  - installs the plugin in each installed CLI and in each of your logged-in Claude Code profiles (`--claude-profiles` picks which);
+  - suggests what to share;
+  - lists what's left for you.
+
+  Profiles already on this machine need no `--account`.
+
+| Plugin by hand | Command |
 |---|---|
 | Claude Code | `/plugin install agents-router --marketplace Watcharagorn/agents-router` in a session, or `claude plugin install agents-router --marketplace Watcharagorn/agents-router` |
 | Codex | `agt setup --host codex` (the plugin and native relay agents) |
@@ -268,6 +289,7 @@ See [prior art](docs/research/prior-art.md) and [how other projects share setups
 
 | Document | Contents |
 |---|---|
+| [Setup guide for agents](src/agents_router/guides/setup.md) | What `agt guide setup` prints: install, set up, repair and uninstall |
 | [Hosts](docs/hosts.md) | Install and use from Claude Code, Codex, Antigravity and other MCP clients |
 | [Claude Code](docs/claude-code.md) | Accounts, what is shared, switching, troubleshooting |
 | [Codex](docs/codex.md), [Gemini](docs/gemini.md) and [Kiro](docs/kiro.md) | The other subagent CLIs |
@@ -281,106 +303,22 @@ All guides: [docs index](docs/README.md).
 
 ## For AI agents
 
-To have your agent (Claude Code, Codex, Antigravity or another) install this for you, paste a prompt like this:
+Run `agt guide setup` and follow it. It prints the steps that match the installed version:
+- install or upgrade;
+- one combined question for the person;
+- the plugin in every CLI and Claude Code profile;
+- reaching a named profile with `account=`;
+- the hand-off list;
+- checking, repairing and uninstalling.
 
-```text
-Set up Agents Router from https://github.com/Watcharagorn/agents-router by following
-the "For AI agents" section of its README. Then ask me what else I want, such as my
-other account folders, sharing my agents and skills between my CLIs, or delegation
-rules, and tell me exactly what I still have to do myself.
+If `agt` isn't installed yet:
+
+```bash
+uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
+agt guide setup
 ```
 
-<details>
-<summary><b>Steps for the agent</b> (no slash commands needed)</summary>
-
-1. **Install `agt`** and check it with `agt --version`:
-
-   ```bash
-   uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
-   ```
-
-   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal.
-
-2. **Dry run.** Ask the user whether they have other account folders (a second Claude login in `~/.claude-2`, say) and add one `--account` per folder they name. Folders that are already logged in need no new login.
-
-   ```bash
-   agt setup --dry-run --json --account max-2=~/.claude-2 --account codex:plus-2=~/.codex-2
-   ```
-
-   | Key in the proposal | Holds |
-   |---|---|
-   | `plugin` | The hosts it installs into |
-   | `share` | The user's agents and skills, and which CLI each goes to |
-   | `repos` | Repos with their own agents or skills |
-   | `switches` | Worktrees, auto copy, tool widening, MCP servers, plugins, delegation rules, Codex's session line |
-   | `needs_answer` | Items whose copies differ |
-   | `still_needed`, `command` | What's left for the user, and the command to apply it |
-
-3. **Ask once.** Show the share table and the switches: as suggested, change some, or the plugin only. Run the dry run again with the answers as flags, then run the newest proposal's `command` exactly as given. It includes `--yes --if-plan <id>`, which refuses if anything changed meanwhile.
-
-   | The user wants | Flag |
-   |---|---|
-   | One version of an item whose copies differ | `--resolve <item>=<label>` |
-   | An item kept out of one CLI | `--skip <item>@<label>` |
-   | An item only in some CLIs | `--only <item>=<label>[,<label>]` |
-   | Only some repos, or none | `--projects <paths>` or `--projects none` |
-   | MCP servers shared | `--mcp on` |
-   | Plugins shared | `--plugins on` |
-   | New items wait for a pick | `--auto-copy off` |
-   | Worktrees join only by command | `--worktrees command` |
-   | No Codex agents that would get every tool | `--tool-widening skip` |
-   | Delegation rules installed | `--rules on` |
-   | Codex's session line | `--codex-session-line on` |
-   | The plugin only | `--share off` |
-
-   `agt setup` installs the plugin into each installed host with the host's own terminal commands, registers and syncs the account folders, turns sharing on, and ends with what the user still has to do. Running it twice is safe. It never starts a login and never reads credential files. `--host claude`, `--host codex` or `--host antigravity` limits it. See [For agents](docs/share.md#for-agents) in the share guide.
-
-4. **Offer the [delegation rules](docs/delegation.md).** They set models per tier, keep work projects with the home vendor, and set helper limits; personal projects can try another CLI first and fall back to the home model. Ask whether the user wants them and which home and try-first models per tier, then preview and install with their choices. Ask for work folders if they want `--work-folder`. Nothing installs these rules without `--install`.
-
-   ```bash
-   agt rules --show --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
-   agt rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
-   ```
-
-5. **Show the "Still needed from you" list.** Typical items: browser logins for accounts that aren't logged in (`agt accounts login <name>`), restarting the CLI (or `/reload-plugins` in Claude Code), and putting `agt` on PATH.
-
-6. **Check** with `agt doctor` (no model calls). It checks every runtime that's installed; `--runtime <runtime>` checks one (`claude`, `codex`, `antigravity`, `kiro`). `--live` runs one tiny job per account in one runtime, Claude unless you name another, and uses a little quota.
-
-**If `agt setup` fails for a host**, run its commands yourself:
-
-| Host | Install | Update |
-|---|---|---|
-| Claude Code | `claude plugin marketplace add Watcharagorn/agents-router`, then `claude plugin install agents-router@agents-router` | `claude plugin marketplace update agents-router`, then `claude plugin update agents-router@agents-router` |
-| Codex | `codex plugin marketplace add Watcharagorn/agents-router`, then `codex plugin add agents-router@agents-router` | `codex plugin marketplace upgrade agents-router`, then `codex plugin add agents-router@agents-router` |
-| Antigravity | `agy plugin install https://github.com/Watcharagorn/agents-router` | The same command again |
-
-These install the plugin only; `agt setup --host codex` or `--host antigravity` adds the native relay agents.
-
-**Without a `claude` command** (common with the Claude desktop app), or when the plugin commands fail, `agt setup` declares the plugin in Claude Code's `settings.json` (`~/.claude/settings.json`, or the one in `$CLAUDE_CONFIG_DIR`), keeping every other key and saving a backup. Claude Code installs it on its next start, so the user restarts it. `agt setup --claude-route settings` takes this route directly. By hand, merge:
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "agents-router": { "source": { "source": "github", "repo": "Watcharagorn/agents-router" } }
-  },
-  "enabledPlugins": { "agents-router@agents-router": true }
-}
-```
-
-**Updating:** `agt update` (`--dry-run` first) reinstalls `agt` with the tool and source that installed it, updates the plugin in every host that has it, and lists the restarts. On Windows it prints the package command for you to run, because `agt` can't replace itself while running. The package by hand: `uv tool install --force git+https://github.com/Watcharagorn/agents-router` (or `pipx install --force` with the same URL).
-
-**Registering an account folder by hand:** `agt accounts add <name> --home <folder> --no-login` (Claude by default; add `--runtime codex` or `--runtime antigravity`). Leave out `--no-login` for a new account; the user completes the login in the browser.
-
-| Never | Instead |
-|---|---|
-| Read or copy credential files | Leave logins to the vendor's CLI |
-| Edit files inside `~/.agents-router/homes/` | `agt` manages those folders |
-| Edit a limit or safety key by hand | `agt config set`; raising a limit or loosening safety takes `--user-said "<the user's words>"` ([configuration](docs/configuration.md#agt-config)) |
-| Set `override` on your own judgment | Use it only when the user asked for more jobs in this conversation, or confirmed after you warned them and told them how much of the 5-hour window is left |
-
-More for agents working in this repository: [AGENTS.md](AGENTS.md).
-
-</details>
+Without a shell, read [skills/agents-router-setup/SKILL.md](skills/agents-router-setup/SKILL.md), which carries the same guide. More for agents working in this repository: [AGENTS.md](AGENTS.md).
 
 ## Provider terms and your accounts
 
@@ -402,13 +340,17 @@ src/agents_router/      Core: jobs, account pool, shared setup, messages, settin
   runtimes/             Claude Code, Codex, Antigravity and Kiro adapters
   share/                agt share: agents, skills, instructions, MCP servers, hooks and plugins across the CLIs
   agy_review/           The review gate for Antigravity workers
+  guides/               What `agt guide` prints (setup.md: install, set up, repair, uninstall)
 .claude-plugin/         Claude Code and Codex plugin manifest and marketplace
 agents/                 Relay agents that show jobs in Claude Code's agent list
 src/agents_router/templates/codex-agents/   Native Codex relay definitions installed by setup/update
 plugin.json, mcp_config.json   Antigravity plugin
 skills/agents-router/   The skill that teaches the host agent how to use subagents
+skills/agents-router-setup/   The setup guide as a skill, for agents installing or repairing agt
 commands/               /agents-router:delegate
 tests/                  Unit and end-to-end tests with fake CLIs
+scripts/                The live-check sandbox and the guide's copy into the setup skill
+.claude/skills/agt-maintainer/   How to work on this repository (Codex reads it through .codex/skills)
 adapters/antigravity/   The original standalone AGY server (superseded)
 docs/                   Guides, design and research
 ```

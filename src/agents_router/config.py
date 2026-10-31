@@ -93,7 +93,8 @@ class Account:
     max_effort: str | None = None
     models: list[str] | None = None
     # "linked": agt links the primary setup into the folder (accounts under ~/.agents-router/homes).
-    # "own": a Claude Code profile you use yourself; agt runs it with its own setup and changes nothing in it.
+    # "own": a Claude Code profile you use yourself; agt runs it with its own setup and links nothing into it
+    # (`agt setup` installs the plugin there, as in any profile of yours).
     setup: str = "linked"
     found: bool = False  # a profile agt found on this machine (see profiles.py), not one in your settings
     login: str | None = None  # short hash of the login: folders with one login share their usage

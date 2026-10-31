@@ -22,7 +22,7 @@ import time
 from typing import Any
 
 AUTH_TTL_SECONDS = 600
-CLAUDE_MARKERS = ("settings.json", ".claude.json", "projects", "CLAUDE.md")
+CLAUDE_MARKERS = ("settings.json", ".claude.json", "projects", "CLAUDE.md", "plugins")
 
 
 @dataclass

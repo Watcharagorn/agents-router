@@ -7,34 +7,26 @@ Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in
 Run these yourself; none of them is a slash command.
 
 ```bash
-pipx install git+https://github.com/Watcharagorn/agents-router   # or: pip install --user git+...
-agt --version
-agt setup --dry-run --account <name>=<folder> ...
-agt setup --account <name>=<folder> ...
-agt doctor                       # every runtime that's installed
+uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router   # or: pipx install git+...
+agt guide setup
 ```
 
-The full flow, with the `--if-plan` confirmation step, is in the README's [For AI agents](README.md#for-ai-agents) section. Agents Router isn't on PyPI; the PyPI package named `agt` is a different project.
+`agt guide setup` prints the steps for the installed version, and you follow them:
+- the dry run;
+- one combined question;
+- the plugin in every CLI and Claude Code profile;
+- the hand-off list;
+- `agt doctor`;
+- repair and uninstall.
 
-Plain `agt doctor` checks every runtime that's installed. `agt doctor --runtime <runtime>` checks one (`claude`, `codex`, `antigravity`), and `--json` prints the report as JSON.
+The same guide is in [skills/agents-router-setup/SKILL.md](skills/agents-router-setup/SKILL.md) for an agent without a shell. The commands `agt setup` runs per host are in [docs/hosts.md](docs/hosts.md). Agents Router isn't on PyPI; the PyPI package named `agt` is a different project.
 
-`agt setup` installs the plugin into every installed host (`--host claude|codex|antigravity` limits it), registers and syncs account folders that are already logged in, and prints a "Still needed from you" list. It is safe to run again. Use a `codex:` or `claude:` prefix on `--account` when the folder's runtime is ambiguous.
+Only the user can do these:
+- browser logins;
+- approving permission prompts;
+- restarting the CLI or typing `/reload-plugins` so the plugin loads.
 
-After setup, offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room. Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, run `agt rules --show` with their values, then install; otherwise skip it. Example: `agt rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"`. Use their host and models. Nothing installs the rules without `--install`.
-
-What it runs per host, if you need to do it by hand:
-
-- Claude Code: `claude plugin marketplace add Watcharagorn/agents-router`, then `claude plugin install agents-router@agents-router`. Check with `claude plugin list`.
-- Codex: `codex plugin marketplace add Watcharagorn/agents-router`, then `codex plugin add agents-router@agents-router`. Check with `codex plugin list`.
-- Antigravity: `agy plugin install https://github.com/Watcharagorn/agents-router`. Check with `agy plugin list`.
-
-When `claude` isn't found (the Claude desktop app often has no `claude` on PATH) or its plugin commands fail, `agt setup` merges `extraKnownMarketplaces.agents-router` (GitHub repo `Watcharagorn/agents-router`) and `enabledPlugins["agents-router@agents-router"] = true` into `settings.json` in `CLAUDE_CONFIG_DIR` or `~/.claude`. It keeps a backup next to the file, and Claude Code installs the plugin on its next start. `--claude-route settings` forces this route.
-
-To update, run `agt update` (`--dry-run` first if you like, `--no-package` for plugins only). It reinstalls the package with pipx, uv or pip, whichever installed it, and runs `claude plugin marketplace update agents-router` then `claude plugin update agents-router@agents-router`, `codex plugin marketplace upgrade agents-router` then `codex plugin add agents-router@agents-router`, or `agy plugin install <repo URL>` again. On Windows it prints the package command instead of running it; run that command yourself. Then the user restarts the CLI.
-
-If the plugin can't be installed at all, register only the MCP server: `claude mcp add --scope user agents-router -- agt mcp` or `codex mcp add agents-router -- agt mcp`. That loses the skill, `/agents-router:delegate` and the wake-up hooks.
-
-Only the user can do these: browser logins (`agt accounts login <name>`, `claude` then /login, `codex login`, the first `agy` sign-in), approving permission prompts, and restarting the CLI or typing `/reload-plugins` so the plugin loads. Tell them which ones are left.
+Tell them which ones are left. To run work on another Claude profile, use the relay agent with `account=<profile>`, never `env -u CLAUDE_CONFIG_DIR` or `agt run` in your shell.
 
 Don't read, copy or print credential files. Don't edit files in `~/.agents-router/homes/`; `agt` rebuilds them. Don't run `agt doctor --live` or real jobs unless the user agrees, because they use quota.
 
@@ -52,12 +44,42 @@ When you change anything the plugin ships (agents, skills, commands, hooks, the 
 
 The tests use fake CLIs (`tests/fake_claude.py`, `fake_codex.py`, `fake_agy.py`, `fake_host.py`) and temporary folders. Keep it that way: tests must never call the real `claude`, `codex`, `agy` or `kiro-cli`, or touch the real `~/.claude`, `~/.codex` or `~/.gemini`. Every test module imports `tests/helpers.py`, which points the whole test process at throwaway folders (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `AGT_HOME`), drops the variables of the agent session running the tests, and takes an installed `agt` off `PATH`. It also swaps `launchctl` and `osascript` for `tests/fake_launchd.py` (`AGT_LAUNCHCTL`, `AGT_OSASCRIPT`) and records agt's background spawns instead of starting them (`AGT_SPAWN_RECORD`), so no test reaches the real launchd. `fake_host.py` also stands in for `claude mcp add-json|remove`, which keep `.claude.json` where Claude Code does, and for `kiro-cli whoami`. A new test module imports it too; a test that needs its own folders still sets them.
 
+The setup guide has one source, `src/agents_router/guides/setup.md`, which `agt guide setup` prints. After editing it, run `python3 scripts/sync_guide.py` to copy it into `skills/agents-router-setup/SKILL.md`; `tests/test_guide.py` fails while the two differ. The procedure for working here (branch, docs to move, tests, review, release) is the project skill `.claude/skills/agt-maintainer/` (Codex reads it through `.codex/skills/agt-maintainer`).
+
+### Live checks in the sandbox
+
+Live checks run real jobs, so they use quota and need the user's OK. Run them only in the sandbox, never against the real setup:
+
+```bash
+scripts/sandbox.sh create      # ~/agt-sandbox: its own HOME, agt from this clone, the plugin from this clone
+claude-agt-a                   # Claude Code on sandbox profile a (claude-agt-b: profile b)
+agt-sandbox agt doctor         # one command inside the sandbox; agt-sandbox alone opens a sandbox shell
+scripts/sandbox.sh reinstall   # after a code change (agt and the plugin again)
+scripts/sandbox.sh check       # shows the sandbox and the real setup apart
+scripts/sandbox.sh destroy     # logs the sandbox profiles out, then removes it and its launchers
+```
+
+The launchers `claude-agt-a`, `claude-agt-b` and `agt-sandbox` are linked into `~/.local/bin` and work from any terminal. Each sets the sandbox up for its own process only, so `claude` and `agt` in that terminal stay the user's real ones. They start in the sandbox's work folder, `$TMPDIR/agt-sandbox-work` (`scripts/sandbox.sh check` prints it), unless started inside the sandbox. It lies outside the home folder because Claude Code reads every `CLAUDE.md` from a session's folder up to `/`, so a folder under the home would load the user's own `~/.claude/CLAUDE.md` into sandbox sessions. Claude Code also lists the folder a session starts in as a project, and `agt share` offers those, so a session started in a real repo would put that repo in the sandbox's reach. `scripts/sandbox.sh add-profile NAME` adds a profile `.claude-NAME` with its launcher `claude-agt-NAME`.
+
+What the sandbox keeps apart:
+- The sandbox's `PATH` holds its own `agt` and links to the real `claude`, `codex` and `agy`.
+- `AGT_PLUGIN_SOURCE` points `agt setup` at this clone instead of GitHub.
+- `launchctl` and `osascript` are `tests/fake_launchd.py`; agt also refuses the real ones while `HOME` is borrowed.
+- The background watcher is off.
+
+The sandbox uses only named profiles (`.claude-a`, `.claude-b`). Claude Code keeps logins in the macOS keychain, and with the sandbox's `HOME` macOS finds no login keychain at all, so a login fails with "Couldn't save your login". `create` therefore makes the sandbox its own keychain, `home/Library/Keychains/agt-sandbox.keychain-db` (password `agt-sandbox`), and `env.sh` unlocks it. Sandbox logins live there and never reach the real keychain.
+- The sandbox's `bin/claude` is a wrapper that runs only with a `CLAUDE_CONFIG_DIR` inside the sandbox, for every caller, workers included, so nothing reaches a real profile folder.
+- `bin/codex` refuses a `CODEX_HOME` outside the sandbox.
+- agt never uses the real launchd while `HOME` isn't the account's own home folder. The scenarios to run are in `.claude/skills/agt-maintainer/references/live-check.md`.
+
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `src/agents_router/cli.py` | The `agt` command |
-| `src/agents_router/setup.py` | `agt setup` and `agt update`: plugin install and update per host, account registration |
+| `src/agents_router/setup.py` | `agt setup` and `agt update`: plugin install and update per host and per Claude Code profile, account registration |
+| `src/agents_router/guides/` | Guides `agt guide` prints (`setup.md`: install, set up, repair and uninstall, for an agent) |
+| `scripts/` | `sandbox.sh` (the live-check sandbox) and `sync_guide.py` (the guide's copy in the setup skill) |
 | `src/agents_router/jobs.py`, `runner.py` | Job records and the background runner |
 | `src/agents_router/accounts.py`, `config.py` | Account pool, cooldowns, the settings in effect |
 | `src/agents_router/levels.py` | The settings files: `~/.agt/settings.toml`, `<workspace>/.agt/settings.toml` and `settings.local.toml`, and finding the workspace |

@@ -1,43 +1,22 @@
 # Installing Agents Router (for AI agents)
 
-Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and runs subagents in those CLIs on your own accounts. Agents Router is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer; its one dependency, rich (for color in a terminal), installs with it.
+Agents Router (`agt`) keeps agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and runs subagents in those CLIs on your own accounts. It is an MCP server with a plugin for Claude Code, Codex and Antigravity. It needs Python 3.11 or newer; its one dependency, rich (for color in a terminal), installs with it.
 
-1. Install the `agt` command:
+1. Install the `agt` command (it needs git, and uv or pipx):
 
    ```bash
    uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
    ```
 
-   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Both need git. If `agt` isn't on PATH afterwards, run `uv tool update-shell` (or `pipx ensurepath`); the user then opens a new terminal. Check with `agt --version`. Agents Router isn't on PyPI; don't `pip install agt`, which is a different project.
+   Without uv: `pipx install git+https://github.com/Watcharagorn/agents-router`. Agents Router isn't on PyPI; don't `pip install agt`, which is a different project.
 
-2. Ask the user whether they have other account folders, then run setup's dry run with one `--account` per folder they name:
+2. Run `agt guide setup` and follow it. It prints the steps that match the installed version:
+   - one combined question for the person;
+   - the plugin in every CLI and Claude Code profile;
+   - reaching a profile the person names;
+   - what's left for them;
+   - how to check, repair or uninstall.
 
-   ```bash
-   agt setup --dry-run --json --account <name>=<folder>
-   ```
+   If `agt` isn't on PATH yet, call it by its full path (`~/.local/bin/agt`).
 
-   It proposes the plugin install, sharing the user's agents and skills between their CLIs (`share`, `repos`, `switches`), and the questions it needs (`needs_answer`).
-
-3. Show the share table and the switches, and ask once: as suggested, change some, or the plugin only (`--share off`). With the user's answers, run the dry run again with them as flags, then run that proposal's `command` exactly as given. See [For agents](docs/share.md#for-agents).
-
-4. Offer the optional [delegation rules](docs/delegation.md) template. It tells the main agent which models to use per tier and keeps work projects with the home vendor. Personal projects can try another CLI first, with helper limits and a fallback to the home model when there is no room.
-
-   Ask whether the user wants it and which home and try-first models they want for each tier. If they agree, preview with `agt rules --show` and their values, then install. Otherwise skip it. For example:
-
-   ```bash
-   agt rules --install --target claude --home-high "Opus 5.5" --try-low "Gemini 3.8 Flash high" --try-medium "Sol 6.1 high"
-   ```
-
-   Use their host and models. Add `--work-folder` for each work folder they want listed. Nothing installs these rules without `--install`.
-
-5. Tell the user the "Still needed from you" items it prints (browser logins, restarting the CLI).
-
-6. Run `agt doctor`. It checks every runtime that's installed; `--runtime <runtime>` checks one (`claude`, `codex`, `antigravity`). To update later, run `agt update`.
-
-For an MCP client without a plugin system (Cline, Cursor and others), add a stdio server instead of step 2:
-
-```json
-{ "mcpServers": { "agents-router": { "command": "agt", "args": ["mcp"] } } }
-```
-
-Then copy the whole `skills/agents-router/` folder into the client's skills so the agent gets `SKILL.md` and the `hosts/*.md` notes it links to. If the client accepts only rules text, inline `SKILL.md` and the relevant host note. The full steps and the manual commands per host are in the README's "For AI agents" section and in [AGENTS.md](AGENTS.md).
+If you can't run commands, read [skills/agents-router-setup/SKILL.md](skills/agents-router-setup/SKILL.md): it carries the same guide. For an MCP client without a plugin system (Cline, Cursor and others), section 9 of the guide covers the server entry and the skill.

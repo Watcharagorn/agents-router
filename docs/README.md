@@ -6,6 +6,7 @@ Guides for Agents Router (`agt`): sharing agents, skills, instructions, MCP serv
 
 | Guide | What it covers |
 |---|---|
+| [Setup guide for agents](../src/agents_router/guides/setup.md) | What `agt guide setup` prints: install, one question for you, the plugin in every CLI and Claude profile, repair and uninstall |
 | [Hosts](hosts.md) | Installing the plugin in Claude Code, Codex and Antigravity, or the MCP server in any other MCP client, and how long a tool call may wait in each |
 | [Sharing agents and skills](share.md) | `agt share`: agents, skills, instruction files, MCP servers, hooks and plugins across Claude Code, Codex, Antigravity and Kiro, with repos, conflicts, backups and the background watcher |
 | [Claude Code](claude-code.md) | `claude -p` subagents on your other Claude accounts: what every account shares, switching, limits, troubleshooting |

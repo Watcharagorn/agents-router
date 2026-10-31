@@ -242,13 +242,40 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if code != -1:
         _refresh_share_launcher(args.dry_run)
         return code
+    config = load_config()
     code, report = setup.run_setup(
-        load_config(), args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
+        config, args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
+        claude_profiles=args.claude_profiles or "this",  # an agent without a terminal asks first: --dry-run --json
     )
     _refresh_share_launcher(False)
+    others = [item for item in report.claude if not item["selected"] and not setup.has_plugin(Path(item["folder"]))]
+    if others and not args.claude_profiles:
+        names = ", ".join(f"{item['name']} ({item['folder']})" for item in others)
+        report.notes.append(f"Your other Claude profiles don't have the plugin yet: {names}. "
+                            "`agt setup --claude-profiles all` installs it there too.")
     report.notes.append(setup_screen.scopes_note())
     ui.out(*setup.report_lines(report))
     return code
+
+
+GUIDES = {"setup": "Install, set up, update, repair or remove agt: the steps for an agent"}
+
+
+def guide_text(name: str) -> str:
+    """A guide shipped with agt (src/agents_router/guides/<name>.md), so it always matches this version."""
+
+    from importlib.resources import files
+
+    return files("agents_router").joinpath("guides", f"{name}.md").read_text(encoding="utf-8")
+
+
+def cmd_guide(args: argparse.Namespace) -> int:
+    if not args.name:
+        ui.out(ui.bold("agt guide"), "",
+               *ui.columns([[ui.code(f"agt guide {name}"), ui.muted(about)] for name, about in GUIDES.items()], indent=2, gap=3))
+        return 0
+    sys.stdout.write(guide_text(args.name))
+    return 0
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -376,8 +403,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 continue  # a profile of yours that's logged out: listed, never used, not a problem
             if not (entry.get("auth") or {}).get("loggedIn") and entry.get("enabled", True):
                 problems.append((f"{label} account {entry['name']} is not logged in.", _login_fix(name, entry["name"])))
+    if "claude" in names:  # each profile keeps its own copy of the plugin; one left behind runs old relay agents
+        for account in setup.claude_profiles(config, every=True):
+            version = setup.installed_version(account.home)
+            if version and version != __version__:
+                problems.append((f"Claude Code profile {setup.profile_name(account)} ({ui.short_path(account.home)}) has "
+                                 f"agents-router plugin {version}; agt is {__version__}.", ui.cmd("agt update")))
     if getattr(args, "json", False):
-        _print(reports[names[0]] if named else {"runtimes": list(reports.values())})
+        found = [{"problem": what, "fix": ui.plain(fix)} for what, fix in problems]
+        _print({**reports[names[0]], "problems": found} if named else {"runtimes": list(reports.values()), "problems": found})
         return 1 if problems else 0
     notes = list(config.notes)
     notes += [f"{found}. Two installs both register an MCP server and hooks; remove the old one."
@@ -740,6 +774,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="auto: `claude plugin ...`, or settings.json when the claude command is missing or fails. "
         "settings: only declare the plugin in settings.json (Claude Code installs it on its next start).",
     )
+    setup_parser.add_argument(
+        "--claude-profiles", metavar="all|this|NAME[,NAME]",
+        help="Which of your Claude Code profiles get the plugin: all (this one and every logged-in ~/.claude* folder; "
+        "the default with --dry-run, --yes and in a terminal), this (the default for plain setup without a terminal), "
+        "or names such as claude-ntb.",
+    )
 
     update_parser = sub.add_parser(
         "update", help="Reinstall agt from the source you installed it from, and update the plugin in every host that has it.",
@@ -751,6 +791,11 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Host to update; repeat for several (default auto: every host that has the plugin).")
     update_parser.add_argument("--no-package", action="store_true", help="Only update the plugins, not the agt package.")
     update_parser.add_argument("--dry-run", action="store_true", help="Print the plan; change nothing (read-only checks still run).")
+
+    guide = sub.add_parser("guide", help="Print the steps an agent follows to install, set up, repair or remove agt.",
+                           description="Prints a guide shipped with this version of agt, as plain Markdown for an agent. "
+                           "`agt guide setup` is the one to follow after installing agt.")
+    guide.add_argument("name", nargs="?", choices=sorted(GUIDES), help="The guide (no name: the list).")
 
     doctor = sub.add_parser("doctor", help="Check binaries, logins and shared setup.")
     doctor.add_argument("--runtime", choices=RUNTIMES, help="Check only this runtime (default: every one installed).")
@@ -875,6 +920,7 @@ def main(argv: list[str] | None = None) -> int:
             "accounts": cmd_accounts,
             "setup": cmd_setup,
             "update": cmd_update,
+            "guide": cmd_guide,
             "doctor": cmd_doctor,
             "run": cmd_run,
             "start": cmd_start,

@@ -5,7 +5,7 @@ description: How to run subagents through Agents Router (the agt-* agent types i
 
 # Agents Router
 
-These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex or Antigravity) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them.
+These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex or Antigravity) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them, unless the user names a profile or account. Then pass it as `account=` (`~/.claude-work` is `claude-work`), never the profile this session runs in. To install, update or repair agt itself, use the `agents-router-setup` skill (or run `agt guide setup`).
 
 ## In Claude Code: always start a relay agent
 
@@ -17,7 +17,7 @@ In Claude Code, start every Agents Router job with your Agent tool and one of th
 | Antigravity (Gemini) | `agents-router:agt-antigravity` |
 | Claude Code on another account | `agents-router:agt-claude` |
 
-Don't run `agt run`, `agt start` or `agt follow` in your own shell, and don't call `subagent_start`. A job started that way never appears in the user's agent list, and your turn is blocked while you wait on it. A relay agent appears with its own color, the user can open it and watch every step the worker takes (commands, edits, messages, reasoning), and you get the usual notice when it finishes.
+Don't run `agt run`, `agt start` or `agt follow` in your own shell, and don't call `subagent_start`. A job started that way never appears in the user's agent list, and your turn is blocked while you wait on it. The same goes for reaching another Claude profile: never `env -u CLAUDE_CONFIG_DIR` or `CLAUDE_CONFIG_DIR=... claude` in your shell; put `account=<profile>` on the relay agent, and agt runs that profile with its own environment. A relay agent appears with its own color, the user can open it and watch every step the worker takes (commands, edits, messages, reasoning), and you get the usual notice when it finishes.
 
 ```text
 Agent tool:

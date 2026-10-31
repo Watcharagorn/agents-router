@@ -8,8 +8,13 @@ A file named `logged_in` in that folder means the folder is logged in.
   FAKE_HOST_KIRO_LOGGED_OUT   `kiro-cli whoami` says nobody is logged in (Kiro keeps its login outside ~/.kiro)
 
 `claude mcp add-json|remove --scope user` edit `mcpServers` in `.claude.json`.
-  FAKE_HOST_LOG    file to append each argv to, one JSON list per line
+  FAKE_HOST_LOG    file to append each argv to, one JSON list per line (with the folder, and whether
+                   CLAUDE_CONFIG_DIR was set: `~/.claude` runs without it)
   FAKE_HOST_FAIL_ONCE  a file; while it exists, the next `claude mcp add-json` fails and removes it
+  FAKE_HOST_FAIL_IN    a folder; FAKE_HOST_FAIL fails only for the CLI running there
+  FAKE_HOST_PLUGIN_VERSION  installing agt's own plugin records this version in Claude's installed_plugins.json
+
+A marketplace added from a local folder is named after its `.claude-plugin/marketplace.json`, as Claude Code does.
 """
 
 import json
@@ -31,7 +36,8 @@ def main():
     log = os.environ.get("FAKE_HOST_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"kind": kind, "argv": argv, "folder": str(folder)}) + "\n")
+            handle.write(json.dumps({"kind": kind, "argv": argv, "folder": str(folder),
+                                     "config_dir_set": "CLAUDE_CONFIG_DIR" in os.environ}) + "\n")
     state_path = folder / "fake_plugins.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"marketplaces": [], "plugins": {}}
 
@@ -63,24 +69,34 @@ def main():
         print(f"fake {kind}: unsupported {argv}", file=sys.stderr)
         return 2
     sub = argv[1:]
-    if sub and sub[0] == os.environ.get("FAKE_HOST_FAIL"):
+    fail_in = os.environ.get("FAKE_HOST_FAIL_IN")
+    if sub and sub[0] == os.environ.get("FAKE_HOST_FAIL") and (not fail_in or Path(fail_in) == folder):
         print(f"error: {sub[0]} failed on purpose", file=sys.stderr)
         return 1
     if sub[:2] == ["marketplace", "list"]:
         items = [{"name": name} for name in state["marketplaces"]]
+        if kind == "codex":  # Codex says where each marketplace comes from
+            local = state.get("local", [])
+            for item in items:
+                item["marketplaceSource"] = {"sourceType": "local" if item["name"] in local else "git"}
         print(json.dumps({"marketplaces": items} if kind == "codex" else items))
         return 0
     if sub[:2] == ["marketplace", "add"]:
         # agt's own repo, or any other source: the marketplace is named after its last part (example/tools: tools).
-        name = "agents-router" if sub[2] == REPO else Path(sub[2].rstrip("/")).name.removesuffix(".git")
+        name = "agents-router" if sub[2] == REPO else local_name(sub[2]) or Path(sub[2].rstrip("/")).name.removesuffix(".git")
         if name not in state["marketplaces"]:
             state["marketplaces"].append(name)
+            if sub[2].startswith("/"):
+                state.setdefault("local", []).append(name)
             if name != "agents-router":
                 record_marketplace(kind, folder, name, sub[2])
         save()
         print(f"Added marketplace {name}")
         return 0
     if sub[:2] in (["marketplace", "update"], ["marketplace", "upgrade"]):
+        if kind == "codex" and sub[2] in state.get("local", []):
+            print(f"Error: marketplace `{sub[2]}` is not configured as a Git marketplace", file=sys.stderr)
+            return 1
         return 0 if sub[2] in state["marketplaces"] else 1
     if sub[:1] == ["update"]:
         return 0 if sub[1] in state["plugins"] else 1
@@ -98,7 +114,7 @@ def main():
     if sub[:1] in (["install"], ["add"]):
         target = sub[1]
         if kind == "agy":
-            if target != f"https://github.com/{REPO}":
+            if target != f"https://github.com/{REPO}" and local_name(target) != "agents-router":
                 return 1
             state["plugins"]["agents-router"] = True
         else:
@@ -108,6 +124,8 @@ def main():
             state["plugins"][target] = True
             if target != PLUGIN_ID:
                 record_install(kind, folder, target)
+            elif kind == "claude" and os.environ.get("FAKE_HOST_PLUGIN_VERSION"):
+                record_install(kind, folder, target, os.environ["FAKE_HOST_PLUGIN_VERSION"])
         save()
         print("Installed")
         return 0
@@ -130,6 +148,16 @@ def main():
         return 0
     print(f"fake {kind}: unsupported {argv}", file=sys.stderr)
     return 2
+
+
+def local_name(source):
+    """A local marketplace's name, from its `.claude-plugin/marketplace.json`; None for anything else."""
+
+    path = Path(source) / ".claude-plugin" / "marketplace.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("name")
+    except (OSError, ValueError):
+        return None
 
 
 def record_marketplace(kind, folder, name, source):
@@ -171,18 +199,19 @@ def record_uninstall(kind, folder, plugin_id):
         config.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def record_install(kind, folder, plugin_id):
-    """Where Claude Code and Codex note an installed plugin, for share's plugin inventory (not agt's own plugin)."""
+def record_install(kind, folder, plugin_id, version="1.0.0"):
+    """Where Claude Code and Codex note an installed plugin, for share's plugin inventory (agt's own: only its version)."""
 
     if kind == "claude":
         settings = folder / "settings.json"
         data = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
-        data.setdefault("enabledPlugins", {})[plugin_id] = True
-        settings.write_text(json.dumps(data), encoding="utf-8")
+        if plugin_id != PLUGIN_ID:
+            data.setdefault("enabledPlugins", {})[plugin_id] = True
+            settings.write_text(json.dumps(data), encoding="utf-8")
         installed = folder / "plugins" / "installed_plugins.json"
         installed.parent.mkdir(parents=True, exist_ok=True)
         known = json.loads(installed.read_text(encoding="utf-8")) if installed.exists() else {"version": 2, "plugins": {}}
-        known["plugins"][plugin_id] = [{"scope": "user", "installPath": str(folder / "plugins" / plugin_id), "version": "1.0.0"}]
+        known["plugins"][plugin_id] = [{"scope": "user", "installPath": str(folder / "plugins" / plugin_id), "version": version}]
         installed.write_text(json.dumps(known), encoding="utf-8")
     elif kind == "codex":
         config = folder / "config.toml"

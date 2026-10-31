@@ -175,7 +175,7 @@ Your own Claude Code folders are found with no settings (see [Claude Code](claud
 | Key | Meaning |
 |---|---|
 | `order` | The profiles unpinned jobs try, first to last, e.g. `["claude", "claude-work"]`. Unset: agt's own accounts least used first, then your profiles by name. |
-| `ignore` | Profiles agt leaves alone, by name or folder (`"~/.claude-old"`). User settings only. `agt accounts remove <profile>` adds one. |
+| `ignore` | Profiles agt leaves alone, by name or folder (`"~/.claude-old"`). User settings only. `agt accounts remove <profile>` adds one. `agt setup` and `agt update` leave them alone too. |
 
 An account table may say `setup = "own"`: agt runs that folder with its own setup and links nothing into it. `agt accounts add NAME --home <folder>` sets it for a Claude folder you already use; folders under `~/.agents-router/homes` stay `linked`.
 

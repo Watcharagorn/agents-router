@@ -9,13 +9,14 @@ changes the share picks, the repos and the lines, and `q` quits. A conflict
 (an item whose copies differ) is asked first. "Still needed from you" comes
 last, once.
 
-Without a terminal, plain `agt setup` installs the plugin as before and says
-how to set up sharing. An agent runs `agt setup --dry-run --json`, which
-returns the same screen as a proposal (the plugin lines, the share table,
-`repos`, `switches`, `needs_answer` and `command`), asks the user once, and
-runs that `command` (`agt setup --yes --if-plan <id> ...`). `--if-plan`
-refuses when anything changed since the dry run. `--share off` leaves
-sharing out.
+Without a terminal, plain `agt setup` installs the plugin in this Claude
+profile only and says how to set up sharing and the other profiles. An agent
+runs `agt setup --dry-run --json`, which returns the same screen as a proposal
+(the plugin lines, `claude_profiles`, the share table, `repos`, `switches`,
+`needs_answer`, `command` and `next`), asks the user once, and runs that
+`command` (`agt setup --yes --if-plan <id> ...`). `--if-plan` refuses when
+anything changed since the dry run, the Claude profiles included. `--share off`
+leaves sharing out. `--claude-profiles` picks the profiles (all by default).
 """
 
 from __future__ import annotations
@@ -102,9 +103,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     """Everything the screen shows, worked out without writing anything."""
 
     config = load_config()
-    code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=True, claude_route=args.claude_route)
+    code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=True, claude_route=args.claude_route,
+                                   claude_profiles=args.claude_profiles or "all")
     screen: dict[str, Any] = {"setup": report, "setup_code": code}
+    # The plan id covers the Claude profiles and their real folders too, so --if-plan refuses a changed set.
+    from agents_router.profiles import canonical
+
+    profiles = [[str(canonical(item["folder"])), item["selected"]] for item in report.claude]
     if args.share == "off":
+        content: dict[str, Any] = {"share": "off", "setup": sorted(report.done), "claude": profiles}
+        screen["digest"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
         return screen
     saved = settings.load()
     sargs = _share_args(args)
@@ -114,7 +122,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     repos = share._project_choice(sargs, saved)
     screen.update(saved=saved, sargs=sargs, plan=plan, repos=repos, switches=_switches(args, saved, plan))
     content = {"share": plan.digest, "repos": sorted(str(root) for root in repos), "switches": screen["switches"],
-               "setup": sorted(report.done)}
+               "setup": sorted(report.done), "claude": profiles}
     screen["digest"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
     return screen
 
@@ -127,6 +135,10 @@ def command_line(args: argparse.Namespace, screen: dict[str, Any]) -> str:
         parts += ["--host", host]
     for account in args.account:
         parts += ["--account", account]
+    if screen["setup"].claude:
+        parts += ["--claude-profiles", args.claude_profiles or "all"]
+    if args.claude_route != "auto":
+        parts += ["--claude-route", args.claude_route]
     if args.share == "off":
         parts += ["--share", "off"]
     else:
@@ -156,7 +168,9 @@ def short_command(args: argparse.Namespace, screen: dict[str, Any]) -> str:
         parts += ["--host", host]
     for account in args.account:
         parts += ["--account", account]
-    given = (("--share", "off" if args.share == "off" else None), ("--rules", args.rules),
+    given = (("--claude-profiles", args.claude_profiles),
+             ("--claude-route", args.claude_route if args.claude_route != "auto" else None),
+             ("--share", "off" if args.share == "off" else None), ("--rules", args.rules),
              ("--codex-session-line", args.codex_session_line), ("--worktrees", args.worktrees), ("--mcp", args.mcp),
              ("--plugins", args.plugins), ("--projects", args.projects), ("--auto-copy", args.auto_copy),
              ("--tool-widening", args.tool_widening))
@@ -193,15 +207,24 @@ def apply_lines(args: argparse.Namespace, screen: dict[str, Any]) -> list[ui.Lin
 
 def proposal(args: argparse.Namespace, screen: dict[str, Any]) -> dict[str, Any]:
     report = screen["setup"]
-    data: dict[str, Any] = {"dry_run": True, "plugin": {"planned": report.done, "already": report.unchanged,
-                                                        "failed": report.failed, "notes": report.notes}}
+    data: dict[str, Any] = {"dry_run": True, "plan": screen["digest"],
+                            "plugin": {"planned": report.done, "already": report.unchanged,
+                                       "failed": report.failed, "notes": report.notes}}
     if "plan" in screen:
         share_proposal = planner.proposal(screen["plan"], "")
-        data.update(plan=screen["digest"], share=share_proposal, repos=[str(root) for root in screen["repos"]],
+        data.update(share=share_proposal, repos=[str(root) for root in screen["repos"]],
                     switches={name: {"on": value, "means": SWITCHES[name][0]} for name, value in screen["switches"].items()},
                     needs_answer=share_proposal["needs_answer"])
-    data.update(still_needed=report.todo, command=command_line(args, screen))
+    if report.claude:
+        data["claude_profiles"] = [{"name": item["name"], "folder": item["folder"], "this_session": item["this"],
+                                    "gets_plugin": item["selected"]} for item in report.claude]
+    data.update(still_needed=report.todo, command=command_line(args, screen), next=NEXT)
     return data
+
+
+NEXT = ("Ask the user once, in one message: the share table, the switches and the Claude profiles that get the plugin "
+        "(claude_profiles, with their folders). Apply their answer by changing the flags and running --dry-run --json "
+        "again, then run `command` exactly as given. Never run it before they answer.")
 
 
 def _and(names: list[str]) -> str:
@@ -216,6 +239,7 @@ def render(args: argparse.Namespace, screen: dict[str, Any], *, dry_run: bool = 
         + setup.report_rows(report.failed, ui.Span("error-mark", "✗"))
     if rows:
         lines += ["", ui.bold("Plugin"), *ui.columns(rows, gap=2)]
+    lines += profile_lines(report)
     if "plan" not in screen:
         return lines
     plan = screen["plan"]
@@ -254,11 +278,23 @@ def render(args: argparse.Namespace, screen: dict[str, Any], *, dry_run: bool = 
     return lines
 
 
+def profile_lines(report: setup.Report) -> list[ui.Line]:
+    """Your Claude Code profiles, one line each, ticked when they get the plugin. Only when there's more than one."""
+
+    if len(report.claude) < 2:
+        return []
+    rows = [[f"[{'x' if item['selected'] else ' '}]", item["name"], ui.muted(ui.short_path(item["folder"])),
+             ui.muted("this session" if item["this"] else "")] for item in report.claude]
+    return ["", ui.bold("Claude profiles that get the plugin"), *ui.columns(rows, indent=2, gap=2),
+            ["  ", ui.muted("Change it with "), ui.code("--claude-profiles all|this|NAME[,NAME]"), ui.muted(".")]]
+
+
 def apply(args: argparse.Namespace, screen: dict[str, Any]) -> int:
     """Do all of it: the plugin, then sharing (with its repos), then the lines that aren't share settings."""
 
     config = load_config()
-    code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route)
+    code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
+                                   claude_profiles=args.claude_profiles or "all")
     todo, report.todo = report.todo, []
     ui.out(*setup.report_lines(report, todo=False, footer=False))
     if "plan" not in screen:
@@ -281,19 +317,41 @@ def apply(args: argparse.Namespace, screen: dict[str, Any]) -> int:
     return max(code, share_code)
 
 
+def _ready_target(config: Any, found: list[str]) -> tuple[str, str, str] | None:
+    """Where a first job can run now: (name to show, `in`/`on` phrase, `agt run` flags), or None.
+
+    Codex, then Antigravity, when logged in; else a logged-in Claude profile that takes this session's
+    jobs. An installed CLI without a login isn't offered: its job would fail.
+    """
+
+    from agents_router.runtimes import get_runtime
+
+    for host, name in (("codex", "Codex"), ("antigravity", "Gemini")):
+        if host in found:
+            runtime_config = config.runtime(host)
+            if (get_runtime(host).auth_status(runtime_config, runtime_config.primary_account()) or {}).get("loggedIn"):
+                return name, f" in {name}", f" --runtime {host}"
+    if "claude" in found:
+        runtime_config = config.runtime("claude")
+        adapter = get_runtime("claude")
+        for account in runtime_config.worker_accounts():
+            if (adapter.auth_status(runtime_config, account) or {}).get("loggedIn"):
+                profile = setup.profile_name(account)
+                return profile, f" on {profile}", f" --account {profile}"
+    return None
+
+
 def _first_job() -> list[ui.Line]:
-    """Three ways to try what setup set up, with another CLI than Claude Code when there is one."""
+    """Three ways to try what setup set up, on a CLI or Claude profile that can take a job now."""
 
     config = load_config()
     found = setup.detect_hosts(config)
-    other = next((host for host in ("codex", "antigravity") if host in found), None)
-    name = {"codex": "Codex", "antigravity": "Gemini"}.get(other or "", "a subagent")
+    name, where, flags = _ready_target(config, found) or ("a subagent", "", "")
     rows: list[list[ui.Line]] = []
     if "claude" in found:
         rows.append([ui.muted("In Claude Code, ask"), f"Use {name} to review my last commit."])
-        rows.append([ui.muted("Or type"), ui.cmd("/agents-router:delegate review my last commit" + (f" in {name}" if other else ""))])
-    runtime = f" --runtime {other}" if other else ""
-    rows.append([ui.muted("From this terminal"), ui.cmd(f'agt run{runtime} "review my last commit"')])
+        rows.append([ui.muted("Or type"), ui.cmd("/agents-router:delegate review my last commit" + where)])
+    rows.append([ui.muted("From this terminal"), ui.cmd(f'agt run{flags} "review my last commit"')])
     return ["", ui.bold("Then try your first delegated job"), *ui.columns(rows, gap=3)]
 
 

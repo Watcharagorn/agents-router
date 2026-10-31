@@ -44,7 +44,7 @@ agents-router-mcp = "agents_router.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"agents_router" = ["templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
+"agents_router" = ["guides/*.md", "templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
 "agents_router.agy_review" = ["policy.md"]
 
 [tool.uv]

@@ -2,13 +2,19 @@
 
 The host is the CLI your main session runs in. Agents Router is one MCP server, packaged as a plugin for Claude Code, Codex and Antigravity. Every host gets the same tools and the same skill. What differs is how you install it and how long a single tool call may wait.
 
-First install the `agt` command once (Python 3.11+; the installer also fetches rich, for color in a terminal):
+The easy way is to paste the prompt from the README's [Install](../README.md#install) section into your agent. It installs `agt` and follows `agt guide setup`. By hand (Python 3.11+; the installer also fetches rich, for color in a terminal):
 
 ```bash
-pipx install git+https://github.com/Watcharagorn/agents-router
+uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
+agt setup
 ```
 
-Then `agt setup` installs the plugin into every host below that is installed, using each host's own terminal commands, so an agent can run it for you. It skips what's already there, `--dry-run` shows the plan, and `--host` limits it to one host. It also registers account folders that are already logged in (`--account max-2=~/.claude-2`) and ends with what you still have to do, such as logins and restarts. The sections below give the commands it runs.
+`agt setup` installs the plugin into every host below that is installed, using each host's own terminal commands, so an agent can run it for you.
+- In Claude Code, it installs into each of your logged-in profiles (`~/.claude`, `~/.claude-*`), each run with that profile's own environment. `--claude-profiles all|this|NAME[,NAME]` picks which.
+- It skips what's already there, `--dry-run` shows the plan, and `--host` limits it to one host.
+- It ends with what you still have to do, such as logins and restarts.
+
+The sections below give the commands it runs. [Updating, and the MCP server alone](#updating-and-the-mcp-server-alone) has the update commands.
 
 ## Claude Code
 
@@ -118,3 +124,15 @@ Copy the whole `skills/agents-router/` folder into the client's skills if it sup
 ## Which subagent CLI runs the work
 
 That's chosen per job with `runtime` (`claude`, `codex`, `antigravity` or `kiro`), independent of the host. A Codex session can start Claude Code subagents and the other way round. A subagent in a different CLI than its host gets a short note naming the host's instruction files and skill folders, so it can follow the same conventions without anything being copied. Each runtime has its own guide: [Claude Code](claude-code.md), [Codex](codex.md), [Gemini through Antigravity](gemini.md) and [Kiro](kiro.md).
+
+## Updating, and the MCP server alone
+
+`agt update` (`--dry-run` first) reinstalls `agt` with the tool and source that installed it, then updates the plugin wherever it is, every Claude Code profile included. On Windows it prints the package command for you to run. By hand:
+
+| Host | Update | MCP server only (no skill, relay agents or hooks) |
+|---|---|---|
+| Claude Code | `claude plugin marketplace update agents-router`, then `claude plugin update agents-router@agents-router` | `claude mcp add --scope user agents-router -- agt mcp` |
+| Codex | `codex plugin marketplace upgrade agents-router`, then `codex plugin add agents-router@agents-router` | `codex mcp add agents-router -- agt mcp` |
+| Antigravity | `agy plugin install https://github.com/Watcharagorn/agents-router` again | `{"mcpServers": {"agents-router": {"command": "agt", "args": ["mcp"]}}}` in `~/.gemini/config/mcp_config.json` |
+
+For a Claude Code profile other than `~/.claude`, run the `claude` commands with `CLAUDE_CONFIG_DIR=<its folder>`; `~/.claude` runs without it.

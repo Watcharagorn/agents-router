@@ -4,9 +4,15 @@ Plugins use each host's own terminal commands (`claude plugin ...`,
 `codex plugin ...`, `agy plugin ...`), so an agent can do the whole install
 without slash commands. Codex native agents are installed separately in its
 personal agents folder. Antigravity relays use a companion plugin in its global
-customizations folder. When the `claude` binary can't be found, the Claude Code
-plugin is declared in the primary `settings.json` instead; Claude Code installs
-it on its next start. Logins are never run and credential files are never read.
+customizations folder.
+
+Claude Code gets the plugin in each of your profiles (`claude_profiles`): this
+session's folder, your registered profiles with their own setup, and the
+logged-in `~/.claude*` folders agt finds. Each runs with its own environment, so
+`~/.claude` runs without CLAUDE_CONFIG_DIR. When the `claude` binary can't be
+found, the plugin is declared in each profile's `settings.json` instead; Claude
+Code installs it on its next start. Logins are never run and credential files
+are never read.
 """
 
 from __future__ import annotations
@@ -66,10 +72,36 @@ class Report:
     todo: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     checked: list[tuple[str, str]] = field(default_factory=list)  # (what, how it stands): nothing done, nothing wrong
+    # Claude Code profiles setup could install into: {"name", "folder", "this", "selected"}
+    claude: list[dict[str, Any]] = field(default_factory=list)
 
     def add_todo(self, text: str) -> None:
         if text not in self.todo:
             self.todo.append(text)
+
+
+def plugin_source() -> str:
+    """Where the plugin comes from: this repository on GitHub, or `AGT_PLUGIN_SOURCE`.
+
+    `AGT_PLUGIN_SOURCE` is a local clone (live checks in a sandbox install the branch you're on
+    without pushing it) or another GitHub `owner/repo`.
+    """
+
+    value = os.environ.get("AGT_PLUGIN_SOURCE", "").strip()
+    if not value:
+        return REPO
+    folder = Path(value).expanduser()
+    return str(folder.resolve()) if folder.is_dir() else value
+
+
+def _local_source() -> Path | None:
+    source = Path(plugin_source())
+    return source if source.is_absolute() and source.is_dir() else None
+
+
+def _agy_source() -> str:
+    source = plugin_source()
+    return source if _local_source() else REPO_URL if source == REPO else f"https://github.com/{source}"
 
 
 def run_command(argv: list[str], env: dict[str, str] | None, timeout: int = 300) -> tuple[int, str, str]:
@@ -191,15 +223,15 @@ def _plugin_steps(host: str, state: dict[str, Any]) -> list[list[str]]:
     if host == "claude":
         if state["installed"]:
             return [["plugin", "enable", PLUGIN_ID]]
-        steps = [] if state["marketplace"] else [["plugin", "marketplace", "add", REPO]]
+        steps = [] if state["marketplace"] else [["plugin", "marketplace", "add", plugin_source()]]
         return steps + [["plugin", "install", PLUGIN_ID]]
     if host == "codex":
         # `codex plugin add` also re-enables a disabled plugin.
-        steps = [] if state["marketplace"] or state["installed"] else [["plugin", "marketplace", "add", REPO]]
+        steps = [] if state["marketplace"] or state["installed"] else [["plugin", "marketplace", "add", plugin_source()]]
         return steps + [["plugin", "add", PLUGIN_ID]]
     if state["installed"]:
         return [["plugin", "enable", str(state["name"] or PLUGIN)]]
-    return [["plugin", "install", REPO_URL]]
+    return [["plugin", "install", _agy_source()]]
 
 
 def _install_codex_agents(primary: Path, report: Report) -> None:
@@ -281,13 +313,189 @@ def _install_antigravity_agents(config: Config, report: Report) -> None:
         report.failed.append(f"Antigravity: couldn't install relay agents at {plugin}: {exc}")
 
 
-def install_plugin(config: Config, host: str, report: Report, claude_route: str = "auto") -> None:
+# Claude Code profiles ----------------------------------------------------------
+
+
+def profile_name(account: Account) -> str:
+    """The name a profile goes by: its account name, or its folder's label (`claude-ntb`) for the primary."""
+
+    from agents_router import profiles
+
+    return profiles.label(account.home) if account.name == "primary" else account.name
+
+
+def this_profile(config: Config) -> Account:
+    """The Claude Code folder of the session running agt, or the primary folder when no session does."""
+
+    from agents_router.profiles import same_folder
+
+    runtime_config = config.runtime("claude")
+    if runtime_config.session_home is None:
+        return runtime_config.primary_account()
+    found = next((account for account in runtime_config.all_accounts() if runtime_config.is_session(account)), None)
+    if found is not None:
+        return found
+    primary = runtime_config.primary_account()
+    if same_folder(primary.home, runtime_config.session_home):
+        return primary
+    return Account(name="primary", home=runtime_config.session_home)
+
+
+def claude_profiles(config: Config, *, unknown: bool = False, every: bool = False) -> list[Account]:
+    """Every Claude Code folder of yours that gets the plugin, this one first.
+
+    This session's folder (or the primary), the primary, your registered profiles with their own
+    setup, then the profiles agt finds that are logged in. `unknown`: also found profiles whose
+    login couldn't be checked (no `claude` command); `every` (update, doctor): found profiles
+    whatever their login, and any `~/.claude*` folder that has the plugin. Folders with one login
+    stay apart: each folder needs its own install. `[claude] ignore` leaves a profile out (never
+    this session's own). Accounts agt made under `~/.agents-router/homes` aren't here; they get the
+    plugin from the primary's setup.
+    """
+
+    from agents_router import profiles
+    from agents_router.profiles import same_folder
+
+    runtime_config = config.runtime("claude")
+    this = this_profile(config)
+    candidates = [runtime_config.primary_account()]
+    candidates += [account for account in runtime_config.accounts if account.setup == "own"]
+    candidates += [account for account in runtime_config.found_accounts()
+                   if every or account.logged_in is True or (unknown and account.logged_in is None)]
+    if every:  # a folder that has the plugin but no login on record still gets updates and checks
+        candidates += [Account(name=profiles.label(folder), home=folder, setup="own", found=True)
+                       for folder in profiles.candidate_folders() if has_plugin(folder)]
+    chosen: list[Account] = [this]  # the session's own folder, even if `ignore` names it
+    for account in candidates:
+        if _ignored(runtime_config, account) or _under(account.home, homes_dir()):
+            continue
+        if not any(same_folder(account.home, other.home) for other in chosen):
+            chosen.append(account)
+    return chosen
+
+
+def _ignored(runtime_config: Any, account: Account) -> bool:
+    """Whether `[claude] ignore` names this profile, by name, folder label or folder."""
+
+    from agents_router import profiles
+
+    for item in runtime_config.ignore or []:
+        if "/" in item or "\\" in item or item.startswith("~"):
+            if profiles.same_folder(account.home, Path(item).expanduser()):
+                return True
+        elif item in (account.name, profiles.label(account.home)):
+            return True
+    return False
+
+
+def pick_profiles(config: Config, selector: str | None, *, unknown: bool = False) -> list[Account]:
+    """The profiles `--claude-profiles` names: `all` (the default), `this`, or names (`claude-ntb`, `ntb`)."""
+
+    from agents_router.profiles import same_folder
+
+    selector = (selector or "all").strip()
+    if selector == "all":
+        return claude_profiles(config, unknown=unknown)
+    if selector == "this":
+        return [this_profile(config)]
+    every = claude_profiles(config, every=True)
+    chosen: list[Account] = []
+    for name in (part.strip() for part in selector.split(",")):
+        if not name:
+            continue
+        if name == "this":
+            account = this_profile(config)
+        else:
+            account = next((item for item in every if profile_name(item) == name), None) or next(
+                (item for item in every if profile_name(item) in (f"claude-{name}", f"claude{name}")), None)
+        if account is None:
+            known = ", ".join(profile_name(item) for item in every)
+            raise ValueError(f"--claude-profiles: no Claude profile named '{name}' here. Known: {known} (or all, this).")
+        if not any(same_folder(account.home, other.home) for other in chosen):
+            chosen.append(account)
+    return chosen
+
+
+def _reload_text(account: Account, this: bool) -> str:
+    if this:
+        return RELOAD["claude"]
+    return (f"Start a new Claude Code session in {account.home} (or type /reload-plugins in one that's open) "
+            "so the agents-router plugin loads there.")
+
+
+def _install_claude(config: Config, report: Report, route: str, selector: str | None) -> None:
+    """The plugin in each picked Claude Code profile, each with its own environment."""
+
+    from agents_router.profiles import same_folder
+
+    runtime_config = config.runtime("claude")
+    command = get_runtime("claude").find_binary(runtime_config)
+    declare = route == "settings" or (command is None and route == "auto")
+    this = this_profile(config)
+    session = runtime_config.session_home is not None  # a Claude Code session runs agt (else a terminal or another CLI)
+    targets = pick_profiles(config, selector, unknown=declare)
+    for account in claude_profiles(config, unknown=declare) + targets:
+        if not any(same_folder(account.home, Path(item["folder"])) for item in report.claude):
+            report.claude.append({"name": profile_name(account), "folder": str(account.home),
+                                  "this": session and same_folder(account.home, this.home),
+                                  "selected": any(same_folder(account.home, other.home) for other in targets)})
+    several = len(targets) > 1
+    for account in targets:
+        is_this = same_folder(account.home, this.home)
+        label = f"{LABELS['claude']} ({profile_name(account)})" if several else LABELS["claude"]
+        if declare:
+            _declare_in_settings(account.home, report, why=None if command else "the claude command wasn't found",
+                                 label=label, reload=None if is_this else account.home)
+            continue
+        _install_claude_profile(config, account, report, route, command, label, is_this)
+
+
+def _install_claude_profile(config: Config, account: Account, report: Report, route: str, command: list[str],
+                            label: str, this: bool) -> None:
+    env = get_runtime("claude").account_env(config.runtime("claude"), account)
+    state = _plugin_state("claude", command, env)
+    steps = _plugin_steps("claude", state)
+    if not steps:
+        report.unchanged.append(f"{label}: plugin {PLUGIN_ID} is already installed and enabled.")
+        return
+    for args in steps:
+        shown = " ".join(["claude", *args])
+        if report.dry_run:
+            report.done.append(f"{label}: would run `{shown}`")
+            continue
+        code, stdout, stderr = _run_shown(label, [*command, *args], env, shown)
+        if code != 0:
+            detail = _last_line(stdout, stderr)
+            if this and route == "auto":
+                print(f"  failed (exit {code}): {detail}. Falling back to settings.json.", flush=True)
+                _declare_in_settings(account.home, report, why=f"`{shown}` failed: {detail}", label=label)
+                return
+            report.failed.append(f"{label}: `{shown}` failed (exit {code}): {detail}")
+            if this:
+                report.add_todo(f"{LABELS['claude']}: install the plugin by hand, or register only the MCP server with "
+                                f"`{FALLBACK['claude']}`.")
+            else:
+                # Another profile's settings.json isn't touched: its own policy (a work profile's managed
+                # settings) may be what refused the plugin.
+                report.add_todo(f"{LABELS['claude']}: the plugin isn't in {account.home} yet. Start Claude Code there and "
+                                f"run `/plugin marketplace add {plugin_source()}`, then `/plugin install {PLUGIN_ID}`; "
+                                "a work profile's managed settings may block plugins from outside.")
+            return
+        report.done.append(f"{label}: ran `{shown}`")
+    if not report.dry_run and _plugin_state("claude", command, env)["installed"] is False:
+        report.failed.append(f"{label}: the commands succeeded but `claude plugin list` doesn't show {PLUGIN}.")
+        return
+    report.add_todo(_reload_text(account, this))
+
+
+def install_plugin(config: Config, host: str, report: Report, claude_route: str = "auto",
+                   claude_profiles: str | None = "all") -> None:
+    if host == "claude":
+        _install_claude(config, report, claude_route, claude_profiles)
+        return
     label = LABELS[host]
     runtime_config = config.runtime(host)
     command = get_runtime(host).find_binary(runtime_config)
-    if host == "claude" and (claude_route == "settings" or (command is None and claude_route == "auto")):
-        _declare_in_settings(runtime_config.primary, report, why=None if command else "the claude command wasn't found")
-        return
     if command is None:
         report.failed.append(f"{label}: the {SHORT[host]} command wasn't found, so the plugin wasn't installed.")
         return
@@ -309,10 +517,6 @@ def install_plugin(config: Config, host: str, report: Report, claude_route: str 
         code, stdout, stderr = _run_shown(label, [*command, *args], env, shown)
         if code != 0:
             detail = _last_line(stdout, stderr)
-            if host == "claude" and claude_route == "auto":
-                print(f"  failed (exit {code}): {detail}. Falling back to settings.json.", flush=True)
-                _declare_in_settings(runtime_config.primary, report, why=f"`{shown}` failed: {detail}")
-                return
             report.failed.append(f"{label}: `{shown}` failed (exit {code}): {detail}")
             report.add_todo(f"{label}: install the plugin by hand, or register only the MCP server with `{FALLBACK[host]}`.")
             return
@@ -335,15 +539,17 @@ def install_plugin(config: Config, host: str, report: Report, claude_route: str 
     report.add_todo(RELOAD[host])
 
 
-def _declare_in_settings(primary: Path, report: Report, why: str | None) -> None:
-    """Declare the marketplace and enable the plugin in Claude Code's user settings.
+def _declare_in_settings(primary: Path, report: Report, why: str | None, label: str = LABELS["claude"],
+                         reload: Path | None = None) -> None:
+    """Declare the marketplace and enable the plugin in one Claude Code profile's user settings.
 
     Claude Code installs a plugin that is enabled in settings from a known marketplace
     on its next start. Every other key is kept; the old file is backed up first.
+    `reload`: the folder of a profile other than this one, named in what's left for you.
     """
 
     path = primary / "settings.json"
-    label = LABELS["claude"]
+    where = f" in {reload}" if reload else ""
     target = path.resolve() if path.is_symlink() else path  # keep a dotfiles symlink in place
     data: Any = {}
     if target.exists():
@@ -367,15 +573,17 @@ def _declare_in_settings(primary: Path, report: Report, why: str | None) -> None
     if has_market and enabled:
         report.unchanged.append(f"{label}: {path} already declares the marketplace and enables {PLUGIN_ID}.")
         if why:
-            report.add_todo(f"Restart Claude Code if it is running, so it installs the {PLUGIN} plugin declared in its settings.")
+            report.add_todo(f"Restart Claude Code{where} if it is running, so it installs the {PLUGIN} plugin declared in its settings.")
         return
     if report.dry_run:
         report.done.append(f"{label}: would add the {MARKETPLACE} marketplace and enable {PLUGIN_ID} in {path}{reason}")
-        report.add_todo("Restart Claude Code so it installs the agents-router plugin from its settings.")
+        report.add_todo(f"Restart Claude Code{where} so it installs the agents-router plugin from its settings.")
         return
+    local = _local_source()
+    source = {"source": "directory", "path": str(local)} if local else {"source": "github", "repo": plugin_source()}
     merged = dict(data)
     merged["extraKnownMarketplaces"] = dict(markets or {})
-    merged["extraKnownMarketplaces"].setdefault(MARKETPLACE, {"source": {"source": "github", "repo": REPO}})
+    merged["extraKnownMarketplaces"].setdefault(MARKETPLACE, {"source": source})
     merged["enabledPlugins"] = dict(plugins or {})
     merged["enabledPlugins"][PLUGIN_ID] = True
     backup = None
@@ -385,7 +593,7 @@ def _declare_in_settings(primary: Path, report: Report, why: str | None) -> None
     write_json(target, merged)
     note = f"; backup at {backup}" if backup else ""
     report.done.append(f"{label}: added the {MARKETPLACE} marketplace and enabled {PLUGIN_ID} in {path}{reason}{note}")
-    report.add_todo("Restart Claude Code so it installs the agents-router plugin from its settings (a restart, not /reload-plugins).")
+    report.add_todo(f"Restart Claude Code{where} so it installs the agents-router plugin from its settings (a restart, not /reload-plugins).")
 
 
 # Accounts --------------------------------------------------------------------
@@ -592,7 +800,7 @@ def upstream_installs(config: Config) -> list[str]:
 
 
 def run_setup(config: Config, hosts: list[str], accounts: list[str], dry_run: bool = False,
-              claude_route: str = "auto") -> tuple[int, Report]:
+              claude_route: str = "auto", claude_profiles: str | None = "all") -> tuple[int, Report]:
     report = Report(dry_run=dry_run)
     if not hosts or "auto" in hosts:
         detected = detect_hosts(config)
@@ -602,10 +810,11 @@ def run_setup(config: Config, hosts: list[str], accounts: list[str], dry_run: bo
                 "No Claude Code, Codex or Antigravity install was found. Install one, or register the MCP server "
                 "in your client by hand: command `agt`, argument `mcp`."
             )
-    for host in hosts:
-        install_plugin(config, host, report, claude_route)
-        _check_primary_login(config, host, report)
+    # Accounts first: a Claude profile named with --account gets the plugin in this same run.
     setup_accounts(config, accounts, report)
+    for host in hosts:
+        install_plugin(config, host, report, claude_route, claude_profiles)
+        _check_primary_login(config, host, report)
     _check_kiro_login(config, report)
     _check_agt_on_path(report)
     if "antigravity" in hosts:
@@ -628,7 +837,7 @@ def report_rows(items: list[str], mark: ui.Span, ran_as: str | None = None) -> l
     last = None
     for item in items:
         label, sep, rest = item.partition(": ")
-        if not sep or label not in REPORT_LABELS:
+        if not sep or label.split(" (", 1)[0] not in REPORT_LABELS:  # "Claude Code (claude-ntb)": one profile
             label, rest = "", item
         relay = RELAY.match(rest)
         if relay:
@@ -831,9 +1040,12 @@ def _update_steps(host: str, state: dict[str, Any]) -> list[list[str]]:
     if host == "claude":
         return [["plugin", "marketplace", "update", MARKETPLACE], ["plugin", "update", PLUGIN_ID]]
     if host == "codex":
-        return [["plugin", "marketplace", "upgrade", MARKETPLACE], ["plugin", "add", PLUGIN_ID]]
+        # A local marketplace (a clone added by path) is read in place: there's nothing to fetch, and
+        # `codex plugin marketplace upgrade` refuses it ("not configured as a Git marketplace").
+        fetch = [] if state.get("local") else [["plugin", "marketplace", "upgrade", MARKETPLACE]]
+        return fetch + [["plugin", "add", PLUGIN_ID]]
     # agy has no update command; installing from the URL again replaces the plugin.
-    return [["plugin", "install", REPO_URL]]
+    return [["plugin", "install", _agy_source()]]
 
 
 def _settings_declare_plugin(primary: Path) -> bool:
@@ -844,26 +1056,101 @@ def _settings_declare_plugin(primary: Path) -> bool:
     return isinstance(data, dict) and isinstance(data.get("enabledPlugins"), dict) and PLUGIN_ID in data["enabledPlugins"]
 
 
+def installed_version(folder: Path) -> str | None:
+    """The agents-router plugin version Claude Code installed in a profile, from `plugins/installed_plugins.json`."""
+
+    try:
+        data = json.loads((Path(folder) / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entries = (data.get("plugins") or {}).get(PLUGIN_ID) if isinstance(data, dict) else None
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return None
+    entries = [entry for entry in entries if isinstance(entry, dict)]
+    entry = next((entry for entry in entries if entry.get("scope") == "user"), entries[0] if entries else None)
+    version = entry.get("version") if entry else None
+    return str(version) if version else None
+
+
+def has_plugin(folder: Path) -> bool:
+    """Whether a Claude Code profile has the plugin, by its files only (no `claude` call)."""
+
+    return installed_version(folder) is not None or _settings_declare_plugin(folder)
+
+
+def _update_claude(config: Config, report: Report) -> bool:
+    """Update the plugin in every Claude Code profile that has it, logged in or not. True when one has it."""
+
+    from agents_router.profiles import same_folder
+
+    runtime_config = config.runtime("claude")
+    command = get_runtime("claude").find_binary(runtime_config)
+    this = this_profile(config)
+    having: list[tuple[Account, dict[str, str], str]] = []  # (profile, its environment, how it has the plugin)
+    for account in claude_profiles(config, every=True):
+        env = get_runtime("claude").account_env(runtime_config, account)
+        if command is not None and _plugin_state("claude", command, env)["installed"]:
+            having.append((account, env, "installed"))
+        elif _settings_declare_plugin(account.home):
+            having.append((account, env, "declared" if command is not None else "settings"))
+    several = len(having) > 1
+    for account, env, how in having:
+        is_this = same_folder(account.home, this.home)
+        label = f"{LABELS['claude']} ({profile_name(account)})" if several else LABELS["claude"]
+        where = "" if is_this else f" in {account.home}"
+        if how == "settings":
+            report.unchanged.append(f"{label}: the plugin is declared in {account.home / 'settings.json'}; a restart refreshes it.")
+            report.add_todo(f"Restart Claude Code{where} so it refreshes the agents-router plugin.")
+            continue
+        if how == "declared":
+            report.unchanged.append(f"{label}: the plugin is declared in settings.json but not installed yet; a restart installs it.")
+            report.add_todo(f"Restart Claude Code{where} so it installs the agents-router plugin.")
+            continue
+        for args in _update_steps("claude", {}):
+            shown = " ".join(["claude", *args])
+            if report.dry_run:
+                report.done.append(f"{label}: would run `{shown}`")
+                continue
+            code, stdout, stderr = _run_shown(label, [*command, *args], env, shown)
+            if code != 0:
+                report.failed.append(f"{label}: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
+                break
+            report.done.append(f"{label}: ran `{shown}`")
+        else:
+            report.add_todo(_reload_text(account, is_this))
+    return bool(having)
+
+
+def _codex_local_marketplace(command: list[str], env: dict[str, str]) -> bool:
+    """Whether Codex's agents-router marketplace is a local folder rather than a Git repository."""
+
+    code, stdout, _ = run_command([*command, "plugin", "marketplace", "list", "--json"], env, timeout=120)
+    data = _json(stdout) if code == 0 else None
+    for item in _items(data) if data is not None else []:
+        if item.get("name") == MARKETPLACE:
+            source = item.get("marketplaceSource")
+            return isinstance(source, dict) and source.get("sourceType") == "local"
+    return False
+
+
 def update_plugin(config: Config, host: str, report: Report) -> bool:
     """Update the plugin in one host. Returns True when the host has it."""
 
+    if host == "claude":
+        return _update_claude(config, report)
     label = LABELS[host]
     runtime_config = config.runtime(host)
     command = get_runtime(host).find_binary(runtime_config)
     if command is None:
-        if host == "claude" and _settings_declare_plugin(runtime_config.primary):
-            report.unchanged.append(f"{label}: the plugin is declared in {runtime_config.primary / 'settings.json'}; a restart refreshes it.")
-            report.add_todo("Restart Claude Code so it refreshes the agents-router plugin.")
-            return True
         return False
     env = _host_env(config, host)
     state = _plugin_state(host, command, env)
     if not state["installed"]:
-        if host == "claude" and _settings_declare_plugin(runtime_config.primary):
-            report.unchanged.append(f"{label}: the plugin is declared in settings.json but not installed yet; a restart installs it.")
-            report.add_todo("Restart Claude Code so it installs the agents-router plugin.")
-            return True
         return False
+    if host == "codex":
+        state["local"] = _codex_local_marketplace(command, env)
     for args in _update_steps(host, state):
         shown = " ".join([SHORT[host], *args])
         if report.dry_run:
