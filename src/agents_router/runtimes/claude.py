@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 from typing import Any
+import time
 import uuid
 
 from agents_router import sync
@@ -350,8 +351,12 @@ class ClaudeRuntime:
         return output.strip().splitlines()[0] if code == 0 and output.strip() else None
 
     def account_env(self, config: RuntimeConfig, account: Account) -> dict[str, str]:
+        from agents_router.profiles import is_default
+
         env = clean_environment()
-        if not (account.is_primary and same_path(account.home, _default_dir())):
+        # Claude Code's default folder keeps its login where only a run without CLAUDE_CONFIG_DIR finds it
+        # (the macOS keychain entry is named after the folder), whichever account it is to agt.
+        if not is_default(account.home):
             env["CLAUDE_CONFIG_DIR"] = str(account.home)
         return env
 
@@ -380,6 +385,11 @@ class ClaudeRuntime:
 
         if not re.fullmatch(r"[0-9A-Za-z-]{8,64}", session_id):
             return False
+        # One move per conversation at a time: two sessions continuing it can't overwrite each other.
+        with file_lock(state_dir() / "sessions" / f"{session_id}.lock", timeout=60):
+            return self._transfer(source, target, session_id, cwd)
+
+    def _transfer(self, source: Account, target: Account, session_id: str, cwd: str) -> bool:
         source_projects = source.home / "projects"
         target_projects = target.home / "projects"
         if same_path(source_projects, target_projects):
@@ -394,6 +404,14 @@ class ClaudeRuntime:
         destination = target_projects / transcript.parent.name
         if is_link(destination) or is_link(destination / transcript.name):
             return False
+        existing = destination / transcript.name
+        if existing.is_file() and not is_link(existing) and not _continues(transcript, existing):
+            # The target holds a different version of this conversation (another session continued it there):
+            # keep it under a name Claude Code doesn't list, rather than lose it.
+            try:
+                os.replace(existing, existing.with_name(f"{transcript.name}.agt-replaced-{int(time.time())}"))
+            except OSError:
+                return False
         try:
             destination.mkdir(parents=True, exist_ok=True)
             # Fresh temporary file plus rename: never writes through a link or a hard link.
@@ -411,13 +429,19 @@ class ClaudeRuntime:
         """Bring the account folder in line with the primary setup and build flag files."""
 
         report = sync.new_report()
-        shared = not (account.is_primary or same_path(account.home, config.primary))
+        # A profile with its own setup ("own") runs as it is: nothing is linked or passed in.
+        shared = account.setup != "own" and not (account.is_primary or same_path(account.home, config.primary))
+        source = _setup_source(config, account) if shared else config.primary
         if shared:
-            with file_lock(state_dir() / "sync" / f"claude-{account.name}.lock", timeout=30):
-                sync.sync(config.primary, account.home, SYNC_PLAN, report)
-            self._share_memory(config.primary, account.home, spec.cwd, report)
-        out = cache_dir() / "claude" / account.name
-        settings = self._overlay_settings(config, report) if shared else {}
+            from agents_router.accounts import _home_key
+
+            with file_lock(state_dir() / "sync" / f"claude-{_home_key(account.home)}.lock", timeout=30):
+                sync.sync(source, account.home, SYNC_PLAN, report)
+                self._share_memory(source, account.home, spec.cwd, report)
+        # Flag files belong to the job, so two jobs on one account never read each other's.
+        job_folder = jobs_dir() / spec.job_id
+        out = job_folder / "setup" if spec.job_id and job_folder.is_dir() else cache_dir() / "claude" / account.name
+        settings = self._overlay_settings(config, report, source) if shared else {}
         if config.connectors == "off":
             settings["disableClaudeAiConnectors"] = True
         report["settings_path"] = None
@@ -429,13 +453,13 @@ class ClaudeRuntime:
         report["mcp_servers"] = []
         report["plugin_dirs"] = []
         if shared:
-            servers = self._mcp_servers(config.primary, spec.cwd)
+            servers = self._mcp_servers(source, spec.cwd)
             if servers:
                 path = out / f"mcp-{_project_key(spec.cwd)}.json"
                 write_json(path, {"mcpServers": servers})
                 report["mcp_config_path"] = str(path)
                 report["mcp_servers"] = sorted(servers)
-            report["plugin_dirs"] = self._plugin_dirs(config.primary, report)
+            report["plugin_dirs"] = self._plugin_dirs(source, report)
         return report
 
     def _share_memory(self, primary: Path, home: Path, cwd: str, report: dict[str, Any]) -> None:
@@ -464,8 +488,8 @@ class ClaudeRuntime:
         except OSError as exc:
             report["warnings"].append(f"could not share project memory: {exc}")
 
-    def _overlay_settings(self, config: RuntimeConfig, report: dict[str, Any]) -> dict[str, Any]:
-        settings = read_json(config.primary / "settings.json", {}) or {}
+    def _overlay_settings(self, config: RuntimeConfig, report: dict[str, Any], source: Path | None = None) -> dict[str, Any]:
+        settings = read_json((source or config.primary) / "settings.json", {}) or {}
         if not isinstance(settings, dict):
             report["warnings"].append("primary settings.json is not a JSON object; not shared")
             return {}
@@ -612,6 +636,39 @@ class ClaudeRuntime:
 
     def new_parser(self) -> ClaudeParser:
         return ClaudeParser()
+
+
+def _setup_source(config: RuntimeConfig, account: Account) -> Path:
+    """The setup an agt account folder follows. It stays the same whichever session starts the job.
+
+    `primary` in the settings wins; else the setup the folder already follows (its manifest);
+    else the calling setup, which the manifest then records.
+    """
+
+    if config.primary_from_settings:
+        return config.primary
+    recorded = (read_json(account.home / sync.MANIFEST, {}) or {}).get("primary")
+    if isinstance(recorded, str) and recorded and Path(recorded).is_dir() and not same_path(recorded, account.home):
+        return Path(recorded)
+    return config.primary
+
+
+def _continues(source: Path, existing: Path) -> bool:
+    """Whether `source` is `existing` or a longer version of it (the same conversation, further on)."""
+
+    try:
+        if source.stat().st_size < existing.stat().st_size:
+            return False
+        size = existing.stat().st_size
+        with open(source, "rb") as left, open(existing, "rb") as right:
+            while size > 0:
+                chunk = min(size, 1 << 20)
+                if left.read(chunk) != right.read(chunk):
+                    return False
+                size -= chunk
+        return True
+    except OSError:
+        return False
 
 
 def _project_dir_name(cwd: str) -> str:

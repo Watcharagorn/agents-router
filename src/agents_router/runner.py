@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 from agents_router import accounts, limits, messages, plans, quota
-from agents_router.config import OPT_IN_FAILOVER, Account, RuntimeConfig, load_config
+from agents_router.config import OPT_IN_FAILOVER, Account, RuntimeConfig, load_config, set_session
 from agents_router.fsutil import kill_tree, open_private, process_start_time, unlock, worker_process, write_text
 from agents_router.jobs import job_dir, mark_pending, read_spec, update_status
 from agents_router.runtimes import get_runtime
@@ -73,6 +73,9 @@ class Runner:
         self.folder = job_dir(job_id)
         self.spec: JobSpec = read_spec(job_id)
         self.config = load_config(cwd=self.spec.cwd)  # the job's workspace, not the runner's folder
+        # The session that started the job, as it was then: its own profile never runs the job.
+        parent = self.spec.parent if isinstance(self.spec.parent, dict) else {}
+        set_session(self.config, parent.get("config_dir"))
         self.runtime_config: RuntimeConfig = self.config.runtime(self.spec.runtime)
         self.runtime = get_runtime(self.spec.runtime)
         self.pool = quota.pool_for(self.runtime_config, self.spec.model)
@@ -103,6 +106,7 @@ class Runner:
         messages.close_or_continue(
             self.job_id, result.session_id if result else None,
             self.attempts[-1]["account"] if self.attempts else self.spec.resume_account,
+            home=self.attempts[-1].get("home") if self.attempts else self.spec.resume_home,
         )
         text = result.text if result else ""
         if text:
@@ -145,6 +149,7 @@ class Runner:
         # The conversation to continue and the account folder that holds it.
         session = self.spec.resume_session
         owner = self.spec.resume_account
+        self.owner_home = self.spec.resume_home
         follow_ups = 0
 
         while True:
@@ -168,11 +173,12 @@ class Runner:
                 pending = messages.close_or_continue(
                     self.job_id, last.session_id, lease.account.name,
                     can_continue=bool(last.session_id) and follow_ups < MAX_FOLLOW_UP_TURNS,
+                    home=str(lease.account.home),
                 )
                 if pending:
                     # Follow-ups sent while the worker was busy: continue the same conversation.
                     follow_ups += 1
-                    session, owner = last.session_id, lease.account.name
+                    session, owner, self.owner_home = last.session_id, lease.account.name, str(lease.account.home)
                     prompt = (
                         "Follow-up from the main session (you may already have seen it during your run; "
                         "if you already handled it, just confirm briefly):\n\n"
@@ -180,6 +186,10 @@ class Runner:
                     )
                     self.status(follow_up_turns=follow_ups)
                     continue
+            if last.outcome == AUTH:
+                from agents_router import profiles
+
+                profiles.forget(lease.account.home)  # check the login again next time
             if last.outcome == AUTH and failover and last.before_start:
                 # The account has no login yet and nothing ran: try the next account.
                 excluded.add(lease.account.name)
@@ -205,6 +215,7 @@ class Runner:
             if last.session_id and hasattr(self.runtime, "transfer_session"):
                 # Continue the same conversation on the next account.
                 session, owner, prompt = last.session_id, lease.account.name, CONTINUE_NOTE
+                self.owner_home = str(lease.account.home)
             else:
                 session, owner = None, None
                 prompt = handoff_prompt(self.spec.prompt, last, lease.account.name)
@@ -246,6 +257,7 @@ class Runner:
             session = result.session_id or session
             if session:
                 owner, prompt = lease.account.name, CAPACITY_CONTINUE_NOTE
+                self.owner_home = str(lease.account.home)
 
     def _wait_for_capacity(self, retry_at: float) -> str | None:
         last_status = time.monotonic()
@@ -262,12 +274,33 @@ class Runner:
                 last_status = time.monotonic()
             time.sleep(min(0.2, retry_at - now, self.deadline - now))
 
+    def _same_owner(self, owner: str, account: Account) -> bool:
+        from agents_router.profiles import same_folder
+
+        home = getattr(self, "owner_home", None)
+        return same_folder(home, account.home) if home else owner == account.name
+
+    def _owner_account(self, owner: str) -> Account | None:
+        """The account folder that holds the conversation: by folder when known, else by name."""
+
+        from agents_router.profiles import same_folder
+
+        home = getattr(self, "owner_home", None)
+        if home:
+            known = [*self.runtime_config.all_accounts(), self.runtime_config.primary_account()]
+            match = next((account for account in known if same_folder(account.home, home)), None)
+            from pathlib import Path
+
+            return match or (Account(name=owner, home=Path(home), setup="own") if Path(home).is_dir() else None)
+        return self.runtime_config.find(owner)
+
     def _no_account_message(self, excluded: set[str]) -> str:
         usage = accounts.load_usage(self.spec.runtime)
         ends = [
             max((end for end in (
-                accounts.cooldown_until(usage.get(account.name)),
-                accounts.pool_cooldown_until(usage.get(account.name), self.pool.name) if self.pool else None,
+                accounts.cooldown_until(accounts.account_record(self.runtime_config, account, usage)),
+                accounts.pool_cooldown_until(accounts.account_record(self.runtime_config, account, usage), self.pool.name)
+                if self.pool else None,
             ) if end is not None), default=None)
             for account in self.runtime_config.worker_accounts()
             if account.name not in excluded
@@ -324,14 +357,15 @@ class Runner:
         fallback_prompt: str | None = None,
     ) -> AttemptResult:
         account = lease.account
-        attempt: dict[str, Any] = {"account": account.name, "attempted_at": time.time(), "before_start": True}
+        attempt: dict[str, Any] = {"account": account.name, "home": str(account.home), "attempted_at": time.time(),
+                                   "before_start": True}
         if self.pool:
             attempt["pool"] = self.pool.name
         self.attempts.append(attempt)
         if self.pool:
             self.status(account=account.name, assigned_account=account.name, pool=self.pool.name)
-        if session and owner and owner != account.name:
-            source = self.runtime_config.find(owner)
+        if session and owner and not self._same_owner(owner, account):
+            source = self._owner_account(owner)
             transfer = getattr(self.runtime, "transfer_session", None)
             moved = bool(source) and transfer is not None and transfer(source, account, session, self.spec.cwd)
             if moved:
@@ -558,7 +592,7 @@ class Runner:
                 return
             usage = parser.feed(event)
             if usage:
-                accounts.record_rate_limit_event(self.spec.runtime, account.name, usage)
+                accounts.record_rate_limit_event(self.spec.runtime, account.name, usage, login=account.login)
         except Exception:
             # One malformed event must not end the job or orphan the worker.
             return

@@ -14,29 +14,22 @@ For workers in other CLIs, see [Codex](codex.md), [Gemini through Antigravity](g
 
 ## 1. Install
 
-Its one dependency is rich, for color in a terminal; the installers below fetch it. Install it with any of:
+The easy way is to paste the prompt from the README's [Install](../README.md#install) section into your agent. It installs `agt`, follows `agt guide setup` and asks you once. By hand:
 
 ```bash
-pipx install git+https://github.com/Watcharagorn/agents-router
+uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
+agt setup
 ```
 
-```bash
-uv tool install git+https://github.com/Watcharagorn/agents-router
-```
+`agt setup` installs the plugin in every Claude Code profile of yours: the one you run it from and every logged-in `~/.claude*` folder. `--claude-profiles all|this|NAME[,NAME]` picks which. Codex and Antigravity get it too when they're installed. The commands it runs are in [hosts](hosts.md#claude-code).
 
-```bash
-pip install --user git+https://github.com/Watcharagorn/agents-router
-```
+The plugin brings:
+- the MCP server;
+- the relay agents;
+- the `agents-router` and `agents-router-setup` skills;
+- `/agents-router:delegate`.
 
-This gives you the `agt` command. Check it with `agt --version`. If the command isn't found, add your Python scripts folder to PATH (`pipx ensurepath` does this for pipx).
-
-Then add the plugin in Claude Code (Codex and Antigravity hosts: see [hosts](hosts.md)):
-
-```text
-/plugin install agents-router --marketplace Watcharagorn/agents-router
-```
-
-On older Claude Code versions, run `/plugin marketplace add Watcharagorn/agents-router` and then `/plugin install agents-router@agents-router`. From a terminal, `agt setup --host claude` does the same through `claude plugin marketplace add Watcharagorn/agents-router` and `claude plugin install agents-router@agents-router`; see [hosts](hosts.md#claude-code). The plugin brings the MCP server, the `agents-router` skill and the `/agents-router:delegate` command.
+A plugin installed from a terminal loads after `/reload-plugins` in an open session, or in a new one.
 
 Without the plugin (or in another MCP host), register the server yourself with the command `agt` and the argument `mcp`, for example in a project `.mcp.json`:
 
@@ -44,7 +37,20 @@ Without the plugin (or in another MCP host), register the server yourself with t
 { "mcpServers": { "agents-router": { "command": "agt", "args": ["mcp"] } } }
 ```
 
-## 2. Add your other accounts
+## 2. Your other profiles work with no setup
+
+If you already use more than one Claude Code folder (`~/.claude` plus `~/.claude-work`, say, each logged in to its own account), there's nothing to set up. agt finds every logged-in `~/.claude` and `~/.claude-*` folder, and the Claude folders in `[[share.folders]]`, and names each after its folder: `claude`, `claude-work`.
+
+- **Name one to use it.** `account=claude-work` (or just `account=work`) on `agents-router:agt-claude`, or `agt run --account claude-work`.
+- **The profile you're working in never runs its own delegated jobs.** From a session in `~/.claude-work`, `account=claude-work` is refused, and so is an unpinned job when no other profile can take it. Two sessions in two profiles can each delegate to the other at the same time.
+- **Unpinned jobs** go to agt's own accounts first (below), least used first, then to your other profiles by name. `[claude] order = ["claude", "claude-work"]` sets your own priority.
+- **Two folders with one login** (the same account in `~/.claude` and `~/.claude-old`) share their limits. Unpinned jobs use one of them and skip any folder with the session's own login; you can still name it.
+- **Their own setup.** agt runs a found profile with its own settings, plugins and MCP servers, and never links anything into it. `agt setup` installs the agents-router plugin in each of them (`--claude-profiles` picks which), and `agt update` updates it wherever it is. `agt share` keeps your folders alike.
+- **Leaving one out.** `agt accounts remove claude-old` adds it to `[claude] ignore`, so agt leaves it alone. Use `ignore` or `order` to keep work jobs off a personal login.
+
+`agt accounts` lists every profile with its login and marks the one this session runs in. Only `.claude.json`'s account fields (kept as short hashes) and `claude auth status`, which makes no model request, are read; never a credential.
+
+## 3. Add more accounts
 
 Your normal Claude Code folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` if you set one) is the primary setup. It is the single place where you manage MCP servers, plugins, skills, agents, `CLAUDE.md` and settings.
 
@@ -58,7 +64,7 @@ This creates `~/.agents-router/homes/claude/max-2`, links in your shared setup, 
 
 The tool never reads or copies the login. Each account folder keeps its own credentials, state and session history.
 
-## 3. Check
+## 4. Check
 
 ```bash
 agt accounts
@@ -67,7 +73,7 @@ agt doctor --live
 
 `agt accounts` shows each account's login state, plan, last known usage and cooldown without using quota. `doctor --live` runs one tiny job per account (on Haiku for Claude) and prints what each one loaded (model, permission mode, MCP servers, plugins, skills, agents), then lists any differences between accounts.
 
-## 4. Use it
+## 5. Use it
 
 In Claude Code, ask for delegation in plain words ("have a subagent review the auth module on another account"), use `/agents-router:delegate <task>`, or let the skill decide.
 

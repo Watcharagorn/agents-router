@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agents-router"
-version = "0.9.1"
+version = "0.10.0"
 description = "Keep agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and run subagents in those CLIs on your own accounts."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -44,7 +44,7 @@ agents-router-mcp = "agents_router.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"agents_router" = ["templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
+"agents_router" = ["guides/*.md", "templates/*.md", "templates/codex-agents/*.toml", "templates/antigravity-plugin/plugin.json", "templates/antigravity-plugin/agents/*.md"]
 "agents_router.agy_review" = ["policy.md"]
 
 [tool.uv]

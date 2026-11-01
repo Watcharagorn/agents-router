@@ -94,6 +94,11 @@ def cmd_accounts(args: argparse.Namespace) -> int:
     runtime_config = config.runtime(args.runtime)
     runtime = get_runtime(args.runtime)
 
+    if action == "remove" and args.runtime == "claude":
+        found = next((item for item in runtime_config.found_accounts() if item.name == args.name), None)
+        if found is not None:
+            return _ignore_profile(runtime_config, found)
+
     if action == "reset":
         # The primary account can cool down too, so 'primary' is a valid name here.
         if not args.name or runtime_config.find(args.name) is None:
@@ -138,7 +143,17 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 1
 
     if action == "login":
-        return _login(runtime_config, runtime, account)
+        code = _login(runtime_config, runtime, account)
+        if args.runtime == "claude":
+            from agents_router import profiles
+
+            profiles.forget(account.home)
+        return code
+    if account.found and action in ("sync", "enable", "disable"):
+        print(f"'{args.name}' is one of your own Claude profiles ({ui.short_path(str(account.home))}): agt runs it "
+              "with its own setup and keeps nothing to sync or switch. `agt accounts remove "
+              f"{args.name}` makes agt leave it alone.")
+        return 1
     if action == "sync":
         _print_setup(runtime.prepare(runtime_config, account, _probe_spec(args.runtime, args.cwd)))
         return 0
@@ -154,6 +169,28 @@ def cmd_accounts(args: argparse.Namespace) -> int:
         return 0
     print(f"Unknown action: {action}")
     return 2
+
+
+def _ignore_profile(runtime_config: Any, account: Any) -> int:
+    """Add a found Claude profile to `[claude] ignore` in the user settings, so agt leaves it alone."""
+
+    from agents_router import config as config_module, levels, synclog
+
+    location = config_module.user_settings_path()
+    try:
+        text = location.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    folder = ui.short_path(str(account.home))
+    current = list(runtime_config.ignore or [])
+    if folder not in current:
+        current.append(folder)
+    synclog.notice_file(location, "user", None)
+    written = levels.write(location, levels.set_line(text, "claude", "ignore", json.dumps(current), location))
+    synclog.saved(written)
+    print(f"agt leaves {account.name} ({folder}) alone from now on: added to [claude] ignore in {location}. "
+          "The folder itself is unchanged.")
+    return 0
 
 
 def _probe_spec(runtime: str, cwd: str | None = None) -> JobSpec:
@@ -205,13 +242,40 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if code != -1:
         _refresh_share_launcher(args.dry_run)
         return code
+    config = load_config()
     code, report = setup.run_setup(
-        load_config(), args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
+        config, args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
+        claude_profiles=args.claude_profiles or "this",  # an agent without a terminal asks first: --dry-run --json
     )
     _refresh_share_launcher(False)
+    others = [item for item in report.claude if not item["selected"] and not setup.has_plugin(Path(item["folder"]))]
+    if others and not args.claude_profiles:
+        names = ", ".join(f"{item['name']} ({item['folder']})" for item in others)
+        report.notes.append(f"Your other Claude profiles don't have the plugin yet: {names}. "
+                            "`agt setup --claude-profiles all` installs it there too.")
     report.notes.append(setup_screen.scopes_note())
     ui.out(*setup.report_lines(report))
     return code
+
+
+GUIDES = {"setup": "Install, set up, update, repair or remove agt: the steps for an agent"}
+
+
+def guide_text(name: str) -> str:
+    """A guide shipped with agt (src/agents_router/guides/<name>.md), so it always matches this version."""
+
+    from importlib.resources import files
+
+    return files("agents_router").joinpath("guides", f"{name}.md").read_text(encoding="utf-8")
+
+
+def cmd_guide(args: argparse.Namespace) -> int:
+    if not args.name:
+        ui.out(ui.bold("agt guide"), "",
+               *ui.columns([[ui.code(f"agt guide {name}"), ui.muted(about)] for name, about in GUIDES.items()], indent=2, gap=3))
+        return 0
+    sys.stdout.write(guide_text(args.name))
+    return 0
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -288,6 +352,12 @@ def _account_rows(entry: dict[str, Any], *, method: bool = False) -> list[ui.Lin
 
     row: list[ui.Line] = [entry["name"], ui.muted(ui.short_path(entry.get("home") or "")), _login_state(entry)]
     detail: list[ui.Piece] = []
+    if entry.get("this_session"):
+        detail.append(ui.bold("this session (doesn't take its own jobs)"))
+    elif entry.get("same_login_as"):
+        detail.append(ui.muted(f"same login as {entry['same_login_as']} (used only when named)"))
+    elif entry.get("found"):
+        detail.append(ui.muted("your profile, own setup"))
     if method:
         row.append(ui.muted(str((entry.get("auth") or {}).get("authMethod") or "")))
         running = entry.get("running_jobs") or 0
@@ -329,10 +399,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                              f"install {label}, or set [{name}] binary in {ui.short_path(user_settings_path())}"))
             continue
         for entry in report.get("accounts", []):
+            if entry.get("found") and not (entry.get("auth") or {}).get("loggedIn"):
+                continue  # a profile of yours that's logged out: listed, never used, not a problem
             if not (entry.get("auth") or {}).get("loggedIn") and entry.get("enabled", True):
                 problems.append((f"{label} account {entry['name']} is not logged in.", _login_fix(name, entry["name"])))
+    if "claude" in names:  # each profile keeps its own copy of the plugin; one left behind runs old relay agents
+        for account in setup.claude_profiles(config, every=True):
+            version = setup.installed_version(account.home)
+            if version and version != __version__:
+                problems.append((f"Claude Code profile {setup.profile_name(account)} ({ui.short_path(account.home)}) has "
+                                 f"agents-router plugin {version}; agt is {__version__}.", ui.cmd("agt update")))
     if getattr(args, "json", False):
-        _print(reports[names[0]] if named else {"runtimes": list(reports.values())})
+        found = [{"problem": what, "fix": ui.plain(fix)} for what, fix in problems]
+        _print({**reports[names[0]], "problems": found} if named else {"runtimes": list(reports.values()), "problems": found})
         return 1 if problems else 0
     notes = list(config.notes)
     notes += [f"{found}. Two installs both register an MCP server and hooks; remove the old one."
@@ -341,7 +420,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         runtime_config, runtime = config.runtime(name), get_runtime(name)
         for account in runtime_config.pool_accounts():
             copies = runtime.fallback_copies(account) if hasattr(runtime, "fallback_copies") else sync.fallback_copies(account.home)
-            if copies and not account.is_primary:
+            if copies and not account.is_primary and account.setup != "own":
                 notes.append(f"account '{account.name}' has copies instead of links (they don't follow later edits "
                              f"until the next sync): {', '.join(copies)}")
         if name == "codex" and os.name == "nt":
@@ -614,7 +693,11 @@ def cmd_launch(args: argparse.Namespace, extra: list[str]) -> int:
             print(f"No {args.runtime} account named '{args.account}'.")
             return 1
     else:
-        ranked, _ = accounts.ranked_accounts(runtime_config)
+        try:
+            ranked, _ = accounts.ranked_accounts(runtime_config)
+        except ValueError as exc:
+            print(exc)
+            return 1
         if not ranked:
             print(f"Every {args.runtime} account is cooling down after a usage limit.")
             return 1
@@ -691,6 +774,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="auto: `claude plugin ...`, or settings.json when the claude command is missing or fails. "
         "settings: only declare the plugin in settings.json (Claude Code installs it on its next start).",
     )
+    setup_parser.add_argument(
+        "--claude-profiles", metavar="all|this|NAME[,NAME]",
+        help="Which of your Claude Code profiles get the plugin: all (this one and every logged-in ~/.claude* folder; "
+        "the default with --dry-run, --yes and in a terminal), this (the default for plain setup without a terminal), "
+        "or names such as claude-ntb.",
+    )
 
     update_parser = sub.add_parser(
         "update", help="Reinstall agt from the source you installed it from, and update the plugin in every host that has it.",
@@ -702,6 +791,11 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Host to update; repeat for several (default auto: every host that has the plugin).")
     update_parser.add_argument("--no-package", action="store_true", help="Only update the plugins, not the agt package.")
     update_parser.add_argument("--dry-run", action="store_true", help="Print the plan; change nothing (read-only checks still run).")
+
+    guide = sub.add_parser("guide", help="Print the steps an agent follows to install, set up, repair or remove agt.",
+                           description="Prints a guide shipped with this version of agt, as plain Markdown for an agent. "
+                           "`agt guide setup` is the one to follow after installing agt.")
+    guide.add_argument("name", nargs="?", choices=sorted(GUIDES), help="The guide (no name: the list).")
 
     doctor = sub.add_parser("doctor", help="Check binaries, logins and shared setup.")
     doctor.add_argument("--runtime", choices=RUNTIMES, help="Check only this runtime (default: every one installed).")
@@ -826,6 +920,7 @@ def main(argv: list[str] | None = None) -> int:
             "accounts": cmd_accounts,
             "setup": cmd_setup,
             "update": cmd_update,
+            "guide": cmd_guide,
             "doctor": cmd_doctor,
             "run": cmd_run,
             "start": cmd_start,

@@ -656,12 +656,12 @@ class Written:
 
 
 def _env(provider: providers.Provider) -> dict[str, str]:
-    from agents_router.runtimes.claude import _default_dir
+    from agents_router.profiles import is_default
 
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}  # a private marketplace fails fast instead of waiting for a password
     if provider.cli == "claude":
         env.pop("CLAUDE_CONFIG_DIR", None)
-        if not fsutil.same_path(provider.folder, _default_dir()):
+        if not is_default(provider.folder):
             env["CLAUDE_CONFIG_DIR"] = str(provider.folder)
     elif provider.cli == "codex":
         env["CODEX_HOME"] = str(provider.folder)

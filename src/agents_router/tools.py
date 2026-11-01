@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from agents_router import accounts, jobs, limits, messages, plans, quota, usage_view
-from agents_router.config import load_config
+from agents_router.config import load_config, session_folder, set_session
 from agents_router.hosts import detect_host
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
 from agents_router.runtimes.base import ACCESS_LEVELS
@@ -129,8 +129,9 @@ DEFINITIONS = [
     },
     {
         "name": "subagent_list",
-        "description": "Recent jobs, newest first.",
-        "inputSchema": _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, []),
+        "description": "Recent jobs, newest first: the ones this session's Claude profile started, or every job with all=true.",
+        "inputSchema": _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                                "all": {"type": "boolean", "default": False}}, []),
     },
     {
         "name": "subagent_accounts",
@@ -331,7 +332,7 @@ def _call(name: str, arguments: dict[str, Any], progress=None, client: str | Non
         follow_up = jobs.create_job(
             runtime=spec.runtime, prompt=text, cwd=spec.cwd, model=spec.model, effort=spec.effort,
             access=spec.access, max_turns=spec.max_turns, timeout_seconds=spec.timeout_seconds,
-            add_dirs=spec.add_dirs, resume_job=job_id,
+            add_dirs=spec.add_dirs, resume_job=job_id, account=spec.account, host=detect_host(client),
         )
         return {"job_id": job_id, "delivered": "continued the finished conversation as a new job", "new_job": summarize(follow_up)}
     if name == "subagent_start":
@@ -366,10 +367,11 @@ def _call(name: str, arguments: dict[str, Any], progress=None, client: str | Non
     if name == "subagent_cancel":
         return summarize(jobs.cancel(_job_id(arguments)))
     if name == "subagent_list":
-        return {"jobs": jobs.list_jobs(int(arguments.get("limit") or 20))}
+        mine = None if arguments.get("all") else session_folder(detect_host(client))
+        return {"jobs": jobs.list_jobs(int(arguments.get("limit") or 20), session=mine)}
     if name == "subagent_accounts":
         selected = arguments.get("runtime")
-        reports = {"runtimes": [account_report(runtime) for runtime in RUNTIMES if not selected or runtime == selected]}
+        reports = {"runtimes": [account_report(runtime, detect_host(client)) for runtime in RUNTIMES if not selected or runtime == selected]}
         if room := room_note():
             reports["room"] = room
         return reports
@@ -446,8 +448,11 @@ def runtime_limits(config: Any) -> dict[str, Any]:
     return data
 
 
-def account_report(runtime_name: str) -> dict[str, Any]:
-    config = load_config().runtime(runtime_name)
+def account_report(runtime_name: str, host: str | None = None) -> dict[str, Any]:
+    loaded = load_config()
+    if host is not None:
+        set_session(loaded, session_folder(host))
+    config = loaded.runtime(runtime_name)
     runtime = get_runtime(runtime_name)
     binary = runtime.find_binary(config)
     report: dict[str, Any] = {
@@ -466,9 +471,29 @@ def account_report(runtime_name: str) -> dict[str, Any]:
     usage = accounts.load_usage(runtime_name)
     now = time.time()
     pool_state = quota.pool_state(config, counts, now)
+    if config.order:
+        report["order"] = config.order
+    workers = {account.name for account in config.worker_accounts()} if runtime_name == "claude" else None
+    first_login: dict[str, str] = {}
+    for account in config.all_accounts():
+        if account.login and account.login not in first_login:
+            first_login[account.login] = account.name
     for account in config.listed_accounts():
-        record = usage.get(account.name) or {}
+        record = accounts.account_record(config, account, usage) or {}
         entry: dict[str, Any] = {"name": account.name, "home": str(account.home), "enabled": account.enabled}
+        if config.is_session(account):
+            entry["this_session"] = True  # never takes this session's delegated jobs
+        if account.found:
+            entry["found"] = True
+        if account.setup != "linked":
+            entry["setup"] = account.setup
+        if account.org_type:
+            entry["plan_type"] = account.org_type
+        same = first_login.get(account.login or "")
+        if same and same != account.name:
+            entry["same_login_as"] = same
+        if workers is not None and not config.is_session(account):
+            entry["takes_unpinned_jobs"] = account.name in workers
         if binary:
             entry["auth"] = runtime.auth_status(config, account)
         until = accounts.cooldown_until(record, now)

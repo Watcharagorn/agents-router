@@ -53,7 +53,7 @@ def _number(value: Any) -> float | None:
         return None
 
 
-def record_rate_limit_event(runtime: str, account: str, info: dict[str, Any]) -> None:
+def record_rate_limit_event(runtime: str, account: str, info: dict[str, Any], login: str | None = None) -> None:
     """Store the windows reported by a `rate_limit_event` (Claude) or equivalent."""
 
     windows: dict[str, Any] = {}
@@ -72,7 +72,7 @@ def record_rate_limit_event(runtime: str, account: str, info: dict[str, Any]) ->
         }
     # Only usage figures are stored here. A cooldown comes from the runner, and only
     # when an attempt actually ended with a usage limit.
-    update_usage(runtime, account, status=info.get("status"), windows=windows or None)
+    update_usage(runtime, account, status=info.get("status"), windows=windows or None, login=login)
 
 
 def retry_after_seconds(text: str) -> float | None:
@@ -148,6 +148,56 @@ def max_utilization(record: dict[str, Any] | None) -> float | None:
         if isinstance(window, dict) and isinstance(window.get("utilization"), (int, float))
     ]
     return max(values) if values else None
+
+
+def account_record(runtime: RuntimeConfig, account: Account, usage: dict[str, Any]) -> dict[str, Any] | None:
+    """The account's usage record, merged with every folder that has the same login.
+
+    Folders logged in to one account share its limits, so the busiest window and the
+    latest cooldown of any of them hold for all.
+    """
+
+    def current(name: str) -> dict[str, Any] | None:
+        record = usage.get(name)
+        if not isinstance(record, dict):
+            return None
+        if account.login and record.get("login") and record["login"] != account.login:
+            return None  # recorded under another login: the folder was logged in to a different account since
+        return record
+
+    records = [current(name) for name in runtime.login_group(account)]
+    records = [record for record in records if record is not None]
+    if len(records) <= 1:
+        own = current(account.name)
+        return own if own is not None else (records[0] if records else None)
+    merged: dict[str, Any] = {"windows": {}, "pools": {}}
+    now = time.time()
+
+    def used(window: dict[str, Any]) -> float:
+        # A window that has reset since it was recorded counts for nothing, so it never hides a current one.
+        resets = window.get("resets_at")
+        if isinstance(resets, (int, float)) and resets <= now:
+            return -1.0
+        return float(window["utilization"]) if isinstance(window.get("utilization"), (int, float)) else -1.0
+
+    for record in records:
+        for name, window in (record.get("windows") or {}).items():
+            if not isinstance(window, dict):
+                continue
+            current = merged["windows"].get(name)
+            if current is None or used(window) > used(current):
+                merged["windows"][name] = window
+        for key in ("cooldown_until", "last_used"):
+            value = record.get(key)
+            if isinstance(value, (int, float)) and value > float(merged.get(key) or 0):
+                merged[key] = value
+                if key == "cooldown_until":
+                    merged["cooldown_reason"] = record.get("cooldown_reason")
+        for pool, entry in (record.get("pools") or {}).items():
+            until = (entry or {}).get("cooldown_until") if isinstance(entry, dict) else None
+            if isinstance(until, (int, float)) and until > float((merged["pools"].get(pool) or {}).get("cooldown_until") or 0):
+                merged["pools"][pool] = entry
+    return merged
 
 
 def cooldown_until(record: dict[str, Any] | None, now: float | None = None) -> float | None:
@@ -329,8 +379,12 @@ def ranked_accounts(
     if pinned:
         account = runtime.find(pinned)
         if account is None:
-            raise ValueError(f"no {runtime.runtime} account named '{pinned}'")
+            raise ValueError(_unknown_account(runtime, pinned))
+        if runtime.is_session(account):
+            raise ValueError(_own_profile(runtime, account.name))
         candidates = [account]
+    elif not candidates and runtime.session_home is not None:
+        raise ValueError(_no_other_profile(runtime))
     exclude = exclude or set()
     usable: list[Account] = []
     earliest: float | None = None
@@ -341,7 +395,7 @@ def ranked_accounts(
             continue
         if model and not model_allowed(runtime, account_limits(runtime, account), model):
             continue  # the account's model list does not include it
-        record = usage.get(account.name)
+        record = account_record(runtime, account, usage)
         ends = [cooldown_until(record, now), pool_cooldown_until(record, pool.name, now) if pool else None]
         until = max((end for end in ends if end is not None), default=None)
         if until is not None:
@@ -349,20 +403,60 @@ def ranked_accounts(
             continue
         usable.append(account)
 
-    def key(account: Account) -> tuple[bool, bool, bool, float, float]:
-        record = usage.get(account.name) or {}
+    found = [account.name for account in runtime.found_accounts()]
+
+    def rank(account: Account) -> int:
+        # `order` first; without it agt's own accounts (least used first), then found profiles in their order.
+        if runtime.order:
+            return runtime.order.index(account.name) if account.name in runtime.order else len(runtime.order)
+        return 1 + found.index(account.name) if account.name in found else 0
+
+    def key(account: Account) -> tuple[bool, bool, bool, int, float, float]:
+        record = account_record(runtime, account, usage) or {}
         utilization = max_utilization(record)
         nearly_full = utilization is not None and utilization >= runtime.usage_ceiling
         return (
             account.fallback,  # fallback accounts only after every regular one
             nearly_full,
             account.name != prefer,
+            rank(account),
             utilization if utilization is not None else 0.0,
             float(record.get("last_used") or 0.0),
         )
 
     usable.sort(key=key)
     return usable, (earliest if not usable else None)
+
+
+def _others(runtime: RuntimeConfig) -> list[str]:
+    return [account.name for account in runtime.listed_accounts() if not runtime.is_session(account)]
+
+
+def _session_name(runtime: RuntimeConfig) -> str:
+    session = next((account for account in runtime.all_accounts() if runtime.is_session(account)), None)
+    return session.name if session else str(runtime.session_home)
+
+
+def _own_profile(runtime: RuntimeConfig, name: str) -> str:
+    others = _others(runtime)
+    tail = f" Other profiles: {', '.join(others)}." if others else ""
+    return (f"'{name}' is the Claude profile this session runs in, so it can't take this session's own jobs."
+            f"{tail} Name another with account=NAME.")
+
+
+def _no_other_profile(runtime: RuntimeConfig) -> str:
+    return (f"No other Claude profile can take this job: {_session_name(runtime)} is the profile this session runs in. "
+            "Name one with account=NAME, log in to another Claude folder, use a built-in subagent, "
+            "or start it with runtime codex.")
+
+
+def _unknown_account(runtime: RuntimeConfig, name: str) -> str:
+    near = runtime.matches(name)
+    if len(near) > 1:
+        return f"'{name}' matches several {runtime.runtime} profiles: {', '.join(near)}. Name one in full."
+    known = [account.name for account in runtime.listed_accounts()]
+    tail = f" Known: {', '.join(known)}." if known else ""
+    return f"no {runtime.runtime} account named '{name}'.{tail}"
 
 
 def _acquire(

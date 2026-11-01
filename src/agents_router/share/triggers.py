@@ -79,6 +79,19 @@ def record_path() -> Path:
     return share_state() / "triggers.json"
 
 
+def _borrowed_home() -> bool:
+    """Whether HOME isn't the account's own home folder (a sandbox or a test): then the real launchd and
+    notifications are never used, even by a worker whose environment lost AGT_LAUNCHCTL."""
+
+    try:
+        import pwd
+
+        own = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, AttributeError, OSError):
+        return False
+    return os.path.realpath(Path.home()) != os.path.realpath(own)
+
+
 def _in_temp(path: Path) -> bool:
     real = os.path.realpath(path)
     temps = {os.path.realpath(tempfile.gettempdir()), "/tmp", "/private/tmp", "/private/var/folders", "/var/folders"}
@@ -108,7 +121,7 @@ def _notifier() -> list[str] | None:
     fake = os.environ.get("AGT_OSASCRIPT")
     if fake:
         return list(json.loads(fake))
-    if sys.platform != "darwin" or _in_temp(agt_home()):
+    if sys.platform != "darwin" or _in_temp(agt_home()) or _borrowed_home():
         return None
     return ["/usr/bin/osascript"]
 
@@ -210,8 +223,8 @@ def _launchctl_command() -> list[str] | None:
     fake = os.environ.get("AGT_LAUNCHCTL")
     if fake:
         return list(json.loads(fake))
-    if sys.platform != "darwin" or _in_temp(agt_home()):
-        return None  # never the real launchd for a throwaway agt home
+    if sys.platform != "darwin" or _in_temp(agt_home()) or _borrowed_home():
+        return None  # never the real launchd for a throwaway agt home, or with another HOME (the live-check sandbox)
     return ["/bin/launchctl"]
 
 
@@ -238,6 +251,8 @@ def watcher_supported() -> str | None:
         return "the background watcher needs macOS; sessions and MCP server starts catch up instead"
     if _in_temp(agt_home()):
         return "agt's home is in a temp folder, so the background watcher stays off"
+    if _borrowed_home():
+        return "HOME isn't your account's home folder (a sandbox), so the background watcher stays off"
     return None
 
 

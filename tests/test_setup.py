@@ -1,7 +1,7 @@
 import io
 import json
 import os
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import sys
 import tempfile
@@ -302,6 +302,17 @@ class UpdateTests(SetupBase):
         self.assertIn("Start a new Codex session", out)
         self.assertNotIn("Antigravity", out)
 
+    def test_codex_from_a_local_clone_updates_without_a_fetch(self):
+        # Codex refuses `marketplace upgrade` for a marketplace added from a folder; it reads that folder in place.
+        with patch.dict(os.environ, {"AGT_PLUGIN_SOURCE": str(REPO_ROOT)}):
+            self.run_cli("--host", "codex", "--share", "off", "--yes")
+            self.log.unlink()
+            code, out = self.run_update("--no-package", "--host", "codex")
+        self.assertEqual(code, 0, out)
+        changing = [c["argv"] for c in self.calls() if c["kind"] == "codex" and "list" not in c["argv"]]
+        self.assertEqual(changing, [["plugin", "add", "agents-router@agents-router"]])
+        self.assertNotIn("failed", out)
+
     def test_dry_run_and_no_package(self):
         self.run_cli("--host", "antigravity")
         self.log.unlink()
@@ -391,3 +402,328 @@ class UpstreamTests(SetupBase):
                                                             "agents-router@agents-router": True}}), encoding="utf-8")
         with patch.dict(os.environ, {"PATH": str(self.root)}), patch("pathlib.Path.home", return_value=self.root / "home"):
             self.assertEqual(setup.upstream_installs(load_config()), [])
+
+
+TEAM = {"accountUuid": "uuid-team", "organizationUuid": "org-team", "organizationType": "claude_team"}
+MAX = {"accountUuid": "uuid-max", "organizationUuid": "org-max", "organizationType": "claude_max"}
+OTHER = {"accountUuid": "uuid-other", "organizationUuid": "org-other", "organizationType": "claude_pro"}
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class ProfileBase(SetupBase):
+    """A home with Claude profiles; this session runs in ~/.claude-ntb.
+
+    ~/.claude (Max), ~/.claude-ntb (Team, this session), ~/.claude-personal (Max again: one login, its own folder)
+    and ~/.claude-old, which [claude] ignore leaves out.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from agents_router import profiles
+
+        self.home = self.root / "home"
+        self.home.mkdir()
+        os.environ.update(HOME=str(self.home), USERPROFILE=str(self.home), CLAUDECODE="1")
+        self.default = self.profile(".claude", MAX)
+        self.ntb = self.profile(".claude-ntb", TEAM)
+        self.personal = self.profile(".claude-personal", MAX)
+        self.old = self.profile(".claude-old", OTHER)
+        os.environ["CLAUDE_CONFIG_DIR"] = str(self.ntb)
+        (self.root / "agt").mkdir(exist_ok=True)
+        (self.root / "agt" / "settings.toml").write_text('[claude]\nignore = ["claude-old"]\n', encoding="utf-8")
+        profiles.forget()
+
+    def tearDown(self):
+        os.environ.pop("CLAUDECODE", None)
+        super().tearDown()
+
+    def profile(self, name, account, logged_in=True):
+        folder = self.home / name
+        folder.mkdir(exist_ok=True)
+        state = self.home / ".claude.json" if name == ".claude" else folder / ".claude.json"
+        state.write_text(json.dumps({"oauthAccount": account}), encoding="utf-8")
+        if logged_in:
+            (folder / "logged_in").touch()
+        return folder
+
+    def installs(self):
+        """(folder, CLAUDE_CONFIG_DIR set) of each `claude plugin install`."""
+
+        return [(Path(c["folder"]), c["config_dir_set"]) for c in self.calls()
+                if c["kind"] == "claude" and c["argv"][:2] == ["plugin", "install"]]
+
+    def proposal(self, *args):
+        code, out = self.run_cli("--host", "claude", "--share", "off", "--dry-run", "--json", *args)
+        self.assertEqual(code, 0, out)
+        return json.loads(out)
+
+
+
+class ProfileSetupTests(ProfileBase):
+    """Every Claude profile gets the plugin, each with its own environment."""
+
+    def test_every_profile_gets_the_plugin_with_its_own_environment(self):
+        proposal = self.proposal()
+        self.assertEqual([(p["name"], p["this_session"], p["gets_plugin"]) for p in proposal["claude_profiles"]],
+                         [("claude-ntb", True, True), ("claude", False, True), ("claude-personal", False, True)])
+        self.assertIn("--claude-profiles all", proposal["command"])
+        self.assertIn("--if-plan", proposal["command"])  # a plugin-only run has a plan id too
+        self.assertIn("Ask the user once", proposal["next"])
+        self.assertEqual(self.installs(), [])
+        code, preview = self.run_cli("--host", "claude", "--share", "off", "--dry-run")
+        self.assertRegex(preview, r"Claude profiles that get the plugin\n  \[x\]  claude-ntb +~/\S+ +this session\n")
+        code, out = self.run_cli(*proposal["command"].split()[2:])
+        self.assertEqual(code, 0, out)
+        # ~/.claude runs without CLAUDE_CONFIG_DIR (its login is found only that way), even from a ~/.claude-ntb session.
+        self.assertEqual(sorted(self.installs()), sorted([(self.ntb, True), (self.default, False), (self.personal, True)]))
+        for folder in (self.default, self.ntb, self.personal):
+            self.assertEqual(self.plugins(folder), {"agents-router@agents-router": True})
+        self.assertFalse((self.old / "fake_plugins.json").exists())
+        self.assertIn("Claude Code (claude-ntb)", out)  # one row per profile, under the Claude Code label
+        self.assertIn("Claude Code (claude)", out)
+        self.assertIn("Restart Claude Code (or type /reload-plugins in an open session)", out)  # this session
+        self.assertIn(f"Start a new Claude Code session in {ui_path(self.default)}", out)
+        self.assertIn(f"Start a new Claude Code session in {ui_path(self.personal)}", out)
+
+    def test_this_or_named_profiles_only(self):
+        proposal = self.proposal("--claude-profiles", "this")
+        self.assertEqual([p["name"] for p in proposal["claude_profiles"] if p["gets_plugin"]], ["claude-ntb"])
+        self.assertIn("--claude-profiles this", proposal["command"])
+        proposal = self.proposal("--claude-profiles", "personal,claude")
+        self.assertEqual([p["name"] for p in proposal["claude_profiles"] if p["gets_plugin"]], ["claude", "claude-personal"])
+        with redirect_stderr(io.StringIO()) as err:
+            code, out = self.run_cli("--host", "claude", "--share", "off", "--dry-run", "--claude-profiles", "nope")
+        self.assertEqual(code, 2)
+        self.assertIn("no Claude profile named 'nope' here. Known: claude-ntb, claude, claude-personal", err.getvalue())
+
+    def test_a_changed_set_of_profiles_is_refused(self):
+        proposal = self.proposal()
+        self.profile(".claude-new", OTHER)
+        code, out = self.run_cli(*proposal["command"].split()[2:])
+        self.assertEqual(code, 1, out)
+        self.assertIn("the plan changed since your dry run", out)
+        self.assertEqual(self.installs(), [])
+
+    def test_plain_setup_without_a_terminal_installs_only_this_profile(self):
+        code, out = self.run_cli("--host", "claude")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.installs(), [(self.ntb, True)])
+        self.assertIn("Your other Claude profiles don't have the plugin yet: claude (", out)
+        self.assertIn("agt setup --claude-profiles all", out)
+
+    def test_a_failed_install_in_another_profile_leaves_its_settings_alone(self):
+        os.environ.update(FAKE_HOST_FAIL="install", FAKE_HOST_FAIL_IN=str(self.default))
+        try:
+            code, out = self.run_cli("--host", "claude", "--share", "off", "--yes")
+        finally:
+            os.environ.pop("FAKE_HOST_FAIL_IN", None)
+        self.assertEqual(code, 1, out)
+        self.assertFalse((self.default / "settings.json").exists())  # no settings.json fallback in another profile
+        self.assertEqual(self.plugins(self.ntb), {"agents-router@agents-router": True})
+        self.assertIn("/plugin install agents-router@agents-router", out)
+        self.assertIn("managed settings", out)
+
+    def test_without_the_claude_command_each_profile_declares_the_plugin(self):
+        with patch.object(ClaudeRuntime, "find_binary", return_value=None):
+            code, out = self.run_cli("--host", "claude", "--share", "off", "--yes")
+        self.assertEqual(code, 0, out)
+        for folder in (self.default, self.ntb, self.personal):
+            data = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
+            self.assertTrue(data["enabledPlugins"]["agents-router@agents-router"])
+        self.assertFalse((self.old / "settings.json").exists())
+        self.assertIn(f"Restart Claude Code in {ui_path(self.default)}", out)
+
+    def test_update_updates_every_profile_that_has_the_plugin(self):
+        self.run_cli("--host", "claude", "--share", "off", "--yes")
+        (self.personal / "logged_in").unlink()  # logged out since: still updated
+        self.log.unlink()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["update", "--no-package", "--host", "claude"])
+        self.assertEqual(code, 0, out.getvalue())
+        updated = sorted((Path(c["folder"]), c["config_dir_set"]) for c in self.calls() if c["argv"][:2] == ["plugin", "update"])
+        self.assertEqual(updated, sorted([(self.ntb, True), (self.default, False), (self.personal, True)]))
+
+    def test_a_registered_profile_with_its_own_setup_is_included(self):
+        work = self.root / "work-profile"
+        work.mkdir()
+        (work / ".claude.json").write_text(json.dumps({"oauthAccount": OTHER}), encoding="utf-8")
+        (work / "logged_in").touch()
+        code, out = self.run_cli("--host", "claude", "--claude-profiles", "this", "--account", f"work={work}")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(load_config().runtime("claude").find("work").setup, "own")
+        proposal = self.proposal()
+        self.assertIn(("work", str(work)), [(p["name"], p["folder"]) for p in proposal["claude_profiles"]])
+
+    def test_doctor_finds_a_profile_with_an_older_plugin(self):
+        from agents_router import __version__
+
+        with patch.dict(os.environ, {"FAKE_HOST_PLUGIN_VERSION": "0.0.1"}):
+            self.run_cli("--host", "claude", "--share", "off", "--yes", "--claude-profiles", "claude")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["doctor", "--runtime", "claude"])
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn(f"Claude Code profile claude ({ui_short(self.default)}) has agents-router plugin 0.0.1; "
+                      f"agt is {__version__}.", out.getvalue())
+        self.assertEqual(setup.installed_version(self.default), "0.0.1")
+        self.assertIsNone(setup.installed_version(self.ntb))
+
+
+class FirstJobTests(ProfileBase):
+    """The first-job hint names a CLI or profile that can take a job now, never one without a login."""
+
+    def hint(self):
+        from agents_router import setup_screen, ui
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            ui.out(*setup_screen._first_job())
+        return out.getvalue()
+
+    def test_codex_without_a_login_isnt_offered(self):
+        out = self.hint()  # Codex and agy are installed, neither logged in; this session runs in claude-ntb
+        self.assertNotIn("Codex", out)
+        self.assertNotIn("Gemini", out)
+        self.assertIn("Use claude to review my last commit.", out)
+        self.assertIn("/agents-router:delegate review my last commit on claude", out)
+        self.assertIn('agt run --account claude "review my last commit"', out)
+        from agents_router.config import load_config
+
+        self.assertIsNotNone(load_config().runtime("claude").find("claude"))  # the name it shows is one agt takes
+
+    def test_a_logged_in_codex_comes_first(self):
+        (self.codex_dir / "logged_in").touch()
+        out = self.hint()
+        self.assertIn("Use Codex to review my last commit.", out)
+        self.assertIn('agt run --runtime codex "review my last commit"', out)
+
+    def test_nothing_ready_falls_back_to_a_subagent(self):
+        for folder in (self.default, self.personal):
+            (folder / "logged_in").unlink()
+        from agents_router import profiles
+
+        profiles.forget()
+        out = self.hint()
+        self.assertIn("Use a subagent to review my last commit.", out)
+        self.assertIn('agt run "review my last commit"', out)
+
+
+class ProfileEdgeTests(ProfileBase):
+    """What the review of the first version found: each is a case that went wrong once."""
+
+    def test_an_account_named_in_the_same_run_gets_the_plugin(self):
+        work = self.root / "work-profile"
+        work.mkdir()
+        (work / ".claude.json").write_text(json.dumps({"oauthAccount": OTHER}), encoding="utf-8")
+        (work / "logged_in").touch()
+        code, out = self.run_cli("--host", "claude", "--share", "off", "--yes", "--claude-profiles", "work",
+                                 "--account", f"work={work}")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.installs(), [(work, True)])
+
+    def test_an_ignored_primary_is_left_alone(self):
+        (self.root / "agt" / "settings.toml").write_text(
+            f'[claude]\nprimary = "{self.default.as_posix()}"\nignore = ["claude-old", "claude"]\n', encoding="utf-8")
+        proposal = self.proposal()
+        self.assertEqual([p["name"] for p in proposal["claude_profiles"]], ["claude-ntb", "claude-personal"])
+
+    def test_update_and_doctor_reach_a_profile_with_the_plugin_but_no_login(self):
+        from agents_router import __version__
+
+        bare = self.home / ".claude-bare"
+        (bare / "plugins").mkdir(parents=True)
+        (bare / "plugins" / "installed_plugins.json").write_text(json.dumps(
+            {"version": 2, "plugins": {"agents-router@agents-router": [{"scope": "user", "version": "0.0.1"}]}}), encoding="utf-8")
+        (bare / "fake_plugins.json").write_text(json.dumps(
+            {"marketplaces": ["agents-router"], "plugins": {"agents-router@agents-router": True}}), encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["doctor", "--runtime", "claude", "--json"])
+        problems = json.loads(out.getvalue())["problems"]
+        self.assertEqual(code, 1)
+        self.assertIn({"problem": f"Claude Code profile claude-bare ({ui_short(bare)}) has agents-router plugin 0.0.1; "
+                                  f"agt is {__version__}.", "fix": "agt update"}, problems)
+        with redirect_stdout(io.StringIO()):
+            cli.main(["update", "--no-package", "--host", "claude"])
+        self.assertIn(bare, [Path(c["folder"]) for c in self.calls() if c["argv"][:2] == ["plugin", "update"]])
+
+    def test_update_reaches_a_shared_claude_folder_with_the_plugin_but_no_login(self):
+        outside = self.root / "team-profile"  # a Claude folder `agt share` knows, outside the home folder
+        (outside / "plugins").mkdir(parents=True)
+        (outside / "plugins" / "installed_plugins.json").write_text(json.dumps(
+            {"version": 2, "plugins": {"agents-router@agents-router": [{"scope": "user", "version": "0.0.1"}]}}), encoding="utf-8")
+        with patch.object(setup, "shared_claude_folders", return_value=[outside]):
+            folders = [account.home for account in setup.claude_profiles(load_config(), every=True)]
+        self.assertIn(outside, folders)
+
+    def test_the_settings_route_command_applies_its_own_plan(self):
+        proposal = self.proposal("--claude-route", "settings")
+        self.assertIn("--claude-route settings", proposal["command"])
+        code, out = self.run_cli(*proposal["command"].split()[2:])
+        self.assertEqual(code, 0, out)
+        self.assertTrue(json.loads((self.ntb / "settings.json").read_text(encoding="utf-8"))["enabledPlugins"])
+
+
+@unittest.skipIf(os.name == "nt", "launchd and the passwd database are macOS and Unix only")
+@unittest.skipUnless(hasattr(os, "getuid"), "the account's own home folder comes from pwd, which Windows lacks")
+class SandboxGuardTests(unittest.TestCase):
+    def test_a_borrowed_home_never_reaches_the_real_launchd(self):
+        import pwd
+
+        from agents_router.share import triggers
+
+        self.assertTrue(triggers._borrowed_home())  # the tests' HOME is a throwaway folder
+        with patch.dict(os.environ, {"HOME": pwd.getpwuid(os.getuid()).pw_dir}):
+            self.assertFalse(triggers._borrowed_home())
+        # As on macOS, so the borrowed home is the only reason left, on every OS the tests run on.
+        with (patch.dict(os.environ), patch.object(triggers, "_in_temp", return_value=False),
+              patch.object(triggers.sys, "platform", "darwin")):
+            for key in ("AGT_LAUNCHCTL", "AGT_OSASCRIPT"):
+                os.environ.pop(key, None)  # as in a worker, whose environment agt cleans
+            self.assertIsNone(triggers._launchctl_command())
+            self.assertIsNone(triggers._notifier())
+            self.assertIn("sandbox", triggers.watcher_supported() or "")
+
+
+class PluginSourceTests(SetupBase):
+    """AGT_PLUGIN_SOURCE: a local clone instead of GitHub, for live checks in a sandbox."""
+
+    def test_github_by_default_and_a_local_clone_when_set(self):
+        self.assertEqual(setup.plugin_source(), "Watcharagorn/agents-router")
+        with patch.dict(os.environ, {"AGT_PLUGIN_SOURCE": str(REPO_ROOT)}):
+            self.assertEqual(setup.plugin_source(), str(REPO_ROOT))
+            code, out = self.run_cli("--host", "claude", "--host", "antigravity", "--share", "off", "--yes")
+            self.assertEqual(code, 0, out)
+            self.assertIn(["plugin", "marketplace", "add", str(REPO_ROOT)], [c["argv"] for c in self.calls()])
+            self.assertIn(["plugin", "install", str(REPO_ROOT)], [c["argv"] for c in self.calls() if c["kind"] == "agy"])
+            self.assertEqual(self.plugins(self.claude_dir), {"agents-router@agents-router": True})
+            os.environ["CLAUDE_CONFIG_DIR"] = str(self.root / "declared")
+            (self.root / "declared").mkdir()
+            code, out = self.run_cli("--host", "claude", "--share", "off", "--yes", "--claude-route", "settings")
+            self.assertEqual(code, 0, out)
+        data = json.loads((self.root / "declared" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["extraKnownMarketplaces"]["agents-router"],
+                         {"source": {"source": "directory", "path": str(REPO_ROOT)}})
+
+    def test_the_plan_id_changes_with_the_plugin_source(self):
+        # The settings route writes the source without running a command, so only the plan id can catch a change.
+        def plan(source):
+            with patch.dict(os.environ, {"AGT_PLUGIN_SOURCE": source}):
+                code, out = self.run_cli("--host", "claude", "--share", "off", "--dry-run", "--json", "--claude-route", "settings")
+            self.assertEqual(code, 0, out)
+            return json.loads(out)["plan"]
+
+        self.assertNotEqual(plan(str(self.root / "clone-a")), plan(str(self.root / "clone-b")))
+
+
+def ui_path(folder):
+    from agents_router import ui
+
+    return ui.tilde(str(folder))
+
+
+def ui_short(folder):
+    from agents_router import ui
+
+    return ui.short_path(folder)

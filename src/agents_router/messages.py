@@ -84,7 +84,7 @@ def take_for_worker(job_id: str) -> list[dict[str, Any]]:
 
 
 def close_or_continue(job_id: str, session_id: str | None, account: str | None,
-                      can_continue: bool = False) -> list[dict[str, Any]]:
+                      can_continue: bool = False, home: str | None = None) -> list[dict[str, Any]]:
     """Atomically take a follow-up turn or close acceptance before the final drain."""
 
     folder = job_dir(job_id)
@@ -94,7 +94,7 @@ def close_or_continue(job_id: str, session_id: str | None, account: str | None,
             if pending:
                 return pending
         if not (folder / "inbox-closed.json").exists():
-            write_json(folder / "inbox-closed.json", {"session_id": session_id, "account": account})
+            write_json(folder / "inbox-closed.json", {"session_id": session_id, "account": account, "home": home})
     return []
 
 

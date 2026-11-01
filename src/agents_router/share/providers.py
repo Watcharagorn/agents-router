@@ -151,6 +151,8 @@ def account_folders(config: Config) -> dict[str, str]:
     for cli in ("claude", "codex", "antigravity"):
         runtime = config.runtime(cli)
         for account in runtime.accounts:
+            if account.setup == "own":
+                continue  # a profile with its own setup stays a folder agt share keeps alike
             found[str(Path(account.home).expanduser().resolve())] = str(runtime.primary)
     return found
 

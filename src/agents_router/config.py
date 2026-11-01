@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
@@ -62,6 +62,18 @@ def cache_dir() -> Path:
     return home() / "cache"
 
 
+def shared_claude_folders() -> list[Path]:
+    """Claude folders outside the home folder that `agt share` was told about (`[[share.folders]]`)."""
+
+    try:
+        from agents_router.share import settings as share_settings
+
+        return [Path(folder.path).expanduser() for folder in share_settings.load(share_settings.path()).folders
+                if folder.cli == "claude"]
+    except Exception:
+        return []
+
+
 def homes_dir() -> Path:
     return home() / "homes"
 
@@ -92,6 +104,14 @@ class Account:
     max_jobs: int | None = None
     max_effort: str | None = None
     models: list[str] | None = None
+    # "linked": agt links the primary setup into the folder (accounts under ~/.agents-router/homes).
+    # "own": a Claude Code profile you use yourself; agt runs it with its own setup and links nothing into it
+    # (`agt setup` installs the plugin there, as in any profile of yours).
+    setup: str = "linked"
+    found: bool = False  # a profile agt found on this machine (see profiles.py), not one in your settings
+    login: str | None = None  # short hash of the login: folders with one login share their usage
+    org_type: str | None = None
+    logged_in: bool | None = None  # found profiles: None means unknown
 
 
 @dataclass
@@ -140,27 +160,172 @@ class RuntimeConfig:
     network_access: bool = True  # [codex] only: network inside the sandbox for edit jobs (local test sockets too)
     accounts: list[Account] = field(default_factory=list)
     picked: list[str] | None = None  # a workspace's `accounts = [...]`: the only accounts its unpinned jobs use
+    # [claude] only. `order`: the profiles unpinned jobs try, first to last. `ignore`: profiles (names or
+    # folders) agt doesn't find. `session_home`: the folder of the Claude Code session calling agt, the
+    # orchestrator; it never takes that session's delegated jobs. None when no Claude Code session calls.
+    order: list[str] | None = None
+    ignore: list[str] | None = None
+    session_home: Path | None = None
+    primary_from_settings: bool = False  # `primary` is written in the settings, not taken from the environment
+    _found: list[Account] | None = field(default=None, repr=False, compare=False)
+
+    # Profiles ---------------------------------------------------------------
+
+    def found_accounts(self) -> list[Account]:
+        """Claude Code profiles found on this machine (see profiles.py), registered accounts left out."""
+
+        if self.runtime != "claude":
+            return []
+        if self._found is None:
+            self._found = self._discover()
+        return self._found
+
+    def _discover(self) -> list[Account]:
+        from agents_router import profiles
+        from agents_router.profiles import same_folder
+
+        extra = shared_claude_folders()
+        ignored = [item for item in self.ignore or [] if "/" in item or "\\" in item or item.startswith("~")]
+        skip = [account.home for account in self.accounts] + [Path(item) for item in ignored]
+        if homes_dir().is_dir():
+            skip.append(homes_dir())
+
+        def check(folder: Path) -> bool | None:
+            from agents_router.runtimes import get_runtime
+
+            status = get_runtime("claude").auth_status(self, Account(name="profile", home=folder))
+            return None if status.get("error") else bool(status.get("loggedIn"))
+
+        found = []
+        for profile in profiles.discover(extra=extra, skip=skip, check=check):
+            if profile.name in (self.ignore or []) or any(profile.name == account.name for account in self.accounts):
+                continue
+            account = Account(name=profile.name, home=profile.home, setup="own", found=True, login=profile.login,
+                              org_type=profile.org_type, logged_in=profile.logged_in)
+            if same_folder(account.home, self.primary):
+                # The primary folder under its profile name: the same limits as `primary`, whichever name a job uses.
+                account = replace(account, is_primary=True, **self._primary_limits(set_only=True))
+            found.append(account)
+        found.sort(key=lambda account: (not profiles.is_default(account.home), account.name))
+        return found
+
+    def all_accounts(self) -> list[Account]:
+        """Registered accounts, then found profiles."""
+
+        return [*self.accounts, *self.found_accounts()]
+
+    def is_session(self, account: Account) -> bool:
+        """Whether the account is the folder of the Claude Code session calling agt."""
+
+        from agents_router.profiles import same_folder
+
+        return self.session_home is not None and same_folder(account.home, self.session_home)
+
+    def session_login(self) -> str | None:
+        if self.session_home is None:
+            return None
+        from agents_router.profiles import account_info
+
+        return account_info(self.session_home)["login"]
+
+    def login_group(self, account: Account) -> list[str]:
+        """Names of every account with the same login as this one (itself included)."""
+
+        if not account.login:
+            return [account.name]
+        names = [other.name for other in self.all_accounts() if other.login == account.login]
+        return names if account.name in names else [account.name, *names]
+
+    def _primary_limits(self, set_only: bool = False) -> dict[str, Any]:
+        limits = dict(plan=self.plan, max_jobs=self.primary_max_jobs, max_effort=self.primary_max_effort,
+                      models=self.primary_models)
+        return {key: value for key, value in limits.items() if value is not None} if set_only else limits
 
     def primary_account(self) -> Account:
-        return Account(
-            name="primary", home=self.primary, is_primary=True, plan=self.plan, max_jobs=self.primary_max_jobs,
-            max_effort=self.primary_max_effort, models=self.primary_models,
-        )
+        from agents_router.profiles import same_folder
+
+        for account in self.all_accounts():
+            if same_folder(account.home, self.primary):
+                # The primary folder is a known profile: one name for it, whoever calls.
+                return replace(account, is_primary=True, **self._primary_limits(set_only=True))
+        return Account(name="primary", home=self.primary, is_primary=True, **self._primary_limits())
+
+    def named(self, account: Account, name: str) -> bool:
+        """Whether `name` (from `accounts`, `order`, `ignore` or a job) means this account.
+
+        Its own name; `primary` for the primary folder, whatever name it goes by; its folder label
+        (`claude-ntb`) or the short form (`ntb`) for a profile; or its folder.
+        """
+
+        from agents_router import profiles
+
+        if "/" in name or "\\" in name or name.startswith("~"):
+            return profiles.same_folder(account.home, Path(name).expanduser())
+        if name == account.name:
+            return True
+        if name == "primary":
+            return profiles.same_folder(account.home, self.primary)
+        if self.runtime != "claude":
+            return False
+        label = profiles.label(account.home)
+        return name == label or (account.found and label in (f"claude-{name}", f"claude{name}"))
+
+    def ignores(self, account: Account) -> bool:
+        """Whether `[claude] ignore` names this account."""
+
+        return any(self.named(account, item) for item in self.ignore or [])
 
     def worker_accounts(self) -> list[Account]:
-        """Accounts that unpinned jobs may use, in configuration order."""
+        """Accounts that unpinned jobs may use, in configuration order.
+
+        From a Claude Code session, the session's own folder (and other folders with its
+        login) never takes its delegated jobs: the list may then be empty.
+        """
 
         if self.runtime in OPT_IN_FAILOVER and self.failover == "off":
             return [self.primary_account()]
+        found: list[Account] = []
+        logins: set[str] = set()
+        order = self.order or []
+
+        def rank(item: Account) -> int:
+            return next((index for index, name in enumerate(order) if self.named(item, name)), len(order))
+
+        # One folder per login; with `order`, the one it lists first.
+        ranked = sorted(self.found_accounts(), key=rank)
+        for account in ranked:
+            if account.logged_in is not True or (account.login and account.login in logins):
+                continue  # logged out or unknown; or a second folder with a login already listed
+            if account.login:
+                logins.add(account.login)
+            found.append(account)
+        registered = [account for account in self.accounts if account.enabled]
+        if self.session_home is not None and self.runtime == "claude":
+            login = self.session_login()
+            pool = [account for account in (*registered, *found)
+                    if not self.is_session(account) and not (account.found and login and account.login == login)]
+            if self.picked:
+                return [account for account in pool if self._picked(account)]
+            return pool
         if self.picked:
-            chosen = [account for account in (self.primary_account(), *self.accounts)
-                      if account.name in self.picked and account.enabled]
+            chosen = [account for account in (self.primary_account(), *self.accounts, *found)
+                      if self._picked(account) and account.enabled]
             if chosen:
-                return chosen
-        accounts = [account for account in self.accounts if account.enabled]
+                from agents_router.profiles import same_folder
+
+                return [account for index, account in enumerate(chosen)
+                        if not any(same_folder(account.home, other.home) for other in chosen[:index])]
+        accounts = [*registered, *found]
         if self.include_primary or not accounts:
-            accounts.insert(0, self.primary_account())
+            primary = self.primary_account()
+            if self.include_primary or not self.ignores(primary):  # `ignore` keeps it out of the fallback too
+                from agents_router.profiles import same_folder
+
+                accounts = [primary, *(account for account in accounts if not same_folder(account.home, primary.home))]
         return accounts
+
+    def _picked(self, account: Account) -> bool:
+        return any(self.named(account, name) for name in self.picked or [])
 
     def pool_accounts(self) -> list[Account]:
         """Accounts that may run workers, pinned or not (doctor --live checks these)."""
@@ -170,16 +335,45 @@ class RuntimeConfig:
         return self.worker_accounts()
 
     def listed_accounts(self) -> list[Account]:
-        """Accounts shown in reports: for opt-in runtimes the primary and every extra account, disabled ones too."""
+        """Accounts shown in reports: for opt-in runtimes the primary and every extra account, disabled ones too.
+
+        For Claude, also the calling session's own profile and every found profile, so reports show them all.
+        """
 
         if self.runtime in OPT_IN_FAILOVER:
             return [self.primary_account(), *self.accounts]
-        return self.worker_accounts()
+        listed = self.worker_accounts()
+        if self.runtime == "claude" and (self.session_home is not None or self.found_accounts()):
+            from agents_router.profiles import same_folder
+
+            extra = []
+            if self.session_home is not None:
+                session = next((account for account in self.all_accounts() if self.is_session(account)), None)
+                extra.append(session or Account(name="primary", home=self.session_home, is_primary=True))
+            extra += self.all_accounts()
+            for account in extra:
+                if not any(same_folder(account.home, other.home) for other in listed):
+                    listed.append(account)
+        return listed
 
     def find(self, name: str) -> Account | None:
+        """An account by name: `primary`, a registered name, a found profile, or a unique short form (`ntb`)."""
+
         if name == "primary":
             return self.primary_account()
-        return next((account for account in self.accounts if account.name == name), None)
+        accounts = self.all_accounts()
+        exact = next((account for account in accounts if account.name == name), None)
+        if exact is not None:
+            return exact
+        short = [account for account in self.found_accounts() if account.name in (f"claude-{name}", f"claude{name}")]
+        if len(short) == 1:
+            return short[0]
+        return None
+
+    def matches(self, name: str) -> list[str]:
+        """Profile names that end with `name`, for a hint when a short form is ambiguous or unknown."""
+
+        return [account.name for account in self.all_accounts() if name and name in account.name]
 
 
 @dataclass
@@ -263,6 +457,22 @@ def _quota_pools(name: str, value: Any) -> list[QuotaPool]:
     return pools
 
 
+def _setup(runtime: str, value: Any) -> str:
+    if value is None:
+        return "linked"
+    if value not in ("linked", "own") or runtime != "claude":
+        raise ValueError(f"[{runtime}] account setup must be \"linked\" or \"own\" (Claude accounts only)")
+    return str(value)
+
+
+def _names(runtime: str, key: str, value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if runtime != "claude" or not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ValueError(f"[{runtime}] {key} must be a list of Claude profile names, under [claude] only")
+    return [item.strip() for item in value]
+
+
 def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     accounts: list[Account] = []
     for item in data.get("accounts", []) or []:
@@ -281,6 +491,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
                 max_jobs=_opt_int(item.get("max_jobs")),
                 max_effort=_opt_text(item.get("max_effort")),
                 models=_opt_models(item.get("models")),
+                setup=_setup(name, item.get("setup")),
             )
         )
     opt_in = name in OPT_IN_FAILOVER
@@ -324,6 +535,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     return RuntimeConfig(
         runtime=name,
         primary=_path(data.get("primary"), default_primary(name)),
+        primary_from_settings=bool(isinstance(data.get("primary"), str) and data["primary"].strip()),
         binary=data.get("binary") or None,
         # These runtimes rotate through the primary account too, unless told otherwise.
         include_primary=bool(data.get("include_primary", opt_in)),
@@ -354,11 +566,13 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         web_search=web_search,
         network_access=network_access,
         accounts=accounts,
+        order=_names(name, "order", data.get("order")),
+        ignore=_names(name, "ignore", data.get("ignore")),
     )
 
 
 TOP_KEYS = ("job_retention_days", "max_depth", "max_jobs")
-USER_ONLY = ("primary", "binary", "accounts")  # machine-wide: a workspace file can't set them
+USER_ONLY = ("primary", "binary", "accounts", "ignore")  # machine-wide: a workspace file can't set them
 _legacy_noted = False
 
 
@@ -425,7 +639,32 @@ def load_config(path: Path | None = None, cwd: Path | str | None = None) -> Conf
         found = [layer for layer in [levels.read("user", path)] if layer]
     else:
         found = levels.layers(user_settings_path(), levels.find_workspace(cwd))
-    return from_layers(found, notes)
+    config = from_layers(found, notes)
+    set_session(config, session_folder())
+    return config
+
+
+def session_folder(host: str | None = None, env: dict[str, str] | None = None) -> Path | None:
+    """The Claude folder of the Claude Code session that runs agt, or None when no Claude Code session does.
+
+    Claude Code passes its environment to the commands and MCP servers it starts: `CLAUDECODE`
+    says a session runs this, and `CLAUDE_CONFIG_DIR`, when set, names its folder; without it
+    the session uses `~/.claude`.
+    """
+
+    from agents_router.hosts import detect_host
+
+    env = dict(os.environ if env is None else env)
+    if (host or detect_host(env=env)) != "claude":
+        return None
+    configured = env.get("CLAUDE_CONFIG_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".claude"
+
+
+def set_session(config: Config, folder: Path | str | None) -> None:
+    """Name the calling Claude Code session's folder (the orchestrator), or None for no session."""
+
+    config.runtime("claude").session_home = Path(folder).expanduser() if folder else None
 
 
 def defaults() -> Config:
@@ -461,6 +700,8 @@ def from_layers(found: list[levels.Layer], notes: list[str] | None = None) -> Co
     runtimes = {name: _runtime_from(name, tables[name]) for name in RUNTIMES}
     for name, (layer, chosen) in picks.items():
         known = {"primary", *(account.name for account in runtimes[name].accounts)}
+        known |= {account.name for account in runtimes[name].found_accounts()} if any(
+            item not in known for item in chosen) else set()
         for unknown in [item for item in chosen if item not in known]:
             notes.append(f"{levels.where(layer, name, 'accounts')}: [{name}] accounts names '{unknown}', "
                          f"which isn't one of your {name} accounts; ignored")
@@ -477,6 +718,8 @@ def _account_lines(runtime: str, account: Account) -> list[str]:
     ]
     if account.fallback:
         lines.append("fallback = true")
+    if account.setup != "linked":
+        lines.append(f"setup = {_toml_value(account.setup)}")
     for key, value in (("plan", account.plan), ("max_jobs", account.max_jobs), ("max_effort", account.max_effort)):
         if value is not None:
             lines.append(f"{key} = {_toml_value(value)}")
@@ -550,6 +793,9 @@ def dump_config(config: Config) -> str:
             lines.append(f"when_full = {_toml_value(runtime.when_full)}")
         if runtime.max_jobs_by_room:
             lines.append(f"max_jobs_by_room = {json.dumps(runtime.max_jobs_by_room)}")
+        for key, value in (("order", runtime.order), ("ignore", runtime.ignore)):
+            if value:
+                lines.append(f"{key} = {json.dumps(value)}")
         if name == "codex" and runtime.web_search is not None:
             lines.append(f"web_search = {_toml_value(runtime.web_search)}")
         if name == "codex" and not runtime.network_access:

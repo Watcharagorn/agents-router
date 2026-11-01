@@ -174,7 +174,7 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
         if pool:
             if not override and pool.weekly_jobs is not None and state.budget_used(account.name, pool.name) >= pool.weekly_jobs:
                 continue
-            until = accounts.pool_cooldown_until(usage.get(account.name), pool.name, now)
+            until = accounts.pool_cooldown_until(accounts.account_record(runtime, account, usage), pool.name, now)
             if until:
                 result.cooldown_end = min(result.cooldown_end or until, until)
                 continue
@@ -183,7 +183,7 @@ def room(config: Config, runtime_name: str, counts: Counts, *, pinned: str | Non
                 continue
             if result.pool_total_hit:
                 continue
-        used = utilization(usage.get(account.name), now)
+        used = utilization(accounts.account_record(runtime, account, usage), now)
         if not override and used is not None and used >= runtime.usage_ceiling:
             result.ceiling_hit = max(result.ceiling_hit or 0.0, used)
             continue

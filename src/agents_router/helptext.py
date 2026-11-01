@@ -30,6 +30,7 @@ ROOT = {
             ("setup", "Install the plugin in Claude Code, Codex and Antigravity; register account folders"),
             ("doctor", "Check binaries, logins and shared setup"),
             ("update", "Reinstall agt and update the plugin in every host that has it"),
+            ("guide", "The steps an agent follows to install, set up, repair or remove agt"),
         ]),
         ("Run tasks in another CLI", [
             ("run", "Run a task and print the result"),
