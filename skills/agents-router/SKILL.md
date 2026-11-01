@@ -1,20 +1,21 @@
 ---
 name: agents-router
-description: How to run subagents through Agents Router (the agt-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity). Also use it to share agents and skills between the user's CLIs (agt share), change agt's settings (agt config), or explain what agt changed (agt log). Skip it for trivial answers and tiny edits.
+description: How to run subagents through Agents Router (the agt-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity, Kiro). Also use it to share agents and skills between the user's CLIs (agt share), change agt's settings (agt config), or explain what agt changed (agt log). Skip it for trivial answers and tiny edits.
 ---
 
 # Agents Router
 
-These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex or Antigravity) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them, unless the user names a profile or account. Then pass it as `account=` (`~/.claude-work` is `claude-work`), never the profile this session runs in. To install, update or repair agt itself, use the `agents-router-setup` skill (or run `agt guide setup`).
+These tools are your subagent tool. Use them the way you would use a built-in "spawn a subagent" tool: hand over a self-contained task, keep working, collect the result, check it. Behind them, each subagent is a separate agent CLI (Claude Code, Codex, Antigravity or Kiro) running on one of the user's own accounts with the same MCP servers, plugins, skills and instructions as the main setup. Choosing an account, and switching when one runs out of quota, happen on their own; you don't manage them, unless the user names a profile or account. Then pass it as `account=` (`~/.claude-work` is `claude-work`), never the profile this session runs in. To install, update or repair agt itself, use the `agents-router-setup` skill (or run `agt guide setup`).
 
 ## In Claude Code: always start a relay agent
 
-In Claude Code, start every Agents Router job with your Agent tool and one of the three relay agent types. This holds at every depth: a subagent that hands work to Codex or Gemini starts a relay agent the same way.
+In Claude Code, start every Agents Router job with your Agent tool and one of the four relay agent types. This holds at every depth: a subagent that hands work to Codex, Gemini or Kiro starts a relay agent the same way.
 
 | Runs in | `subagent_type` |
 |---|---|
 | Codex | `agents-router:agt-codex` |
 | Antigravity (Gemini) | `agents-router:agt-antigravity` |
+| Kiro CLI | `agents-router:agt-kiro` |
 | Claude Code on another account | `agents-router:agt-claude` |
 
 Don't run `agt run`, `agt start` or `agt follow` in your own shell, and don't call `subagent_start`. A job started that way never appears in the user's agent list, and your turn is blocked while you wait on it. The same goes for reaching another Claude profile: never `env -u CLAUDE_CONFIG_DIR` or `CLAUDE_CONFIG_DIR=... claude` in your shell; put `account=<profile>` on the relay agent, and agt runs that profile with its own environment. A relay agent appears with its own color, the user can open it and watch every step the worker takes (commands, edits, messages, reasoning), and you get the usual notice when it finishes.
@@ -33,11 +34,11 @@ Agent tool:
 ```
 
 - Description: `<model> · <access> · <task in a few words>`. The user reads it to see what runs where.
-- Prompt: option lines first, one per line (`model=...`, `effort=...`, `access=read|edit`, and only when needed `account=NAME`, `cwd=PATH`, `timeout=SECONDS`, `override=USER_WORDS` under the Limits rule below), then a blank line and the complete task written as below. `access` defaults to `edit` in the Claude relay and `read` in the Codex and Antigravity relays.
+- Prompt: option lines first, one per line (`model=...`, `effort=...`, `access=read|edit`, and only when needed `account=NAME`, `cwd=PATH`, `timeout=SECONDS`, `override=USER_WORDS` under the Limits rule below), then a blank line and the complete task written as below. `access` defaults to `edit` in the Claude relay and `read` in the Codex, Antigravity and Kiro relays.
 - Start it in the background and keep working. Don't poll or wait in a shell; the notice arrives when it finishes.
 - Its final message is the worker's result, unchanged. If the worker asks something, the agent stops and tells you; answer with SendMessage to that agent and it passes the answer on. While the job runs, SendMessage "cancel" stops it and anything else goes to the worker as a follow-up. After the job has finished, SendMessage to the same relay continues the worker's conversation as a new job; the relay follows it and returns its result.
 
-The MCP tools below work everywhere. In Codex, `agt setup --host codex` installs the same three relays as native agents (`agt-codex` and so on); start them with Codex's own subagent tool as [the Codex note](hosts/codex.md) shows, and use the MCP tools there only when those agents are missing. In Antigravity, `agt setup --host antigravity` installs them as a companion plugin of subagents; start them as [the Antigravity note](hosts/antigravity.md) shows. In Claude Code, too, use the MCP tools only when the relay agent types are missing.
+The MCP tools below work everywhere. In Codex, `agt setup --host codex` installs the Claude, Codex and Antigravity relays as native agents (`agt-codex` and so on); start them with Codex's own subagent tool as [the Codex note](hosts/codex.md) shows, and use the MCP tools there only when those agents are missing. In Antigravity, `agt setup --host antigravity` installs them as a companion plugin of subagents; start them as [the Antigravity note](hosts/antigravity.md) shows. Kiro has no native relay in Codex or Antigravity; start Kiro jobs there with the MCP tools (`runtime` `kiro`). In Claude Code, too, use the MCP tools only when the relay agent types are missing.
 
 ## The loop with the MCP tools
 
@@ -51,11 +52,11 @@ The MCP tools below work everywhere. In Codex, `agt setup --host codex` installs
 
 The subagent can't see this conversation. State the goal, the files or folders involved, what it must not touch, decisions already made, how to verify the result, and what to report back. Point to files instead of pasting them.
 
-Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`) when a specific agent or a second opinion from another vendor helps; `model`; `effort`; `max_turns` (Claude workers only); `timeout_seconds` (default 1800); `resume_job` to continue an earlier job's conversation; `account` to pin one account; `add_dirs`.
+Optional arguments: `runtime` (`claude` by default, `codex`, `antigravity`, `kiro`) when a specific agent or a second opinion from another vendor helps; `model`; `effort`; `max_turns` (Claude workers only); `timeout_seconds` (default 1800); `resume_job` to continue an earlier job's conversation; `account` to pin one account; `add_dirs`.
 
 `access: "full"` skips the CLI's own permission checks. Use it only when the user asked for that.
 
-Codex and Antigravity workers have their own web search and page reading, which reach sites such as Reddit that block other tools, so they suit web research. Antigravity workers find YouTube videos and read their title and description, but can't watch them or read transcripts.
+Codex and Antigravity workers have their own web search and page reading, which reach sites such as Reddit that block other tools, so they suit web research. Antigravity workers find YouTube videos and read their title and description, but can't watch them or read transcripts. Kiro workers on `read` can search and fetch from the web too.
 
 ## Limits
 
@@ -99,6 +100,6 @@ Read the note for the CLI you are running in once: [Claude Code](hosts/claude-co
 
 ## What subagents get
 
-Subagents in the same CLI as you load the same setup you have. Subagents in another CLI get a short note listing your instruction files and skill folders to read. Claude and Codex workers get `message_parent` (progress notes), `ask_parent` (a question; it waits for your answer) and `check_parent_messages` (follow-ups you send). Antigravity workers get them only with an effective account cap of exactly 1 and a managed worker folder; the primary file-login fallback has no parent channel. See [Gemini messages](../../docs/gemini.md#messages). Subagents can't start subagents of their own. Tools built into the Claude desktop app itself (its browser or terminal panes, for example) aren't available to them; everything in your config folders and plugins is.
+Subagents in the same CLI as you load the same setup you have. Subagents in another CLI get a short note listing your instruction files and skill folders to read. Claude and Codex workers get `message_parent` (progress notes), `ask_parent` (a question; it waits for your answer) and `check_parent_messages` (follow-ups you send). Antigravity workers get them only with an effective account cap of exactly 1 and a managed worker folder; the primary file-login fallback has no parent channel. See [Gemini messages](../../docs/gemini.md#messages). Kiro workers get none of these, and a Kiro job takes no follow-ups: a message sent while it runs doesn't reach it, and a finished one can't be continued, so start a new job with the whole task. Kiro `edit` jobs can't run shell commands; `full` can. Subagents can't start subagents of their own. Tools built into the Claude desktop app itself (its browser or terminal panes, for example) aren't available to them; everything in your config folders and plugins is.
 
 Never put secrets or credentials in a prompt.

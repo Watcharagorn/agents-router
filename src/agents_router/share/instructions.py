@@ -7,7 +7,7 @@ Each CLI folder has one user-level instruction file:
 | Claude Code | `<folder>/CLAUDE.md` |
 | Codex | `~/.codex/AGENTS.md` |
 | Antigravity | `~/.gemini/GEMINI.md` |
-| Kiro | `~/.kiro/steering/AGENTS.md` (Kiro's user steering; unverified for the CLI) |
+| Kiro | `~/.kiro/steering/AGENTS.md` (Kiro's global steering; Kiro's docs say the CLI loads it, not checked live) |
 
 With `instructions = "block"` (the usual choice), only the text between
 `<!-- agents-router:share:start -->` and `<!-- agents-router:share:end -->`

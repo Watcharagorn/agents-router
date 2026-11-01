@@ -107,17 +107,26 @@ Per host details: [docs/hosts.md](docs/hosts.md).
 | | Claude Code | Codex CLI | Antigravity (Gemini) | Kiro CLI |
 |---|:-:|:-:|:-:|:-:|
 | **Main session (host)** | Plugin, relay agents in the agent list | Plugin, native relay agents | Plugin, native relay agents | — |
-| **Subagent** | ✓ `claude -p` | ✓ `codex exec` | ✓ `agy` | New, not run live yet |
+| **Subagent** | ✓ `claude -p` | ✓ `codex exec` | ✓ `agy` | ✓ `kiro-cli chat --no-interactive` ([checked live](docs/kiro.md#checked-live)) |
 | **Progress notes and questions to the parent** | ✓ | ✓ | With an account cap of 1 (`max_jobs_per_account = 1` under `[antigravity]`) | — |
+| **Follow-ups to a job** | ✓ | ✓ | ✓ | — |
 | **Extra accounts** | ✓ | ✓ | At your own risk | One account |
-| **Switches account at a usage limit** | ✓ | ✓ | ✓ | — |
+| **Switches account at a usage limit** | ✓ | ✓ | ✓ | — (one account) |
 | **Shares agents and skills** | ✓ | ✓ | ✓ | ✓ |
-| **Shares instructions** | ✓ | ✓ | ✓ | ✓ (not yet checked with the CLI) |
+| **Shares instructions** | ✓ | ✓ | ✓ | ✓ (Kiro's docs say the CLI loads it; not checked live) |
 | **Shares MCP servers** | ✓ | ✓ | ✓ | ✓ |
 | **Shares hooks** | ✓ | ✓ | ✓ | — |
 | **Shares plugins** | ✓ | ✓ | — | — |
 | **Guide** | [Claude Code](docs/claude-code.md) | [Codex](docs/codex.md) | [Gemini](docs/gemini.md) | [Kiro](docs/kiro.md) |
 
+- **Kiro's gaps, and why:**
+  - **Host:** agt has no Kiro plugin.
+  - **Parent channel:** agt writes nothing into `~/.kiro`, so a Kiro worker has no tools to message its main session.
+  - **Follow-ups:** Kiro's plain-text output carries no session id, so a follow-up doesn't reach a running Kiro job, and a finished one can't be continued.
+  - **Accounts:** Kiro keeps one login per machine.
+  - **Hooks:** agt doesn't read or write Kiro's hooks yet.
+  - **Plugins:** Kiro installs none.
+  - **Shell in `edit` jobs:** none yet; use `full` when a Kiro job must run commands ([Kiro](docs/kiro.md)).
 - **Any other MCP client:** host only, through `agt mcp` ([hosts](docs/hosts.md#any-other-mcp-client)).
 - **Cursor, Gemini CLI, Copilot, OpenCode and others:** not supported as subagents yet; as hosts they work through `agt mcp` ([CLI comparison](docs/research/cli-permissions-and-headless.md)).
 
@@ -183,7 +192,7 @@ sequenceDiagram
 | **At a usage limit** | Cools down; the job continues on the next account with its transcript | Cools down until the reported reset; the job starts again on the next account with the partial output | Cools down; the job starts again on the next account with the partial output |
 | **Turn switching off** | `failover = "off"` under `[claude]` | `failover = "off"` under `[codex]` | `failover = "off"` under `[antigravity]` |
 
-Switching applies to subagent jobs; your main session stays on its own account. A job pinned with `account` never switches.
+Switching applies to subagent jobs; your main session stays on its own account. A job pinned with `account` never switches. Kiro jobs run on your one Kiro login, so they never switch.
 
 ## How the shared setup works
 

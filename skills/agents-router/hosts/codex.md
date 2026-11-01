@@ -15,6 +15,9 @@ not register the agents; run setup too.
 | Codex | `agt-codex` |
 | Antigravity / Gemini | `agt-antigravity` |
 
+Kiro has no native relay agent here. Start Kiro jobs with `subagent_start` and
+`runtime: "kiro"`.
+
 Use the native `spawn_agent` tool with that `agent_type` and a self-contained
 task. For the default v1 tool schema, a Codex worker example is:
 

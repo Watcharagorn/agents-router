@@ -1,7 +1,8 @@
 """Kiro CLI as a worker: `kiro-cli chat --no-interactive`, prompt on stdin, answer on stdout.
 
-Built from Kiro's docs (kiro.dev/docs/cli/headless) and checked only against
-`tests/fake_kiro.py`; what isn't verified live is listed in docs/kiro.md.
+Built from Kiro's docs (kiro.dev/docs/cli/headless), tested against
+`tests/fake_kiro.py` and run live once (kiro-cli 2.37.0); docs/kiro.md lists
+what that run confirmed and what it didn't.
 
 - **One account.** Kiro keeps its login outside `~/.kiro` (in its own data
   store), so a second login can't be kept apart by folder: jobs run on your one
@@ -24,6 +25,8 @@ Built from Kiro's docs (kiro.dev/docs/cli/headless) and checked only against
 - **What a worker sees:** your real `~/.kiro`, so share's Kiro copies of your
   agents and skills are what it loads. agt writes nothing into `~/.kiro`, so a
   Kiro worker doesn't get the agt-parent tools or a Claude parent's MCP servers.
+- **No session id** in plain text, so a finished job can't be resumed and a
+  follow-up can't reach a running one (`can_continue` stays false).
 """
 
 from __future__ import annotations
