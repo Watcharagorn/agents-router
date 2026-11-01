@@ -97,7 +97,7 @@ Instruction files are off unless you turn them on: `agt share kinds add instruct
 | Claude Code | `CLAUDE.md` in each Claude folder |
 | Codex | `~/.codex/AGENTS.md` |
 | Antigravity | `~/.gemini/GEMINI.md` |
-| Kiro | `~/.kiro/steering/AGENTS.md` (Kiro's user steering; not yet checked with the CLI) |
+| Kiro | `~/.kiro/steering/AGENTS.md` (Kiro's global steering; Kiro's docs say the CLI loads it, not checked live) |
 
 Only one marked block of each file is shared, so the rest stays that CLI's own:
 

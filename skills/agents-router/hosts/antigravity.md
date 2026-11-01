@@ -64,4 +64,4 @@ Antigravity workers run on the signed-in account. Extra Google accounts are at t
 
 ## Mixing CLIs
 
-From Antigravity you can still start Claude Code and Codex subagents on the user's accounts (`runtime: "claude"` or `"codex"`). They get a note listing your GEMINI.md, AGENTS.md, rules and skill folders and read them first.
+From Antigravity you can still start Claude Code, Codex and Kiro subagents on the user's accounts (`runtime: "claude"`, `"codex"` or `"kiro"`). They get a note listing your GEMINI.md, AGENTS.md, rules and skill folders and read them first.

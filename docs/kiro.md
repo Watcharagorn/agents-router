@@ -50,9 +50,17 @@ Kiro prints plain text, so while a job runs, `agt status` and `agt follow` show 
 
 ## What a worker sees
 
-The worker uses your real `~/.kiro`: its agents, skills, steering and MCP servers. When [agt share](share.md) is on, that includes the Kiro copies of your other CLIs' agents and skills.
+The worker uses your real `~/.kiro`: its agents, skills, steering and MCP servers. When [agt share](share.md) is on, that includes the Kiro copies of your other CLIs' agents and skills. agt passes no `--agent`, so Kiro uses your default agent. Kiro's [steering docs](https://kiro.dev/docs/steering/) say Kiro loads the global steering in `~/.kiro/steering/`, where agt share puts the shared instruction block, but a custom agent loads steering only when its `resources` list it. If your default is a custom agent, list the steering files in its `resources` as those docs show.
 
 agt writes nothing into `~/.kiro` for a job, so a Kiro worker doesn't get the `agt-parent` tools (`message_parent`, `ask_parent`) or a Claude parent's MCP servers. It works from the task it was given.
+
+## No follow-ups yet
+
+Kiro prints plain text, so agt gets no session id from it. Without one:
+- **A finished Kiro job can't be continued:** `subagent_message`, `agt message` or a SendMessage to the `agt-kiro` relay fails with "job … has no session to continue".
+- **A follow-up sent while a Kiro job runs doesn't reach the worker:** Kiro has no tool to read it, and agt can't start a follow-up turn.
+
+Start a new job with the whole task instead. Kiro's `--output-format stream-json` would give agt a session id (see [Not checked yet](#not-checked-yet)).
 
 ## How a job ends
 
@@ -81,6 +89,7 @@ These come from Kiro's docs or are guesses, and a live run still has to confirm 
 - the exit code and wording of a usage limit;
 - the exact V3 tool ids `--trust-tools` takes (`read`, `glob`, `grep`, `web_search`, `web_fetch`, `write`);
 - `--output-format stream-json` events, which would give progress and a session id (agt reads plain text until then);
-- resuming a job with `--resume-id`, which needs the session id;
+- resuming a job with `--resume-id` once agt has that session id, which would make [follow-ups](#no-follow-ups-yet) work;
+- whether a headless run loads `~/.kiro/steering/AGENTS.md`, as Kiro's docs say;
 - whether a `PreToolUse` hook can carry agt's review gate in headless mode, which would give `edit` jobs a shell;
 - what Kiro's terms say about running `kiro-cli` from another agent with your own login.
