@@ -34,7 +34,8 @@ class ItemLineTests(unittest.TestCase):
 
     def test_v_adds_each_copy_s_file(self):
         lines = item_lines([outcome("agents", "dana", "codex"), outcome("agents", "dana", "kiro")], verbose=True)
-        self.assertEqual(lines, ["  + agents/dana   codex, kiro", "      codex  /x/codex/agents/dana", "      kiro   /x/kiro/agents/dana"])
+        self.assertEqual(lines, ["  + agents/dana   codex, kiro", f"      codex  {Path('/x/codex/agents/dana')}",
+                                 f"      kiro   {Path('/x/kiro/agents/dana')}"])
 
     def test_a_failed_write_is_red_with_its_error_and_when_agt_tries_again(self):
         lines = item_lines([outcome("agents", "dana", "codex"), outcome("agents", "rover", "kiro", ok=False, message="disk full"),

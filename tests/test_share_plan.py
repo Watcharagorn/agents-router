@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 import unittest
 
-from helpers import ShareHome
+from helpers import ShareHome, set_times
 
 from agents_router import cli
 
@@ -50,7 +50,7 @@ class MacCopy(ShareHome):
         self.kiro_agent("ops-reporter")
         old = time.time() - 60
         for path in self.root.rglob("*"):
-            os.utime(path, (old, old), follow_symlinks=False)
+            set_times(path, old)
         newer = time.time() - 30
         os.utime(lab / "skills" / "gamma-apikey" / "SKILL.md", (newer, newer))  # the lab copy is the newer one
 
