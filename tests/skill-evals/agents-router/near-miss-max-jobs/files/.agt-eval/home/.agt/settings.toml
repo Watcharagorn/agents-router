@@ -1,0 +1,13 @@
+max_jobs = 4
+
+[roles.decision-maker]
+providers = ["codex:work/gpt-6.1-sol:high"]
+
+[roles.reviewer]
+providers = ["codex:work/gpt-6.1-sol:high", "antigravity:primary"]
+
+[roles.builder]
+providers = ["claude:claude-work/opus", "codex:work/gpt-6.1-sol"]
+
+[roles.verifier]
+providers = ["claude:claude-personal/sonnet", "kiro:primary"]

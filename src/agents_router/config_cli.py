@@ -33,7 +33,7 @@ import sys
 import time
 from typing import Any
 
-from agents_router import config, fsutil, hosts, levels, plans, synclog, ui
+from agents_router import config, fsutil, hosts, levels, plans, settings_write, synclog, ui
 from agents_router.share import codex_toml, gitexclude, toolmap
 from agents_router.share import settings as share_settings
 
@@ -41,7 +41,12 @@ JOB = "the next job start (running jobs keep theirs)"
 SYNC = "the next sync (agt share sync)"
 AT_ONCE = "once (agt updates the watcher and its hook entries now)"
 TRIGGER_KEYS = ("share.watcher", "share.push_on_save", "share.codex_session")
-NEEDS_WORDS = 3
+NEEDS_WORDS = settings_write.NEEDS_WORDS
+_files = settings_write.files
+_backup = settings_write.backup
+_exclude_local = settings_write.exclude_local
+_agent = settings_write.agent
+_who = settings_write.who
 
 
 @dataclass(frozen=True)
@@ -241,13 +246,6 @@ def _looser(key: Key, old: Any, new: Any) -> bool:
 # Files ------------------------------------------------------------------------
 
 
-def _files(workspace: levels.Workspace | None) -> dict[str, Path]:
-    found = {"user": config.user_settings_path()}
-    if workspace is not None:
-        found.update(workspace=workspace.settings, local=workspace.local)
-    return found
-
-
 def _source(key: Key, layers: list[levels.Layer]) -> tuple[str, levels.Layer | None]:
     """Where the value in effect comes from: a level and its file, or the default (or an environment variable)."""
 
@@ -273,39 +271,6 @@ def _effective(layers: list[levels.Layer]) -> tuple[config.Config, share_setting
     return config.from_layers(layers), share
 
 
-def _backup(location: Path, level: str) -> Path | None:
-    if not location.exists():
-        return None
-    folder = config.state_dir() / "backups" / "settings"
-    fsutil.make_private_dir(folder)
-    target = folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{level}.toml"
-    shutil.copy2(location, target)
-    return target
-
-
-def _exclude_local(location: Path) -> str | None:
-    """Keep a new `.agt/settings.local.toml` out of git: one line in the repo's info/exclude."""
-
-    found = gitexclude.repo_of(location)
-    if not found:
-        return None
-    top, exclude = found
-    line = gitexclude.entry(top, location)
-    try:
-        text = exclude.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        text = ""
-    if not line or line in text.splitlines():
-        return None
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    body = text + ("" if not text or text.endswith("\n") else "\n") + "# agt: your own settings for this workspace\n" + line + "\n"
-    fsutil.write_preserving(exclude, body.encode("utf-8"), new=not exclude.exists())
-    return str(exclude)
-
-
-# Commands ---------------------------------------------------------------------
-
-
 def _key(name: str) -> Key:
     key = KEYS.get(name)
     if key is None:
@@ -316,20 +281,6 @@ def _key(name: str) -> Key:
         hint = f"; did you mean {' or '.join(close)}?" if close else "; `agt config show --all` lists them"
         raise ValueError(f"agt has no setting {name}{hint}")
     return key
-
-
-def _agent() -> bool:
-    return hosts.detect_host() != "unknown"
-
-
-def _who(words: str | None) -> dict[str, Any]:
-    if _agent():
-        return {"by": "agent", "host": hosts.detect_host(), "user_said": words}
-    try:
-        typed = sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        typed = False
-    return {"by": "terminal" if typed else "command", "user_said": words}
 
 
 def _level(args: argparse.Namespace, key: Key, workspace: levels.Workspace | None,
@@ -669,4 +620,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 def command(args: argparse.Namespace) -> int:
     if args.config_action == "show":
         return _show(args)
-    return _change(args, unset=args.config_action == "unset")
+    with settings_write.locked():  # re-read and write under one lock, so two writers never interleave
+        return _change(args, unset=args.config_action == "unset")

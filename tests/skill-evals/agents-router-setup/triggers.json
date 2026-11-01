@@ -1,0 +1,82 @@
+[
+  {
+    "query": "set up agt for me",
+    "should_trigger": true
+  },
+  {
+    "query": "install agents router, and use the roles it proposes",
+    "should_trigger": true
+  },
+  {
+    "query": "set up agt but skip the roles for now",
+    "should_trigger": true
+  },
+  {
+    "query": "agt: command not found",
+    "should_trigger": true
+  },
+  {
+    "query": "the agt-codex agent type is missing in this session, repair it",
+    "should_trigger": true
+  },
+  {
+    "query": "run work on my ~/.claude-work profile, it says this session runs in that profile",
+    "should_trigger": true
+  },
+  {
+    "query": "uninstall agents router completely",
+    "should_trigger": true
+  },
+  {
+    "query": "agt doctor says the plugin is missing from my claude-personal profile",
+    "should_trigger": true
+  },
+  {
+    "query": "update agt to the latest version",
+    "should_trigger": true
+  },
+  {
+    "query": "set up agt and give the builder role both claude-work opus and codex work",
+    "should_trigger": true
+  },
+  {
+    "query": "swap kiro for antigravity on the verifier role",
+    "should_trigger": false
+  },
+  {
+    "query": "rebalance my roles",
+    "should_trigger": false
+  },
+  {
+    "query": "redesign my whole role table",
+    "should_trigger": false
+  },
+  {
+    "query": "raise max_jobs to 6",
+    "should_trigger": false
+  },
+  {
+    "query": "review this diff with the reviewer role",
+    "should_trigger": false
+  },
+  {
+    "query": "install the GitHub CLI",
+    "should_trigger": false
+  },
+  {
+    "query": "set up a Python virtualenv for this repo",
+    "should_trigger": false
+  },
+  {
+    "query": "share my skills between Claude Code and Codex",
+    "should_trigger": false
+  },
+  {
+    "query": "add a security-reviewer custom role",
+    "should_trigger": false
+  },
+  {
+    "query": "set up my Claude Code status line",
+    "should_trigger": false
+  }
+]

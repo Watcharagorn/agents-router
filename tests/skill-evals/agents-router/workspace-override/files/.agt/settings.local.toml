@@ -1,0 +1,2 @@
+[roles.reviewer]
+providers = ["codex:work/gpt-6.1-sol:high"]

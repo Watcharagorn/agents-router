@@ -20,7 +20,7 @@ If you can't run commands, follow the copy below. It matches the version this sk
 
 # Set up Agents Router (steps for an agent)
 
-You are installing, updating, repairing or removing Agents Router (`agt`) for the person you work with. Do the routine steps yourself. Ask them once, in one message, about the choices. At the end, tell them only what's left for them: logins and reloads. This guide is for agt 0.10.0 or newer; `agt guide setup` prints the copy that matches the installed version.
+You are installing, updating, repairing or removing Agents Router (`agt`) for the person you work with. Do the routine steps yourself. Ask them once, in one message, about the choices. At the end, tell them only what's left for them: logins and reloads. This guide is for agt 0.11.0 or newer; `agt guide setup` prints the copy that matches the installed version.
 
 ## 0. Before you start
 
@@ -31,12 +31,12 @@ You are installing, updating, repairing or removing Agents Router (`agt`) for th
 ## 1. Install or upgrade
 
 ```bash
-agt --version   # agents-router 0.10.0 or newer: go to step 2
+agt --version   # agents-router 0.11.0 or newer: go to step 2
 uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
 # without uv: pipx install git+https://github.com/Watcharagorn/agents-router
 ```
 
-- **Older than 0.10.0:** run `agt update`, then `agt guide setup` again, because the steps may have changed.
+- **Older than 0.11.0:** run `agt update`, then `agt guide setup` again, because the steps may have changed.
 - **`agt` not on PATH after the install:** call it by its full path for the rest of setup (`~/.local/bin/agt`, or `%USERPROFILE%\.local\bin\agt.exe` on Windows). Then run `uv tool update-shell` (or `pipx ensurepath`) so new terminals find it. The plugin's hooks call `agt` by name, so the person's next sessions need it on PATH.
 - **Windows:** `agt update` prints the package command instead of running it; run that command yourself.
 - **Not on PyPI:** never `pip install agt`; that's a different project.
@@ -52,6 +52,7 @@ agt setup --dry-run --json
 | `plugin` | The plugin commands per CLI and profile (`planned`, `already`, `failed`) |
 | `claude_profiles` | Each Claude Code profile: `name`, `folder`, `this_session`, `gets_plugin` |
 | `share`, `repos`, `switches` | Sharing agents and skills between the CLIs, the repos with their own, and the on/off lines |
+| `roles` | The proposed role table (`table`: each role's providers, `use_when` and `why`), the `agt-<role>` agents it writes for this CLI (`planned`), `needs_order` and the four `answers` |
 | `needs_answer` | Items whose copies differ: the person picks one |
 | `still_needed` | What's left for the person after setup |
 | `command`, `next` | The command that applies this exact plan, and what to do before running it |
@@ -60,9 +61,10 @@ agt setup --dry-run --json
    - the Claude profiles that get the plugin, with their folders, marking this session's;
    - the share table (each item with its folders) and the excluded items;
    - the switches, on or off;
+   - the role table, one line per role with its providers (an edit role's in order), and that its `agt-<role>` agents are for this CLI only;
    - each `needs_answer` item.
 
-   Offer three answers: as proposed, change some, or the plugin only.
+   Offer these answers: **Approve** (as proposed), **Change a role** (or another item), **Skip roles**, or **Cancel**. If `roles.state` is `set`, the roles stay as they are and there is nothing to ask about them.
 2. **Put the answers in flags** and run the dry run again.
 3. **Run the new proposal's `command` exactly as given.** It ends in `--yes --if-plan <id>`, which refuses when anything changed since the dry run.
 
@@ -79,10 +81,16 @@ agt setup --dry-run --json
 | No Codex agents that get every tool | `--tool-widening skip` |
 | Delegation rules, Codex's session line | `--rules on`, `--codex-session-line on` |
 | The plugin only | `--share off` |
+| A role with other providers, or left out | `--role reviewer=codex,antigravity`, `--role verifier=off` |
+| No roles at all (Skip roles) | `--roles off`: no role settings and no role agents |
+| The order of an edit role's providers | `--role-order builder=<first>,<second>` |
 
 - Profiles already on this machine (`~/.claude`, `~/.claude-*`) need no `--account`. `--account NAME=FOLDER` is only for a logged-in folder somewhere else.
 - No question is needed for the install, the PATH fix or the dry run. Everything `command` does needs the person's answer first.
 - A command that exits 3 with `needs_choice` changed nothing. Ask its `ask` and run its `retry` with the answer.
+- **Builder with several providers.** When the person gives an edit role (the Builder) more than one provider, `roles.needs_order` asks which goes first: it runs on one provider at a time, in that order. Ask it, then add its `--role-order` flag. Read-only roles run all their providers at once, so they have no order.
+- Roles are changed later with `agt roles config`, never by editing `[roles.*]` by hand. Custom roles are added there too, not in setup.
+- **Role agents go to the CLI you run in.** agt can't tell Antigravity from a plain terminal, so an agent running in Antigravity adds `--host antigravity` to the dry run and to `agt update`. With `--host`, the role agents go to each CLI it names.
 
 ## 3. Claude profiles in practice
 
@@ -121,7 +129,7 @@ Give them a numbered list built from `still_needed`:
   - `claude`, then `/login`, inside the profile;
   - `codex login`;
   - the first `agy` sign-in.
-- **This session:** type `/reload-plugins` in Claude Code; in Codex or Antigravity, start a new session.
+- **This session:** type `/reload-plugins` in Claude Code; in Codex or Antigravity, start a new session. The same reload loads the `agt-<role>` agents.
 - **Every other Claude profile that got the plugin:** start a new session there.
 - **macOS:** if the Claude desktop app reports `agt: command not found` while a terminal finds it, the app doesn't see `~/.local/bin`. Run `uv tool update-shell`, then quit and reopen the app.
 
@@ -139,6 +147,8 @@ Run `agt doctor`.
 | `agt: command not found` | `ls ~/.local/bin/agt` | Full path for now; `uv tool update-shell` (or `pipx ensurepath`), then a new terminal |
 | No `agt-*` agents or agents-router tools in a session | `agt doctor`; `agt setup --dry-run --json` lists that profile | `agt setup --claude-profiles <profile>`, then `/reload-plugins` or a new session there |
 | `agt doctor`: a profile has an older plugin | Its line names the profile | `agt update`, then reload that profile |
+| No `agt-<role>` agents (`agt-reviewer` and so on) | `agt roles` shows the roles; a role that is off has no agent | Run `agt update` from inside that CLI (in Antigravity, `agt update --host antigravity`): it writes them for that CLI, and for a Claude profile added later |
+| A role agent isn't agt's | `agt update` says it kept the file (no `Managed by agt roles` line) | It's the person's own; agt never overwrites or deletes it. Rename it if they want agt's back |
 | Refused: "this session runs in …" | `agt accounts` | Name another profile, or use a built-in subagent |
 | Refused: "No other Claude profile can take this job" | `agt accounts` | Use a built-in subagent, Codex or Gemini; or `agt accounts add <name>` for a second login |
 | Outcome `auth`, or "not logged in" | `agt accounts` | The person logs in: `agt accounts login <name>`, or `/login` in that profile |
@@ -171,7 +181,8 @@ Ask first, then work in this order. Only setting it up again undoes it.
    - run `codex plugin remove agents-router@agents-router`, then `codex plugin marketplace remove agents-router`;
    - delete `~/.codex/agents/agt-claude.toml`, `agt-codex.toml` and `agt-antigravity.toml`;
    - keep any `*.agents-router-backup-*` files: they are the person's own earlier versions.
-5. **Antigravity:** remove the agents-router plugin with `agy plugin` (`agy plugin list` shows it), and delete `~/.gemini/config/plugins/agents-router-relays`.
+5. **Antigravity:** remove the agents-router plugin with `agy plugin` (`agy plugin list` shows it), and delete `~/.gemini/config/plugins/agents-router-relays` (agt's role agents go with it).
+   **Role agents elsewhere:** delete each `agt-<role>.md` in a Claude profile's `agents/` folder and each `agt-<role>.toml` in `~/.codex/agents/` whose first lines say `Managed by agt roles` (`grep -l "Managed by agt roles" ~/.claude*/agents/agt-*.md ~/.codex/agents/agt-*.toml` lists them). Keep any without that line: they are the person's own.
 6. **MCP servers added by hand:** `claude mcp remove --scope user agents-router` and `codex mcp remove agents-router`.
 7. **The package:** `uv tool uninstall agents-router` (or `pipx uninstall agents-router`).
 8. **agt's own folders,** after asking:

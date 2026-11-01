@@ -75,6 +75,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--only", action="append", default=[], metavar="ITEM=LABEL[,LABEL]")
     parser.add_argument("--auto-copy", help="on, off or a list of kinds.")
     parser.add_argument("--tool-widening", choices=("allow-if-shell", "skip"))
+    parser.add_argument("--roles", choices=("on", "off"), default="on",
+                        help="Set up roles: the proposed role table and its agt-<role> agents (on by default).")
+    parser.add_argument("--role", action="append", default=[], metavar="ROLE=PROVIDER[,PROVIDER]|ROLE=off",
+                        help="Change one role in the proposed table, or leave it out.")
+    parser.add_argument("--role-order", action="append", default=[], metavar="ROLE=FIRST,SECOND",
+                        help="An edit role's providers in the order agt tries them (the answer to setup's order question).")
 
 
 def _share_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -104,8 +110,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     config = load_config()
     code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=True, claude_route=args.claude_route,
-                                   claude_profiles=args.claude_profiles or "all")
+                                   claude_profiles=args.claude_profiles or "all", role_agents=False)
     screen: dict[str, Any] = {"setup": report, "setup_code": code}
+    roles = setup.plan_roles(config, args.roles, args.role, args.role_order)
+    roles_report = setup.Report(dry_run=True)
+    setup.apply_roles(roles, roles_report, setup.selected_folders(report), setup.named_hosts(args.host))
+    screen.update(roles=roles, roles_report=roles_report, hosts=args.host)
     # The plan id covers the Claude profiles and their real folders too, so --if-plan refuses a changed set,
     # and where the plugin comes from (AGT_PLUGIN_SOURCE), which the settings route writes without a command.
     from agents_router.profiles import canonical
@@ -113,7 +123,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     profiles = [[str(canonical(item["folder"])), item["selected"]] for item in report.claude]
     source = setup.plugin_source()
     if args.share == "off":
-        content: dict[str, Any] = {"share": "off", "setup": sorted(report.done), "claude": profiles, "source": source}
+        content: dict[str, Any] = {"share": "off", "setup": sorted(report.done), "claude": profiles, "source": source,
+                                   "roles": roles.digest()}
         screen["digest"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
         return screen
     saved = settings.load()
@@ -124,7 +135,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     repos = share._project_choice(sargs, saved)
     screen.update(saved=saved, sargs=sargs, plan=plan, repos=repos, switches=_switches(args, saved, plan))
     content = {"share": plan.digest, "repos": sorted(str(root) for root in repos), "switches": screen["switches"],
-               "setup": sorted(report.done), "claude": profiles, "source": source}
+               "setup": sorted(report.done), "claude": profiles, "source": source, "roles": roles.digest()}
     screen["digest"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()[:12]
     return screen
 
@@ -156,6 +167,7 @@ def command_line(args: argparse.Namespace, screen: dict[str, Any]) -> str:
         for flag, values in (("--resolve", args.resolve), ("--skip", args.skip), ("--only", args.only)):
             for value in values:
                 parts += [flag, value]
+    parts += screen["roles"].flags()
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -175,11 +187,12 @@ def short_command(args: argparse.Namespace, screen: dict[str, Any]) -> str:
              ("--share", "off" if args.share == "off" else None), ("--rules", args.rules),
              ("--codex-session-line", args.codex_session_line), ("--worktrees", args.worktrees), ("--mcp", args.mcp),
              ("--plugins", args.plugins), ("--projects", args.projects), ("--auto-copy", args.auto_copy),
-             ("--tool-widening", args.tool_widening))
+             ("--tool-widening", args.tool_widening), ("--roles", "off" if args.roles == "off" else None))
     for flag, value in given:
         if value is not None:
             parts += [flag, value]
-    for flag, values in (("--resolve", args.resolve), ("--skip", args.skip), ("--only", args.only)):
+    for flag, values in (("--resolve", args.resolve), ("--skip", args.skip), ("--only", args.only),
+                         ("--role", args.role), ("--role-order", args.role_order)):
         for value in values:
             parts += [flag, value]
     return " ".join(shlex.quote(part) for part in parts)
@@ -220,13 +233,54 @@ def proposal(args: argparse.Namespace, screen: dict[str, Any]) -> dict[str, Any]
     if report.claude:
         data["claude_profiles"] = [{"name": item["name"], "folder": item["folder"], "this_session": item["this"],
                                     "gets_plugin": item["selected"]} for item in report.claude]
+    data["roles"] = roles_proposal(screen)
     data.update(still_needed=report.todo, command=command_line(args, screen), next=NEXT)
     return data
 
 
-NEXT = ("Ask the user once, in one message: the share table, the switches and the Claude profiles that get the plugin "
-        "(claude_profiles, with their folders). Apply their answer by changing the flags and running --dry-run --json "
-        "again, then run `command` exactly as given. Never run it before they answer.")
+def roles_proposal(screen: dict[str, Any]) -> dict[str, Any]:
+    """The role part of the proposal: the table, why, the agents it writes and any order to ask."""
+
+    from agents_router import hosts, roles
+
+    plan, report = screen["roles"], screen["roles_report"]
+    named = setup.named_hosts(screen["hosts"])
+    agents_for = (", ".join(hosts.HOST_LABELS[host] for host in named) if named
+                  else hosts.HOST_LABELS.get(hosts.detect_host(), "no CLI (a terminal): no role agents"))
+    data: dict[str, Any] = {"state": plan.state, "means": ROLE_STATES[plan.state], "agents_for": agents_for}
+    if plan.state == "propose":
+        data["table"] = {name: {"access": roles.BASE_ROLES[name], "providers": table["providers"],
+                                "use_when": roles.BASE_DESCRIPTIONS[name], "why": plan.reasons.get(name, "")}
+                         for name, table in plan.table.items()}
+        data["left_out"] = plan.off
+    data["planned"] = report.done
+    if report.notes:
+        data["notes"] = report.notes
+    data["needs_order"] = plan.needs_order
+    data["answers"] = ROLE_ANSWERS
+    return data
+
+
+ROLE_STATES = {
+    "propose": "a role table to write to your user settings, with one agt-<role> agent per role for this CLI",
+    "set": "roles are already set up: kept as they are; only the agt-<role> agents follow them",
+    "off": "roles skipped: no role settings and no role agents are written",
+    "none": "no CLI with an account to propose roles from; `agt roles propose` can later",
+}
+ROLE_ANSWERS = {
+    "Approve": "run `command`",
+    "Change a role": "--role ROLE=PROVIDER[,PROVIDER] (or ROLE=off); an edit role with several providers: "
+                     "ask their order, then --role-order ROLE=FIRST,SECOND",
+    "Skip roles": "--roles off",
+    "Cancel": "run nothing",
+}
+
+
+NEXT = ("Ask the user once, in one message: the share table, the switches, the Claude profiles that get the plugin "
+        "(claude_profiles, with their folders) and the role table (roles.table), with the answers Approve, Change a role, "
+        "Skip roles or Cancel. Ask each roles.needs_order question before the command runs. Apply their answer by "
+        "changing the flags and running --dry-run --json again, then run `command` exactly as given. Never run it "
+        "before they answer.")
 
 
 def _and(names: list[str]) -> str:
@@ -242,6 +296,7 @@ def render(args: argparse.Namespace, screen: dict[str, Any], *, dry_run: bool = 
     if rows:
         lines += ["", ui.bold("Plugin"), *ui.columns(rows, gap=2)]
     lines += profile_lines(report)
+    lines += role_lines(screen)
     if "plan" not in screen:
         return lines
     plan = screen["plan"]
@@ -280,6 +335,31 @@ def render(args: argparse.Namespace, screen: dict[str, Any], *, dry_run: bool = 
     return lines
 
 
+def role_lines(screen: dict[str, Any]) -> list[ui.Line]:
+    """The role table setup proposes (or why there's none), and the role agents it writes."""
+
+    from agents_router import roles
+
+    plan, report = screen["roles"], screen["roles_report"]
+    if plan.state != "propose":
+        return ["", [ui.bold("Roles"), "  ", ui.muted(ROLE_STATES[plan.state])]]
+    rows = []
+    for name, table in plan.table.items():
+        providers = table["providers"]
+        if roles.BASE_ROLES[name] == "edit" and len(providers) > 1:
+            shown = "   ".join(f"{n} {item}" for n, item in enumerate(providers, 1))
+        else:
+            shown = "  +  ".join(providers)
+        rows.append([name, shown, ui.muted(plan.reasons.get(name, ""))])
+    lines: list[ui.Line] = ["", ui.bold("Roles"), *ui.columns(rows, indent=2, gap=2)]
+    agents = setup.report_rows([line for line in report.done if not line.startswith("Roles: ")], ui.ok("+"))
+    if agents:
+        lines += ui.columns(agents, gap=2)
+    lines.append(["  ", ui.muted("Change one with "), ui.code("--role ROLE=PROVIDER[,PROVIDER]"), ui.muted("; skip roles with "),
+                  ui.code("--roles off"), ui.muted(".")])
+    return lines
+
+
 def profile_lines(report: setup.Report) -> list[ui.Line]:
     """Your Claude Code profiles, one line each, ticked when they get the plugin. Only when there's more than one."""
 
@@ -296,10 +376,12 @@ def apply(args: argparse.Namespace, screen: dict[str, Any]) -> int:
 
     config = load_config()
     code, report = setup.run_setup(config, args.host or ["auto"], args.account, dry_run=False, claude_route=args.claude_route,
-                                   claude_profiles=args.claude_profiles or "all")
+                                   claude_profiles=args.claude_profiles or "all", role_agents=False)
     todo, report.todo = report.todo, []
     ui.out(*setup.report_lines(report, todo=False, footer=False))
+    folders = setup.selected_folders(report)
     if "plan" not in screen:
+        code = max(code, _apply_roles(screen, folders, todo))
         _finish(todo)
         return code
     switches, saved = screen["switches"], screen["saved"]
@@ -315,8 +397,25 @@ def apply(args: argparse.Namespace, screen: dict[str, Any]) -> int:
             path, _ = rules.target_path(target)
             if path.parent.is_dir():
                 print(rules.update_file(path, rules.render(_rules_args(target))))
+    roles_code = _apply_roles(screen, folders, todo)
     _finish(todo)
-    return max(code, share_code)
+    return max(code, share_code, roles_code)
+
+
+def _apply_roles(screen: dict[str, Any], folders: list[Any], todo: list[str]) -> int:
+    """Setup's role step, last before what's left for you: the table, then this CLI's role agents."""
+
+    report = setup.Report()
+    setup.apply_roles(screen["roles"], report, folders, setup.named_hosts(screen["hosts"]))
+    rows = setup.report_rows(report.done, ui.ok("+")) + setup.report_rows(report.failed, ui.Span("error-mark", "✗"))
+    lines: list[ui.Line] = ["", *ui.columns(rows, gap=2)] if rows else []
+    lines += [["  ", *ui.inline(ui.tilde(note))] for note in report.notes]
+    if lines:
+        ui.out(*lines)
+    for item in report.todo:
+        if item not in todo:
+            todo.append(item)
+    return 1 if report.failed else 0
 
 
 def _ready_target(config: Any, found: list[str]) -> tuple[str, str, str] | None:
@@ -370,8 +469,11 @@ def _rules_args(target: str) -> argparse.Namespace:
 
 
 def edit(args: argparse.Namespace, screen: dict[str, Any]) -> None:
-    """`p` on the screen: the share lists, then the repos, then the lines."""
+    """`p` on the screen: the roles, then the share lists, the repos and the lines."""
 
+    _edit_roles(args, screen)
+    if "plan" not in screen:
+        return
     share._enable_lists(screen["sargs"], screen["saved"], screen["plan"])
     if screen["repos"]:
         repos = picker.ListState("Which repos share their own agents and skills?",
@@ -394,6 +496,28 @@ def edit(args: argparse.Namespace, screen: dict[str, Any]) -> None:
     args.resolve, args.skip, args.only = screen["sargs"].resolve, screen["sargs"].skip, screen["sargs"].only
 
 
+def _edit_roles(args: argparse.Namespace, screen: dict[str, Any]) -> None:
+    """Which proposed roles to set up: an unticked role is left out, none ticked skips roles. Providers change
+    later with `agt roles config`."""
+
+    plan = screen["roles"]
+    if plan.state != "propose":
+        return
+    names = list(plan.table)
+    state = picker.ListState("Which roles should setup add? (providers change later with agt roles config)",
+                             [picker.Choice(name, f"{name}  {', '.join(plan.table[name]['providers'])}", True)
+                              for name in names], verbs=("added", "left out"), enter="next", leave="skip")
+    if picker.choose(state) == picker.QUIT:
+        return
+    checked = state.checked()
+    if not checked:
+        args.roles = "off"
+        return
+    # Keep changes to the roles still in, and roles left out before (no longer listed here).
+    args.role = [value for value in args.role if value.partition("=")[0] in checked or value.partition("=")[0] not in names]
+    args.role += [f"{name}=off" for name in names if name not in checked]
+
+
 def run(args: argparse.Namespace) -> int:
     """`agt setup`: the screen in a terminal, the proposal with --dry-run --json, the plan with --yes."""
 
@@ -414,6 +538,8 @@ def run(args: argparse.Namespace) -> int:
         plan = screen.get("plan")
         if plan is not None and plan.conflicts:  # asked before anything is written, the plugin included
             return share._needs_choice(plan, command_line(args, screen), args.json)
+        if screen["roles"].needs_order:
+            return _needs_order(args, screen)
         return apply(args, screen)
     if not share._interactive():
         return -1  # the plain, non-interactive setup
@@ -431,6 +557,14 @@ def run(args: argparse.Namespace) -> int:
                     return 0
                 args.resolve.append(f"{item.name}={choice}")
             continue
+        if screen["roles"].needs_order:
+            for ask in screen["roles"].needs_order:
+                order = _ask_order(ask)
+                if order is None:
+                    print("Nothing was written.")
+                    return 0
+                args.role_order.append(f"{ask['role']}={','.join(order)}")
+            continue
         ui.out(*render(args, screen))
         try:
             answer = input("\nApply all of it? Enter yes · p change it · q quit: ").strip().lower()
@@ -439,11 +573,54 @@ def run(args: argparse.Namespace) -> int:
         if answer == "q":
             print("Nothing was written.")
             return 0
-        if answer == "p" and plan is not None:
+        if answer == "p":
             edit(args, screen)
             continue
         if not answer:
             return apply(args, screen)
+
+
+def _needs_order(args: argparse.Namespace, screen: dict[str, Any]) -> int:
+    """An edit role was given several providers: nothing is written until the person says which goes first."""
+
+    asks = screen["roles"].needs_order
+    retry = " ".join(shlex.quote(part) for part in ["agt", "setup", "--dry-run", *_given_flags(args),
+                                                     *(["--json"] if args.json else [])])
+    if args.json:
+        print(json.dumps({"error": "needs_choice", "ask": [ask["ask"] for ask in asks], "choices": asks,
+                          "retry": retry + " " + " ".join(ask["flag"] for ask in asks)}, indent=2, ensure_ascii=False))
+        return 3
+    lines: list[ui.Line] = [[ui.bold("agt setup"), "  ", ui.warn("! nothing written: a role needs its order")]]
+    for ask in asks:
+        lines += ["", f"  {ask['ask']}", "  Add the order to the command, first provider first:",
+                  ["    ", ui.cmd(ask["flag"])]]
+    ui.out(*lines)
+    return 3
+
+
+def _given_flags(args: argparse.Namespace) -> list[str]:
+    """The flags the person gave, for a retry command (short_command without the plan id)."""
+
+    return shlex.split(short_command(args, {}))[3:]
+
+
+def _ask_order(ask: dict[str, Any]) -> list[str] | None:
+    """In a terminal: which provider of an edit role goes first. None quits."""
+
+    providers = ask["providers"]
+    print("\n" + ask["ask"])
+    for n, item in enumerate(providers, 1):
+        print(f"  {n}. {item}")
+    while True:
+        try:
+            answer = input("First provider (number), or q to quit: ").strip().lower()
+        except EOFError:
+            return None
+        if answer == "q":
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(providers):
+            first = providers[int(answer) - 1]
+            return [first, *(item for item in providers if item != first)]
 
 
 def scopes_note() -> str:

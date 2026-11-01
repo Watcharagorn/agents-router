@@ -788,3 +788,280 @@ def follow(job_id: str, start: int | None = None, max_wait: float = DEFAULT_MAX_
     """Print a job's events from byte `start` until it ends, asks a question, or `max_wait` passes."""
 
     return Follower(job_id, start, max_wait, out, window).run()
+
+
+# Following a role call's group ------------------------------------------------------
+#
+# `agt run --follow --role` and `agt follow g-…` follow every job of one role call at
+# once. The header and the end marker name the group; worker lines carry the member's
+# number (`| [2] says: …`). A group has one event offset per member, so `--from N`
+# names cursor N, which the group record keeps (jobs.save_cursor); the relay's
+# "OFFSET is decimal digits" rule still holds. A question comes from one member: its
+# QUESTION marker names that job, and `agt message <group or that job> --reply-to …` answers it.
+
+
+class MemberFollower(Follower):
+    """One member of a group: its lines are tagged and its control lines go out under the group's frame."""
+
+    def __init__(self, group: "GroupFollower", number: int, provider: str, job_id: str, start: int | None) -> None:
+        super().__init__(job_id, start, group.max_wait, group.out, group.window)
+        self.group = group
+        self.number = number
+        self.provider = provider
+        self.token = group.token
+        self.ended = False
+
+    @property
+    def tag(self) -> str:
+        return f"[{self.number}]"
+
+    def emit_worker(self, *texts: str) -> None:
+        for text in texts:
+            self.emit(*(f"{WORKER_PREFIX}{self.tag} {line.translate(_DISPLAY_ESCAPES)}" for line in text.split("\n")))
+
+    def control(self, text: str) -> None:
+        self.group.control(f"{self.tag} {text}")
+
+    def end(self) -> None:
+        """Print the member's last events and its own one-line outcome (the result waits for the group's end)."""
+
+        self.read_events(final=True)
+        lines = self.describer.flush() + self.attempt_lines()
+        if lines:
+            self.emit_worker(*lines)
+        self.review_lines()
+        self.worker_messages(done=True)
+        self.control(self.outcome_line())
+        self.ended = True
+
+    def outcome_line(self) -> str:
+        status = self.status
+        if status.get("outcome") == SUCCESS:
+            account = status.get("account") or self.announced or "-"
+            return (f"DONE · {self.provider} · {duration(self.elapsed())} · "
+                    f"{plural(self.describer.tool_calls, 'tool call')} · account {account}")
+        return f"FAILED · {self.provider} · {_failure(status)}"
+
+
+def _failure(status: dict[str, Any]) -> str:
+    """A failed job's outcome and first message line; a message that only repeats the outcome (cancelled) once."""
+
+    outcome = status.get("outcome") or "error"
+    message = first_line(status.get("message") or "", 300)
+    return f"{outcome} · {message}" if message and message != outcome else outcome
+
+
+class GroupFollower:
+    def __init__(self, group_id: str, start: int | None, max_wait: float, out: TextIO | None = None,
+                 window: int | None = None) -> None:
+        if window is not None and (type(window) is not int or window < 1):
+            raise ValueError("--window must be a positive integer")
+        self.group_id = group_id
+        self.record = jobs.read_group(group_id)
+        self.start = start
+        cursor = jobs.load_cursor(group_id, start) if start is not None else {}
+        offsets = cursor.get("offsets") or {}
+        ended = set(cursor.get("ended") or [])
+        self.max_wait = max(0.0, float(max_wait))
+        self.window = window
+        if window is not None:
+            self.max_wait = min(self.max_wait, window)
+        self.out = out
+        self.token = secrets.token_hex(16)  # never stored in worker-readable files
+        self.members: list[MemberFollower] = []
+        for number, item in enumerate(self.record.get("jobs") or [], 1):
+            job_id = str(item["job_id"])
+            begin = None if start is None else int(offsets.get(job_id, 0))
+            member = MemberFollower(self, number, str(item.get("provider") or ""), job_id, begin)
+            member.ended = job_id in ended
+            self.members.append(member)
+
+    # Output
+
+    def emit(self, *lines: str) -> None:
+        stream = self.out or sys.stdout
+        for line in lines:
+            stream.write(line + "\n")
+        stream.flush()
+
+    def emit_worker(self, *texts: str) -> None:
+        for text in texts:
+            self.emit(*(WORKER_PREFIX + line.translate(_DISPLAY_ESCAPES) for line in text.split("\n")))
+
+    def control(self, text: str) -> None:
+        text = " ".join(text.split()).translate(_DISPLAY_ESCAPES)
+        self.emit(f"[agt] {text} · job {self.group_id} · token {self.token}")
+
+    def command(self, text: str) -> str:
+        return f"{text} # agt-token {self.token}"
+
+    @property
+    def role(self) -> str:
+        return str(self.record.get("role") or "?")
+
+    @property
+    def edit(self) -> bool:
+        return self.record.get("access") == "edit"
+
+    def header(self) -> None:
+        count = len(self.members)
+        self.control(f"Agents Router · role {self.role} · {self.record.get('access')} · "
+                     f"{plural(count, 'job')} (group {self.group_id})")
+        if self.start is not None:
+            return  # a continuation: the call's own lines were printed already
+        total = int(self.record.get("providers") or count)
+        skipped = self.record.get("skipped") or []
+        if self.edit:
+            for item in skipped:
+                self.control(f"role {self.role} · skipped provider {item['position']} {item['provider']} — {item['reason']}")
+            for member, item in zip(self.members, self.record.get("jobs") or []):
+                self.control(f"role {self.role} · edit · provider {item.get('position', 1)} of {total}: "
+                             f"{member.provider} · {member.tag} is job {member.job_id}")
+        else:
+            available = f"{count} of {total} providers available" if skipped else f"{plural(count, 'job')} in parallel"
+            self.control(f"role {self.role} · read · {available}")
+            for member in self.members:
+                self.control(f"{member.tag} {member.provider} is job {member.job_id}")
+            for item in skipped:
+                self.control(f"skipped {item['provider']} — {item['reason']}")
+        if any(item.get("quota") for item in skipped):
+            self.control(f'hint: to move role {self.role} off a provider that keeps running out, ask your agent to '
+                         '"rebalance my roles" (orchestrator-rebalance)')
+
+    # Ends
+
+    def elapsed(self) -> float:
+        ends = [member.status.get("finished_at") for member in self.members]
+        end = max((float(value) for value in ends if value), default=time.time()) if all(ends) else time.time()
+        return max(0.0, end - float(self.record.get("created_at") or end))
+
+    def cursor(self) -> int:
+        return jobs.save_cursor(self.group_id, {
+            "offsets": {member.job_id: member.resume_offset() for member in self.members},
+            "ended": [member.job_id for member in self.members if member.ended],
+        })
+
+    def follow_command(self) -> str:
+        command = f"agt follow {self.group_id} --from {self.cursor()}"
+        return command + (f" --window {self.window}" if self.window is not None else "")
+
+    def still_running(self) -> int:
+        self.emit("Keep watching with:", self.command(self.follow_command()))
+        states = ", ".join(f"{member.tag} {member.status.get('state')}" for member in self.members)
+        self.control(f"STILL RUNNING after {duration(self.elapsed())} · {states}")
+        return 0
+
+    def question(self, member: MemberFollower, record: dict[str, Any]) -> int:
+        question_id = str(record["id"])
+        if not re.fullmatch(r"[0-9a-f]{8}", question_id):
+            self.emit(RESULT_RULE)
+            self.emit_worker("Cannot relay a worker question with an invalid id.", str(record.get("text") or ""))
+            self.emit(RESULT_END_RULE)
+            self.control("FAILED · invalid worker question id")
+            return 1
+        self.emit(QUESTION_RULE)
+        self.emit_worker(str(record.get("text") or ""))  # untagged, as for one job
+        self.emit(
+            QUESTION_END_RULE,
+            "Answer with:",
+            # The group id routes the answer to the job that asked, so a relay keeps using the id it saved.
+            self.command(f"agt message {self.group_id} --reply-to {question_id} -"),
+            "(the answer text goes on stdin)",
+            "Then keep watching with:",
+            self.command(self.follow_command()),
+        )
+        self.control(f"QUESTION from job {member.job_id} ({member.tag} {member.provider}) (id {question_id})")
+        return 0
+
+    def finish(self) -> int:
+        text, succeeded = group_result(self.record, claim=True)
+        self.emit(RESULT_RULE)
+        self.emit_worker(text)
+        self.emit(RESULT_END_RULE)
+        total = len(self.members)
+        if not total:
+            self.control(f"FAILED · {self.record.get('failure') or 'no provider could run'}")
+            return 1
+        if succeeded:
+            if self.edit:
+                member = self.members[0]
+                self.control(f"DONE · success · {duration(self.elapsed())} · "
+                             f"{plural(member.describer.tool_calls, 'tool call')} · account "
+                             f"{member.status.get('account') or member.announced or '-'}")
+            else:
+                self.control(f"DONE · {succeeded} of {total} succeeded · {duration(self.elapsed())}")
+            return 0
+        failed = ", ".join(f"{member.tag} {member.provider} {member.status.get('outcome') or 'error'}"
+                           for member in self.members)
+        self.control(f"FAILED · every {self.role} job failed: {failed}")
+        return 1
+
+    # Main loop
+
+    def run(self) -> int:
+        for member in self.members:
+            member.status = jobs.read_status(member.job_id)
+        self.header()
+        for member in self.members:
+            member.catch_up()
+        deadline = time.monotonic() + self.max_wait
+        while True:
+            running = False
+            for member in self.members:
+                member.status = jobs.read_status(member.job_id)
+                if member.status.get("state") not in jobs.ACTIVE_STATES:
+                    if not member.ended:
+                        member.end()
+                    continue
+                running = True
+                if member.status.get("state") == "queued" and member.status.get("message") and not member.queued_shown:
+                    member.queued_shown = True
+                    member.emit_worker(f"queued: {member.status['message']}")
+                member.read_events(final=False)
+                member.review_lines()
+                question = member.worker_messages(done=False)
+                if question is not None:
+                    return self.question(member, question)
+            if not running:
+                return self.finish()
+            if time.monotonic() >= deadline:
+                return self.still_running()
+            time.sleep(min(POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+
+
+def group_result(record: dict[str, Any], claim: bool = False) -> tuple[str, int]:
+    """The text a role call returns, and how many of its jobs succeeded.
+
+    An edit role returns its one job's result as it is. A read role returns one
+    `## <provider>` section per provider, unmerged: FAILED for a job that failed,
+    SKIPPED (with the reason) for a provider that never started.
+    """
+
+    sections: list[str] = []
+    succeeded = 0
+    members = record.get("jobs") or []
+    for item in members:
+        job_id = str(item["job_id"])
+        result = jobs.read_result(job_id, 10_000_000)
+        if claim and result.get("state") not in jobs.ACTIVE_STATES:
+            jobs.claim_delivery(job_id)
+        body = str(result.get("result") or "").strip("\n")
+        provider = str(item.get("provider") or job_id)
+        if result.get("outcome") == SUCCESS:
+            succeeded += 1
+            heading = f"## {provider}"
+        else:
+            heading = f"## {provider} · FAILED · {_failure(result)}"
+        if record.get("access") == "edit" and len(members) == 1:
+            return body, succeeded
+        sections.append(heading + ("\n" + body if body else ""))
+    for item in record.get("skipped") or []:
+        sections.append(f"## {item['provider']} · SKIPPED · {item['reason']}")
+    return "\n\n".join(sections), succeeded
+
+
+def follow_group(group_id: str, start: int | None = None, max_wait: float = DEFAULT_MAX_WAIT,
+                 out: TextIO | None = None, window: int | None = None) -> int:
+    """Follow every job of a role call until all end, one asks a question, or `max_wait` passes."""
+
+    return GroupFollower(group_id, start, max_wait, out, window).run()

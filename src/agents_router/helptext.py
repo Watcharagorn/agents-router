@@ -50,6 +50,7 @@ ROOT = {
         ("Accounts and settings", [
             ("accounts", "List, add, log in, sync, reset or remove accounts"),
             ("config", "See and change agt's settings (show, set, unset)"),
+            ("roles", "See and change roles: which providers each role uses (show, propose, config)"),
             ("rules", "Show, install or remove the optional delegation rules"),
             ("log", "What agt changed and why, newest first"),
         ]),

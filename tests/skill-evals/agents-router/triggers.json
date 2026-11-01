@@ -1,0 +1,82 @@
+[
+  {
+    "query": "swap kiro for antigravity on the verifier role",
+    "should_trigger": true
+  },
+  {
+    "query": "can you make the reviewer use gpt-6.1-mini instead of sol? it's burning my codex quota",
+    "should_trigger": true
+  },
+  {
+    "query": "turn off the builder role, I've written my own agt-builder agent",
+    "should_trigger": true
+  },
+  {
+    "query": "add a security-reviewer role that runs on codex work and claude-work opus, read only",
+    "should_trigger": true
+  },
+  {
+    "query": "put codex first on the builder so claude-work only gets used as backup",
+    "should_trigger": true
+  },
+  {
+    "query": "I've finished refactoring the auth module across four files, get an independent review before we merge",
+    "should_trigger": true
+  },
+  {
+    "query": "have the builder role implement the pagination change we just planned, then verify it",
+    "should_trigger": true
+  },
+  {
+    "query": "the two reviewers disagree about whether the token check in login.py is a bug, sort it out",
+    "should_trigger": true
+  },
+  {
+    "query": "raise max_jobs to 6 in agt",
+    "should_trigger": true
+  },
+  {
+    "query": "hand this flaky-test investigation to codex in the background while we keep working on the docs",
+    "should_trigger": true
+  },
+  {
+    "query": "rebalance my roles, claude-work is almost out of quota",
+    "should_trigger": false
+  },
+  {
+    "query": "set up my roles from scratch, I've added a second codex account since setup",
+    "should_trigger": false
+  },
+  {
+    "query": "install agents router on this machine",
+    "should_trigger": false
+  },
+  {
+    "query": "agt isn't found after I upgraded python, fix it",
+    "should_trigger": false
+  },
+  {
+    "query": "write a GitHub Actions workflow that runs our reviewer checklist on every PR",
+    "should_trigger": false
+  },
+  {
+    "query": "what does the Reviewer role in our team's code review process doc say about approvals?",
+    "should_trigger": false
+  },
+  {
+    "query": "change the default model in my Claude Code settings.json to opus",
+    "should_trigger": false
+  },
+  {
+    "query": "rename the builder variable in build.py to factory",
+    "should_trigger": false
+  },
+  {
+    "query": "explain the difference between a Codex profile and a Claude Code profile in general",
+    "should_trigger": false
+  },
+  {
+    "query": "edit my ~/.codex/config.toml to set the reasoning effort to high",
+    "should_trigger": false
+  }
+]

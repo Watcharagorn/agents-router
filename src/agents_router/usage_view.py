@@ -83,12 +83,28 @@ def reset_text(resets_at: float, now: float) -> str:
     return f"{when} (in {hours} h {minutes} min)" if hours else f"{when} (in {minutes} min)"
 
 
-def _account_text(runtime: RuntimeConfig, account: Any, record: dict[str, Any], now: float) -> str | None:
-    cooling = accounts.cooldown_until(record, now)
+NO_USAGE = ("antigravity", "kiro")  # these CLIs print no usage figures; only their cooldowns are known
+UNKNOWN = "unknown (no usage data)"
+
+
+def account_quota(runtime: str, account: Any, record: dict[str, Any] | None, now: float) -> dict[str, Any]:
+    """What is known of one account's quota, and the words agt shows for it (the one wording source).
+
+    `left_percent` is the share left in the busiest open window, `resets_at` when that window resets, and
+    `observed_at` when the figure was read; all None when unknown. `text` starts with the account's name, e.g.
+    "claude-work 8% left (5h, resets 14:20, as of 40 min ago)" or "primary unknown (no usage data)"."""
+
+    record = record or {}
     tag = " fallback" if account.fallback else ""
-    if cooling:
-        return f"{account.name}{tag} at its limit until {time.strftime('%H:%M', time.localtime(cooling))}"
-    open_windows = {
+    observed = record.get("observed_at") or record.get("updated")
+    found: dict[str, Any] = {"runtime": runtime, "account": account.name, "known": False, "left_percent": None,
+                             "window": None, "resets_at": None,
+                             "observed_at": float(observed) if isinstance(observed, (int, float)) else None,
+                             "cooling_until": accounts.cooldown_until(record, now)}
+    if found["cooling_until"]:
+        until = time.strftime("%H:%M", time.localtime(found["cooling_until"]))
+        return {**found, "known": True, "text": f"{account.name}{tag} at its limit until {until}"}
+    open_windows = {} if runtime in NO_USAGE else {
         name: window
         for name, window in (record.get("windows") or {}).items()
         if isinstance(window, dict)
@@ -96,17 +112,27 @@ def _account_text(runtime: RuntimeConfig, account: Any, record: dict[str, Any], 
         and not (isinstance(window.get("resets_at"), (int, float)) and window["resets_at"] <= now)
     }
     if not open_windows or utilization(record, now) is None:
-        return f"{account.name} fallback" if account.fallback else None
+        return {**found, "text": f"{account.name}{tag} {UNKNOWN}"}
     name, window = max(open_windows.items(), key=lambda item: item[1]["utilization"])
     left = max(0, round((1 - float(window["utilization"])) * 100))
+    resets = window.get("resets_at") if isinstance(window.get("resets_at"), (int, float)) else None
     detail = [WINDOW_LABELS.get(name, name)]
-    resets = window.get("resets_at")
-    if isinstance(resets, (int, float)):
+    if resets is not None:
         detail.append(f"resets {time.strftime('%H:%M', time.localtime(resets))}")
     age = _age(record, now)
     if age > STALE_AFTER_SECONDS:
         detail.append(f"as of {_hours(age)} ago")
-    return f"{account.name}{tag} {left}% left ({', '.join(detail)})"
+    return {**found, "known": True, "left_percent": left, "window": name, "resets_at": float(resets) if resets else None,
+            "text": f"{account.name}{tag} {left}% left ({', '.join(detail)})"}
+
+
+def _account_text(runtime: RuntimeConfig, account: Any, record: dict[str, Any], now: float) -> str | None:
+    """The room line's words for an account; None when nothing is known (the line then counts accounts)."""
+
+    quota = account_quota(runtime.runtime, account, record, now)
+    if quota["known"]:
+        return quota["text"]
+    return f"{account.name} fallback" if account.fallback else None
 
 
 def room_line(config: Config, runtimes: list[str] | None = None, now: float | None = None) -> str:

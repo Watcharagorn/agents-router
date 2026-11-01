@@ -1,0 +1,8 @@
+[roles.reviewer]
+providers = ["claude:claude-work/sonnet"]
+
+[roles.builder]
+providers = ["claude:claude-work/opus"]
+
+[roles.verifier]
+providers = ["kiro:primary"]

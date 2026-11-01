@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: near-miss-max-jobs
+expected_outcome: |
+  This is an agt setting, not a role: the agent runs agt config set max_jobs 6 with --user-said carrying the user's words, and runs no agt roles command that changes anything.
+context:
+  scaffold_script: place-files.sh

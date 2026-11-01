@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: setup-skip-roles
+expected_outcome: |
+  The agent sets agt up with the Skip roles choice from the dry run, so neither [roles.*] settings nor role agents are written, and tells the user they can add roles later (say "set up my roles" or use orchestrator-setup).
+context:
+  scaffold_script: place-files.sh

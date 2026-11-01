@@ -1,6 +1,6 @@
 ---
 name: agents-router
-description: How to run subagents through Agents Router (the agt-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity, Kiro). Also use it to share agents and skills between the user's CLIs (agt share), change agt's settings (agt config), or explain what agt changed (agt log). Skip it for trivial answers and tiny edits.
+description: How to run subagents through Agents Router (the agt-* agent types in Claude Code; subagent_start, subagent_wait, subagent_result, subagent_message elsewhere). Use it like your built-in subagent tool whenever work can be delegated, run in parallel, reviewed independently, or moved to another of the user's accounts or another agent CLI (Claude Code, Codex, Antigravity, Kiro). Use it for roles too, to call the Reviewer, Builder, Verifier or Decision Maker (agt-reviewer and the other agt-<role> agents) unprompted and to make one change to a role when asked (swap or add a provider, a model or effort, a role on or off, a custom role) with agt roles config. Also use it to share agents and skills between CLIs (agt share), change settings such as max_jobs (agt config), or explain what agt changed (agt log). Not for redesigning the whole role table (orchestrator-setup), "rebalance my roles" (orchestrator-rebalance) or installing agt (agents-router-setup). Skip it for trivial answers and tiny edits.
 ---
 
 # Agents Router
@@ -89,6 +89,31 @@ Use agt's own commands for these, with `--json`. A command that needs a choice i
 - `agt share status --json` lists what waits in `attention`: each entry has `who` (`choice`: the user decides; `action`: the user fixes something by hand; `agent`: you can run the fix) and `fix`, the commands that settle it. Offer the fix.
 - Settings: `agt config show --json` lists every setting in effect with its source; `agt config set <key> <value>` and `agt config unset <key>` change one. Raising a limit or loosening safety needs `--user-said "<the user's own words>"`: pass the words from the user's request, without asking "are you sure". Without a request from the user for it, don't make that change. Never edit a limit or safety key in a settings file by hand. After a change, tell the user which file it went to (`file` in the result).
 - To explain what agt changed and why, read `agt log --json` (`--all`, `--item <name>`, `--key <key>`, `--since 7d`).
+
+## Roles
+
+A role is a named job (Reviewer, Builder, Verifier, Decision Maker, or one the user added) with its own providers in `[roles.<name>]`. Call a role through its agent type, `agt-<role>` (`agt-reviewer`, `agt-builder` and so on); agt picks the provider from the role's settings and the quota left. A read role runs every provider at once and returns one section per provider, unmerged. An edit role runs on one provider, the first in its order that has room. Start role agents like the relay agents above: in the background, with a complete task, description `<role> · <access> · <task in a few words>`. Where no `agt-<role>` agent exists (Kiro, a host without role agents, roles skipped at setup), keep using the relay agents.
+
+When to call each one, without being asked:
+
+| Role | Call it |
+|---|---|
+| Reviewer | Before you call non-trivial work done: a change across files, a fix to a bug, a design. Give it the diff or the files and what the change should do |
+| Builder | For edits you hand off instead of making yourself |
+| Verifier | After the Builder finishes, to run the checks and confirm the result |
+| Decision Maker | Only when reviewers or providers disagree. Send just the points in conflict, each side's argument, and nothing they agree on |
+| A custom role | When the task matches its description (`agt roles show --json` lists them) |
+
+You stay in charge: compare the sections yourself, decide what to fix, and read the diff before you rely on a Builder's work. A role that is off exits 2 with the file and the command that turns it back on; tell the user, don't turn it on yourself. A run that skips a provider for quota prints a hint; pass it on, and offer `orchestrator-rebalance` if the user wants the table changed.
+
+Changing roles for the user:
+- Only through `agt roles config` flags. Never open a settings file to edit `[roles.*]` by hand. The flags: `<role> --only|--add|--remove <providers>`, `<role> --order <providers>` (edit roles only), `--set-model|--set-effort <entry>=<value>` (every role that uses the entry), `--enable|--disable <roles>`, `<new-role> --access read|edit --only <providers>` with `--prompt FILE` or `--delete` for custom roles, `<role> --unset <key>` (removes a key from that file's table), `--user|--workspace|--local` for the level. A provider is `<runtime>:<account>[/<model>][:<effort>]`; `codex:work` and `antigravity` are fine.
+- An explicit request ("swap kiro for antigravity on the verifier"): run the command with `--dry-run --json`, then the same flags without `--dry-run`. Don't ask "are you sure" unless the dry run does more than the user asked.
+- A vague request ("use cheaper models for review"): read `agt roles show --json`, turn it into one concrete change, dry-run it, show the user what would change, and ask once. Write nothing before the answer.
+- Adding a provider to an edit role, `--order` bringing in a new entry, a custom role with edit access, and `--enable`/`--disable` need `--user-said "<the user's own words>"`. Pass the words from the request up front. If agt still exits 3 (`needs_user_words` with `ask` and `retry`), ask the user and run `retry` with their answer. Without a request from the user, don't make that change.
+- When agt exits 2 over a bad hand edit in `[roles.*]`, repeat agt's line to the user as it printed it (the file, line and key) and offer the command after its `fix:` exactly, such as `agt roles config builder --unset access --user`; don't word a format or a fix of your own. Run it once the user agrees; unsetting `enabled` turns a role on, so it needs `--user-said`. `<providers>` in a fix is for the user to choose. For a TOML syntax error, which has no fix command, show the user the line agt names so they can correct it. Never patch the file yourself.
+- After a change, report from agt's result: the file it changed and its level, `overridden_by` when another level wins here (what is in effect and the command for that level), and the undo command. A change hidden by an override isn't done for this workspace; say so.
+- "Rebalance my roles" or "move roles off the account that's running out" is `orchestrator-rebalance`. Redesigning the whole table, or "set up my roles", is `orchestrator-setup`. Limits such as "raise max_jobs to 6" are `agt config set` under the rule above, not roles.
 
 ## Per host
 

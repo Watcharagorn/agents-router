@@ -27,6 +27,7 @@ Which docs move with which change:
 | Profiles or accounts | `docs/claude-code.md`, `docs/configuration.md`, the setup guide |
 | Sharing | `docs/share.md` |
 | Delegation behavior | `skills/agents-router/SKILL.md`, `commands/delegate.md`, `agents/agt-*.md` |
+| Roles: the agents-router Roles section, setup's role step, `skills/orchestrator-*` | The cases in `tests/skill-evals/<skill>/` and its `triggers.json`; the skill gate in [references/release.md](references/release.md) |
 
 ## 3. Test
 
@@ -76,10 +77,11 @@ agt-sandbox <command>          # one command inside the sandbox; alone, a sandbo
 Steps and exact commands: [references/release.md](references/release.md).
 
 In short:
-1. Run the full suite and raise the version.
-2. Commit with the subject `Agents Router X.Y.Z: <what changed for the person>`.
-3. Push the branch and open a pull request.
-4. After the merge, run `agt update` and tell the person to `/reload-plugins`.
+1. Run the full suite. When the Roles section of agents-router, setup's role step or orchestrator-rebalance changed, the graded skill cases in `tests/skill-evals/` must pass too: real model runs on the person's quota, so only with their OK. The benchmark and trigger tuning only advise.
+2. Raise the version.
+3. Commit with the subject `Agents Router X.Y.Z: <what changed for the person>`.
+4. Push the branch and open a pull request.
+5. After the merge, run `agt update` and tell the person to `/reload-plugins`.
 
 Commit or push only when the person asks.
 

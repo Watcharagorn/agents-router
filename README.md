@@ -91,6 +91,7 @@ Per host details: [docs/hosts.md](docs/hosts.md).
 | I want to | Do this | Guide |
 |---|---|---|
 | Hand a task to Codex | Ask your session: "have Codex review this branch" | [Codex](docs/codex.md) |
+| Give roles their providers | `agt roles config` | [Roles](docs/roles.md) |
 | Run a subagent from a terminal | `agt run --runtime codex --access read "Review the diff on this branch"` | [Hosts](docs/hosts.md) |
 | Delegate from Claude Code | `/agents-router:delegate <task>` | [Claude Code](docs/claude-code.md) |
 | See what sharing would do | `agt share enable --dry-run` | [Sharing](docs/share.md#turning-it-on) |
@@ -305,6 +306,7 @@ See [prior art](docs/research/prior-art.md) and [how other projects share setups
 | [Codex](docs/codex.md), [Gemini](docs/gemini.md) and [Kiro](docs/kiro.md) | The other subagent CLIs |
 | [Sharing agents and skills](docs/share.md) | `agt share`: agents, skills, instructions, MCP servers, hooks and plugins across Claude Code, Codex, Antigravity and Kiro |
 | [Configuration](docs/configuration.md) | Settings files per workspace, `agt config`, limits, the log, files, environment |
+| [Roles](docs/roles.md) | Reviewer, Builder and your own roles: which providers each uses, `agt roles config`, role agents |
 | [Delegation rules](docs/delegation.md) | Optional model tiers, work folders and helper limits |
 | [Design](docs/design.md) | Architecture, decisions and what was verified |
 | [Research](docs/README.md#design-and-research) | CLI comparison, prior art, multi-account tools, provider terms |

@@ -665,6 +665,138 @@ class ProfileEdgeTests(ProfileBase):
         self.assertTrue(json.loads((self.ntb / "settings.json").read_text(encoding="utf-8"))["enabledPlugins"])
 
 
+class RoleHostTests(SetupBase):
+    """An explicit --host reaches the role step: Antigravity can't be told apart from a plain terminal."""
+
+    def test_host_antigravity_from_a_terminal_writes_its_role_agents(self):
+        os.environ.pop("CLAUDECODE", None)
+        code, out = self.run_cli("--host", "antigravity", "--share", "off", "--dry-run", "--json")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["roles"]["agents_for"], "Antigravity CLI")
+        code, out = self.run_cli("--host", "antigravity", "--share", "off", "--yes")
+        self.assertEqual(code, 0, out)
+        agents = self.agy_dir / "config" / "plugins" / "agents-router-relays" / "agents"
+        self.assertTrue((agents / "agt-reviewer.md").exists(), out)
+        self.assertIn("Managed by agt roles", (agents / "agt-builder.md").read_text(encoding="utf-8"))
+        self.assertFalse((self.claude_dir / "agents").exists(), "only the CLI named")
+        self.assertFalse((self.codex_dir / "agents" / "agt-reviewer.toml").exists())
+        # update --host antigravity keeps them in line too
+        (self.root / "agt" / "settings.toml").write_text(
+            (self.root / "agt" / "settings.toml").read_text(encoding="utf-8").replace(
+                "[roles.verifier]", "[roles.verifier]\nenabled = false"), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            cli.main(["update", "--no-package", "--host", "antigravity"])
+        self.assertFalse((agents / "agt-verifier.md").exists())
+
+
+class RoleSetupTests(ProfileBase):
+    """Roles in setup's one question: approve, skip, the Builder's order, and a profile added later (S1-S1c)."""
+
+    def settings_text(self):
+        path = self.root / "agt" / "settings.toml"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def role_agents(self, folder):
+        return sorted(path.name for path in (folder / "agents").glob("agt-*.md")) if (folder / "agents").is_dir() else []
+
+    def test_S1_approve_writes_table_and_agents(self):
+        proposal = self.proposal()
+        roles = proposal["roles"]
+        self.assertEqual(roles["state"], "propose")
+        self.assertEqual(roles["agents_for"], "Claude Code")
+        self.assertEqual(list(roles["table"]), ["decision-maker", "reviewer", "builder", "verifier"])
+        self.assertEqual(set(roles["answers"]), {"Approve", "Change a role", "Skip roles", "Cancel"})
+        self.assertEqual(roles["needs_order"], [])
+        self.assertIn("would install role agent agt-reviewer", " ".join(roles["planned"]))
+        self.assertIn("role table", proposal["next"])
+        self.assertIn("--role-order builder=", proposal["command"])  # the approved table, as flags
+        self.assertEqual(self.role_agents(self.ntb), [], "a dry run wrote something")
+        self.assertNotIn("[roles.", self.settings_text())
+        code, out = self.run_cli(*proposal["command"].split()[2:])
+        self.assertEqual(code, 0, out)
+        self.assertIn("Roles: wrote [roles.decision-maker] [roles.reviewer] [roles.builder] [roles.verifier]", out)
+        self.assertIn("role agents agt-decision-maker, agt-reviewer, agt-builder, agt-verifier", out)
+        self.assertIn("[roles.builder]", self.settings_text())
+        loaded = load_config()
+        self.assertEqual([str(p) for p in loaded.roles["builder"].providers], roles["table"]["builder"]["providers"])
+        expected = ["agt-builder.md", "agt-decision-maker.md", "agt-reviewer.md", "agt-verifier.md"]
+        for folder in (self.ntb, self.default, self.personal):  # every profile that got the plugin
+            self.assertEqual(self.role_agents(folder), expected, folder)
+        self.assertEqual(self.role_agents(self.old), [])
+        self.assertFalse((self.codex_dir / "agents" / "agt-builder.toml").exists(), "only this orchestrator")
+        # Setup again: the roles stay as they are, and nobody is asked again.
+        again = self.proposal()
+        self.assertEqual(again["roles"]["state"], "set")
+        self.assertNotIn("--role", again["command"])
+
+    def test_S1a_skip_roles_writes_nothing(self):
+        proposal = self.proposal("--roles", "off")
+        self.assertEqual(proposal["roles"]["state"], "off")
+        self.assertIn("--roles off", proposal["command"])
+        code, out = self.run_cli(*proposal["command"].split()[2:])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("[roles.", self.settings_text())
+        for folder in (self.ntb, self.default, self.personal):
+            self.assertEqual(self.role_agents(folder), [])
+        self.assertNotIn("Roles:", out)
+
+    def test_S1b_two_builders_asks_order(self):
+        proposal = self.proposal("--role", "builder=codex,antigravity")
+        asks = proposal["roles"]["needs_order"]
+        self.assertEqual([ask["role"] for ask in asks], ["builder"])
+        self.assertTrue(asks[0]["ask"].startswith("Which Builder provider goes first?"))
+        self.assertEqual(asks[0]["options"], ["codex first", "antigravity first"])
+        code, out = self.run_cli(*proposal["command"].split()[2:], "--json")
+        self.assertEqual(code, 3, out)
+        refused = json.loads(out)
+        self.assertEqual(refused["error"], "needs_choice")
+        self.assertIn("--role-order builder=codex,antigravity", refused["retry"])
+        self.assertNotIn("[roles.", self.settings_text())
+        self.assertEqual(self.installs(), [], "nothing is written before the order is known, the plugin included")
+        answered = self.proposal("--role", "builder=codex,antigravity", "--role-order", "builder=antigravity,codex")
+        self.assertEqual(answered["roles"]["needs_order"], [])
+        self.assertEqual(answered["roles"]["table"]["builder"]["providers"], ["antigravity", "codex"])
+        code, out = self.run_cli(*answered["command"].split()[2:])
+        self.assertEqual(code, 0, out)
+        self.assertEqual([str(p) for p in load_config().roles["builder"].providers], ["antigravity", "codex"])
+
+    def test_change_a_role_and_leave_one_out(self):
+        proposal = self.proposal("--role", "reviewer=codex", "--role", "verifier=off")
+        table = proposal["roles"]["table"]
+        self.assertEqual(table["reviewer"]["providers"], ["codex"])
+        self.assertNotIn("verifier", table)
+        self.assertIn("--role verifier=off", proposal["command"])
+        with redirect_stderr(io.StringIO()) as err:
+            code, _ = self.run_cli("--host", "claude", "--share", "off", "--dry-run", "--role", "planner=codex")
+        self.assertEqual(code, 2)
+        self.assertIn("agt roles config", err.getvalue())
+
+    def test_the_plan_id_covers_the_role_table(self):
+        proposal = self.proposal()
+        changed = [*proposal["command"].split()[2:], "--role", "reviewer=codex"]
+        code, out = self.run_cli(*changed)
+        self.assertEqual(code, 1, out)
+        self.assertIn("the plan changed", out)
+        self.assertNotIn("[roles.", self.settings_text())
+        self.assertEqual(self.role_agents(self.ntb), [])
+
+    def test_S1c_new_profile_gets_role_agents(self):
+        proposal = self.proposal()
+        self.run_cli(*proposal["command"].split()[2:])
+        new = self.profile(".claude-new", OTHER)
+        (new / "plugins").mkdir()
+        (new / "plugins" / "installed_plugins.json").write_text(json.dumps(
+            {"version": 2, "plugins": {"agents-router@agents-router": [{"scope": "user", "version": "1.0.0"}]}}),
+            encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["update", "--no-package", "--host", "claude"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(self.role_agents(new),
+                         ["agt-builder.md", "agt-decision-maker.md", "agt-reviewer.md", "agt-verifier.md"])
+        self.assertIn("role agents agt-decision-maker", out.getvalue())
+
+
 @unittest.skipIf(os.name == "nt", "launchd and the passwd database are macOS and Unix only")
 @unittest.skipUnless(hasattr(os, "getuid"), "the account's own home folder comes from pwd, which Windows lacks")
 class SandboxGuardTests(unittest.TestCase):

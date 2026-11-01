@@ -11,6 +11,12 @@ One folder per job under `~/.agents-router/jobs/<job_id>/`:
     notify.pending the result waits for delivery; renamed to notify.claimed
                    by whoever delivers it first (hook, subagent_wait, subagent_result)
     notify.lock    held while either marker changes
+
+A role call (`agt run --role`) starts one ordinary job per provider and ties them
+together with a group id `g-<hex>`: each member's status.json carries `group`, and
+`~/.agents-router/state/groups/<group>.json` keeps the role, the members in provider
+order, the providers skipped with their reasons, and the cursors `agt follow <group>
+--from N` continues at.
 """
 
 from __future__ import annotations
@@ -47,6 +53,8 @@ JOB_ID_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz-")
 NOTIFY_PENDING = "notify.pending"
 NOTIFY_CLAIMED = "notify.claimed"
 NOTIFY_LOCK = "notify.lock"
+GROUP_PREFIX = "g-"
+MAX_CURSORS = 50
 
 
 def job_dir(job_id: str) -> Path:
@@ -57,6 +65,64 @@ def job_dir(job_id: str) -> Path:
 
 def new_job_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
+
+
+def is_group(job_id: str) -> bool:
+    return isinstance(job_id, str) and job_id.startswith(GROUP_PREFIX)
+
+
+def new_group_id() -> str:
+    return GROUP_PREFIX + secrets.token_hex(4)
+
+
+def group_path(group_id: str) -> Path:
+    if not is_group(group_id) or set(group_id) - JOB_ID_CHARS or len(group_id) > 64:
+        raise ValueError(f"invalid group id: {group_id!r}")
+    return state_dir() / "groups" / f"{group_id}.json"
+
+
+def write_group(record: dict[str, Any]) -> None:
+    path = group_path(record["group"])
+    make_private_dir(path.parent)
+    write_json(path, record)
+
+
+def read_group(group_id: str) -> dict[str, Any]:
+    record = read_json(group_path(group_id))
+    if not isinstance(record, dict):
+        raise ValueError(f"unknown group: {group_id}")
+    return record
+
+
+def group_members(group_id: str) -> list[str]:
+    return [str(item["job_id"]) for item in read_group(group_id).get("jobs") or []]
+
+
+def save_cursor(group_id: str, state: dict[str, Any]) -> int:
+    """Store where a group follow stopped; return the number `--from` names it by (1, 2, ...)."""
+
+    path = group_path(group_id)
+    with file_lock(path.with_suffix(".lock")):
+        record = read_group(group_id)
+        cursors = record.get("cursors") or {}
+        number = max((int(key) for key in cursors), default=0) + 1
+        cursors[str(number)] = state
+        for key in sorted(cursors, key=int)[:-MAX_CURSORS]:
+            del cursors[key]
+        record["cursors"] = cursors
+        write_json(path, record)
+    return number
+
+
+def load_cursor(group_id: str, number: int) -> dict[str, Any]:
+    """A saved cursor; 0 is the start of every member's events."""
+
+    if number == 0:
+        return {}
+    cursor = (read_group(group_id).get("cursors") or {}).get(str(number))
+    if not isinstance(cursor, dict):
+        raise ValueError(f"group {group_id} has no follow position {number}; follow it again without --from")
+    return cursor
 
 
 def create_job(**kwargs: Any) -> dict[str, Any]:
@@ -88,6 +154,7 @@ def _create_job(
     resume_job: str | None = None,
     host: str | None = None,
     start: bool = True,
+    group: str | None = None,
 ) -> dict[str, Any]:
     limits.validate_override(override)
     workspace = levels.find_workspace(cwd)
@@ -197,6 +264,8 @@ def _create_job(
         # The runner rewrites "warnings"; this key survives, and summarize() shows it with them.
         "limit_notes": list(admission.warnings) if admission else [],
     }
+    if group:
+        status["group"] = group
     write_json(folder / "status.json", status)
     if start:
         try:
@@ -378,6 +447,22 @@ def cancel(job_id: str) -> dict[str, Any]:
     return update_status(job_id, state="done", outcome=CANCELLED, message="cancelled", finished_at=time.time())
 
 
+def cancel_group(group_id: str) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    """Stop every job of a role call. Returns (member, status before, status after) per member.
+
+    Every runner is asked first, so their waits overlap instead of adding up.
+    """
+
+    members = read_group(group_id).get("jobs") or []
+    before = {}
+    for item in members:
+        status = read_status(item["job_id"])
+        before[item["job_id"]] = status
+        if status.get("state") in ACTIVE_STATES:
+            write_text(job_dir(item["job_id"]) / "cancel", str(time.time()))
+    return [(item, before[item["job_id"]], cancel(item["job_id"])) for item in members]
+
+
 def _statuses() -> Iterator[dict[str, Any]]:
     folder = jobs_dir()
     if not folder.is_dir():
@@ -429,7 +514,8 @@ def list_jobs(limit: int = 20, workspace: levels.Workspace | None = None, sessio
             break
         if keep(status) and started_from(str(status.get("job_id") or ""), session):
             jobs.append(
-                {key: status.get(key) for key in ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd", "override")}
+                {key: status.get(key) for key in
+                 ("job_id", "runtime", "state", "outcome", "account", "created_at", "cwd", "override", "group")}
             )
     return jobs
 
@@ -462,4 +548,11 @@ def clean_old_jobs(days: int) -> int:
         if float(status.get("updated_at") or path.stat().st_mtime) < cutoff:
             shutil.rmtree(path, ignore_errors=True)
             removed += 1
+    groups = state_dir() / "groups"
+    for path in groups.glob("g-*.*") if groups.is_dir() else []:
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
     return removed

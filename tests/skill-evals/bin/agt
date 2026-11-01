@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""`agt` for skill-eval runs: agt from this clone, inside the case's `.agt-eval/` sandbox only.
+
+Put this folder first on PATH when running the evals (see .claude/skills/agt-maintainer/references/release.md).
+It finds `.agt-eval/` at or above the current folder (make_sandbox.py builds it in each case's workspace),
+drops the variables of the session running it, sets the sandbox's HOME, AGT_HOME, CLAUDE_CONFIG_DIR,
+CODEX_HOME and fake CLIs for agt alone, and runs agt's copied code. With no sandbox it refuses (exit 2),
+so it can never reach the real ~/.agt, ~/.claude* or ~/.codex.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import sys
+
+DROPPED_PREFIXES = ("CLAUDE", "CODEX_", "AGY_", "AGT_", "KIRO_", "ANTHROPIC_", "OPENAI_", "FAKE_")
+AGENT_MARKERS = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
+AGENT_MARKER_PREFIXES = ("CODEX_THREAD", "CODEX_SANDBOX")
+DROPPED = {"AGY_CMD", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "PYTHONPATH", "PYTHONHOME"}
+
+
+def sandbox() -> Path | None:
+    folder = Path.cwd().resolve()
+    for candidate in (folder, *folder.parents):
+        if (candidate / ".agt-eval" / "env.json").is_file():
+            return candidate / ".agt-eval"
+    return None
+
+
+def main() -> int:
+    root = sandbox()
+    if root is None:
+        sys.stderr.write(f"agt (skill eval): no .agt-eval/ sandbox at or above {Path.cwd()}; "
+                         "this agt runs only inside a skill-eval case workspace.\n")
+        return 2
+    spec = json.loads((root / "env.json").read_text(encoding="utf-8"))
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(DROPPED_PREFIXES) and key not in DROPPED}
+    # Keep the markers that tell agt an agent calls it (hosts.detect_host), so the --user-said gate
+    # (exit 3) works in the evals. They carry no paths; CLAUDE_CONFIG_DIR, CODEX_HOME and the rest stay dropped.
+    env.update({key: value for key, value in os.environ.items()
+                if key in AGENT_MARKERS or key.startswith(AGENT_MARKER_PREFIXES)})
+    env.update(spec["env"])
+    env["PYTHONPATH"] = spec["src"]
+    python = spec["python"]
+    os.execve(python, [python, "-c", "import sys; from agents_router.entry import main; sys.exit(main())", *sys.argv[1:]], env)
+    return 1  # not reached
+
+
+if __name__ == "__main__":
+    sys.exit(main())
