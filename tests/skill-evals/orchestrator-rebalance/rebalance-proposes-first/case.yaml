@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: rebalance-proposes-first
+expected_outcome: |
+  The agent runs agt roles propose --rebalance --json, shows each proposed move with its reason (or says nothing needs to move, with the quota it saw), and asks once before applying. Nothing changes before the user approves.
+context:
+  scaffold_script: place-files.sh

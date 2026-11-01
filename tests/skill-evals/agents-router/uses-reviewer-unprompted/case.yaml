@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: uses-reviewer-unprompted
+expected_outcome: |
+  The agent fixes both functions and adds tests, then, without being asked, calls the agt-reviewer agent with the change before telling the user the work is done, and takes its findings into account.
+context:
+  scaffold_script: place-files.sh

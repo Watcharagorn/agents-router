@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: setup-builder-two-providers
+expected_outcome: |
+  The Builder edits files, so with two providers it needs an order. The agent runs the setup dry run with the builder change and asks the user which provider goes first; it runs no setup command that writes before the answer.
+context:
+  scaffold_script: place-files.sh

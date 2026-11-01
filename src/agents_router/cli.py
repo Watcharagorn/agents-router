@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any
 
-from agents_router import __version__, accounts, config_cli, helptext, jobs, levels, plans, rules, setup, sync, synclog, tools, ui
+from agents_router import __version__, accounts, config_cli, roles_cli, helptext, jobs, levels, plans, rules, setup, sync, synclog, tools, ui
 from agents_router.config import NAME_RE, Account, homes_dir, load_config, save_accounts, user_settings_path
 from agents_router.hosts import HOST_LABELS
 from agents_router.fsutil import make_private_dir
@@ -29,8 +29,9 @@ def _print(value: Any) -> None:
 
 def _job_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("prompt", help="The task. Use '-' to read it from stdin.")
-    parser.add_argument("--runtime", default="claude", choices=RUNTIMES)
+    parser.add_argument("--runtime", default=None, choices=RUNTIMES, help="Default: claude (not with --role).")
     parser.add_argument("--account")
+    parser.add_argument("--role", help="Run as a role from [roles.<name>]: agt picks the providers (not with --runtime or --account).")
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--model")
     parser.add_argument("--effort")
@@ -50,7 +51,7 @@ def _job_arguments(parser: argparse.ArgumentParser) -> None:
 def _start(args: argparse.Namespace) -> dict[str, Any]:
     prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
     return jobs.create_job(
-        runtime=args.runtime,
+        runtime=args.runtime or "claude",
         prompt=prompt,
         cwd=str(Path(args.cwd).resolve()),
         account=args.account,
@@ -529,6 +530,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if args.role:
+        from agents_router import role_run
+
+        return role_run.run(args)
     status = _start(args)
     if args.follow:
         from agents_router.follow import follow
@@ -588,11 +593,30 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
 
 def cmd_follow(args: argparse.Namespace) -> int:
-    from agents_router.follow import follow
+    from agents_router.follow import follow, follow_group
 
     if args.from_offset is not None and args.from_offset < 0:
         raise ValueError("--from must be 0 or more")
+    if jobs.is_group(args.job_id):  # a role call: every job of it; --from names a saved position
+        return follow_group(args.job_id, args.from_offset, args.max_wait, window=args.window)
     return follow(args.job_id, args.from_offset, args.max_wait, window=args.window)
+
+
+def _group_target(group_id: str, reply_to: str | None) -> str:
+    """The job of a role call that a message goes to: the one that asked `reply_to`, or the call's only job."""
+
+    from agents_router import messages
+
+    members = jobs.group_members(group_id)
+    if reply_to:
+        for job_id in members:
+            if any(str(record.get("id")) == reply_to for record in messages.outbox(job_id)):
+                return job_id
+        raise ValueError(f"no job in group {group_id} asked question {reply_to}")
+    if len(members) == 1:
+        return members[0]
+    listed = ", ".join(members) or "none"
+    raise ValueError(f"group {group_id} has {len(members)} jobs; send the message to one of them: {listed}")
 
 
 def cmd_message(args: argparse.Namespace) -> int:
@@ -601,13 +625,17 @@ def cmd_message(args: argparse.Namespace) -> int:
             raise ValueError("--from requires --follow")
         if args.from_offset < 0:
             raise ValueError("--from must be 0 or more")
+    group = args.job_id if jobs.is_group(args.job_id) else None
+    target = _group_target(group, args.reply_to) if group else args.job_id
     text = sys.stdin.read() if args.text == "-" else args.text
-    result = tools.call("subagent_message", {"job_id": args.job_id, "text": text, "reply_to": args.reply_to})
+    result = tools.call("subagent_message", {"job_id": target, "text": text, "reply_to": args.reply_to})
     if args.follow:
-        from agents_router.follow import follow
+        from agents_router.follow import follow, follow_group
 
         new_job = result.get("new_job")
-        job_id = new_job["job_id"] if new_job else args.job_id
+        if group and not new_job:  # the job still runs: keep following its whole role call
+            return follow_group(group, args.from_offset, args.max_wait, window=args.window)
+        job_id = new_job["job_id"] if new_job else target
         # A continuation has its own event log; an old job's offset cannot apply.
         start = None if new_job else args.from_offset
         return follow(job_id, start, args.max_wait, window=args.window)
@@ -616,6 +644,15 @@ def cmd_message(args: argparse.Namespace) -> int:
 
 
 def cmd_start(args: argparse.Namespace) -> int:
+    if args.role:
+        from agents_router import role_run
+
+        try:
+            _print(role_run.start(args))
+        except role_run.NoProvider as exc:  # nothing started: a failure (exit 1), not a usage mistake
+            print(f"FAILED · {exc}", file=sys.stderr)
+            return 1
+        return 0
     _print(tools.summarize(_start(args)))
     return 0
 
@@ -643,7 +680,23 @@ def cmd_result(args: argparse.Namespace) -> int:
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
+    if jobs.is_group(args.job_id):
+        return _cancel_group(args.job_id)
     _print(tools.summarize(jobs.cancel(args.job_id)))
+    return 0
+
+
+def _cancel_group(group_id: str) -> int:
+    record = jobs.read_group(group_id)
+    stopped, finished = [], []
+    for item, before, _after in jobs.cancel_group(group_id):
+        named = f"{item['job_id']} {item.get('provider')}"
+        (stopped if before.get("state") in jobs.ACTIVE_STATES else finished).append(named)
+    line = f"Cancelled {len(stopped)} job{'' if len(stopped) == 1 else 's'} in group {group_id} (role {record.get('role')})"
+    line += f": {', '.join(stopped)}" if stopped else ""
+    if finished:
+        line += f"; already finished: {', '.join(finished)}"
+    print(line)
     return 0
 
 
@@ -658,11 +711,19 @@ def cmd_jobs(args: argparse.Namespace) -> int:
         ui.out(["Jobs started in ", ui.path(workspace.root), " and its worktrees" if workspace.checkout else ""])
     if found:
         rows = []
+        roles_seen: dict[str, str] = {}
         for job in found:
             created = time.strftime("%m-%d %H:%M", time.localtime(job.get("created_at") or 0))
             override = [ui.muted(f"  override={json.dumps(job['override'], ensure_ascii=False)}")] if job.get("override") else []
+            group = job.get("group")
+            if group and group not in roles_seen:
+                try:
+                    roles_seen[group] = str(jobs.read_group(group).get("role") or "?")
+                except ValueError:
+                    roles_seen[group] = "?"
+            grouped = [ui.muted(f"  role {roles_seen[group]} · {group}")] if group else []
             rows.append([ui.muted(job["job_id"]), created, str(job.get("runtime")), _job_state(job),
-                         [job.get("account") or "-", *override]])
+                         [job.get("account") or "-", *override, *grouped]])
         ui.out("", *ui.columns(rows, gap=3))
     others = jobs.count_elsewhere(workspace) if workspace is not None else 0
     if others:
@@ -733,6 +794,7 @@ def build_parser() -> argparse.ArgumentParser:
     rules.add_parser(sub)
     share_commands.add_parser(sub)
     config_cli.add_parser(sub)
+    roles_cli.add_parser(sub)
     synclog.add_parser(sub)
 
     mcp_parser = sub.add_parser("mcp", help="Run the MCP server on stdio.")
@@ -823,7 +885,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     follow_parser.add_argument("job_id")
     follow_parser.add_argument("--from", dest="from_offset", type=int, metavar="OFFSET",
-                               help="Continue at this byte offset, as printed by an earlier follow (default: from the start).")
+                               help="Continue at this byte offset, as printed by an earlier follow (default: from the start). "
+                               "On a group (g-…) it's the position number the last end marker printed, not a byte offset.")
     follow_parser.add_argument("--max-wait", type=float, default=540, help="Stop watching after this many seconds (default 540).")
 
     status = sub.add_parser("status", help="Show a job's state.")
@@ -847,7 +910,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Follow the running job or its new continuation, with an authenticated header and status.")
     message.add_argument("--from", dest="from_offset", type=int, metavar="OFFSET",
                          help="With --follow: continue at this event offset if the same job is still running; "
-                         "a new continuation always starts from the beginning.")
+                         "a new continuation always starts from the beginning. On a group (g-…) it's the position "
+                         "number the last end marker printed, not a byte offset.")
     message.add_argument("--max-wait", type=float, default=540,
                          help="With --follow: stop watching after this many seconds (default 540).")
     from agents_router.follow import DEFAULT_WINDOW
@@ -916,6 +980,7 @@ def main(argv: list[str] | None = None) -> int:
             "rules": rules.command,
             "share": share_commands.command,
             "config": config_cli.command,
+            "roles": roles_cli.command,
             "log": synclog.command,
             "accounts": cmd_accounts,
             "setup": cmd_setup,

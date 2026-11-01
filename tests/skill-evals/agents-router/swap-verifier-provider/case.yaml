@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: swap-verifier-provider
+expected_outcome: |
+  The agent turns the request into one agt roles config command for the verifier, runs it with --dry-run --json, then runs the same flags without --dry-run, without asking for confirmation. It never edits settings.toml itself, and it tells the user which file changed and the undo command agt reported.
+context:
+  scaffold_script: place-files.sh

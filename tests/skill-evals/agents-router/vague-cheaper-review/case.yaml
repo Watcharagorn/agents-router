@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: vague-cheaper-review
+expected_outcome: |
+  The request is vague, so the agent reads agt roles show --json, dry-runs one concrete change to the Reviewer, shows it, and asks the user once. Nothing is written before the user answers.
+context:
+  scaffold_script: place-files.sh

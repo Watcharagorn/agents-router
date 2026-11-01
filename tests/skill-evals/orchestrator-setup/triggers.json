@@ -1,0 +1,82 @@
+[
+  {
+    "query": "set up my roles",
+    "should_trigger": true
+  },
+  {
+    "query": "I skipped roles when I set up agt, can we add them now?",
+    "should_trigger": true
+  },
+  {
+    "query": "redo my whole agt role table, I got a ChatGPT Pro account and lost my second claude login",
+    "should_trigger": true
+  },
+  {
+    "query": "which of my accounts should be the reviewer, builder and verifier? design it for me",
+    "should_trigger": true
+  },
+  {
+    "query": "design my agents router roles from scratch based on what I have logged in",
+    "should_trigger": true
+  },
+  {
+    "query": "I now have kiro and antigravity too, rethink every role so they get used",
+    "should_trigger": true
+  },
+  {
+    "query": "propose a full role setup for agt and let me approve it",
+    "should_trigger": true
+  },
+  {
+    "query": "start over on the agt roles, the current mapping makes no sense",
+    "should_trigger": true
+  },
+  {
+    "query": "set up the orchestrator roles for this machine",
+    "should_trigger": true
+  },
+  {
+    "query": "build me a decision maker, reviewer, builder and verifier lineup from my accounts",
+    "should_trigger": true
+  },
+  {
+    "query": "swap kiro for antigravity on the verifier",
+    "should_trigger": false
+  },
+  {
+    "query": "rebalance my roles by quota",
+    "should_trigger": false
+  },
+  {
+    "query": "set up agt",
+    "should_trigger": false
+  },
+  {
+    "query": "turn off the verifier role",
+    "should_trigger": false
+  },
+  {
+    "query": "add kiro to the builder list",
+    "should_trigger": false
+  },
+  {
+    "query": "run a review of this diff with the reviewer role",
+    "should_trigger": false
+  },
+  {
+    "query": "set up a new Claude Code profile called claude-work",
+    "should_trigger": false
+  },
+  {
+    "query": "configure roles and permissions for our Postgres database users",
+    "should_trigger": false
+  },
+  {
+    "query": "raise max_jobs to 8",
+    "should_trigger": false
+  },
+  {
+    "query": "set up GitHub CODEOWNERS so reviewers are assigned automatically",
+    "should_trigger": false
+  }
+]

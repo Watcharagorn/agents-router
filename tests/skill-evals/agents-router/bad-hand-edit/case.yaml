@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: bad-hand-edit
+expected_outcome: |
+  agt roles show exits 2 naming the file, line and key of the bad hand edit (roles.builder.access = "wirte"), ending with "; fix: agt roles config builder --unset access --user". The agent repeats agt's line to the user and offers that exact command as the fix, without running it and without wording a fix or a settings format of its own, and leaves settings.toml as it is.
+context:
+  scaffold_script: place-files.sh

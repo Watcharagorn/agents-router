@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: workspace-override
+expected_outcome: |
+  The agent adds the provider at the user level with agt roles config reviewer --add ... --user. agt reports that .agt/settings.local.toml overrides the reviewer in this workspace; the agent tells the user which file overrides it, what is in effect here, and the command to change it at the local level, and does not call the change done for this workspace.
+context:
+  scaffold_script: place-files.sh

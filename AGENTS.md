@@ -84,6 +84,8 @@ The sandbox uses only named profiles (`.claude-a`, `.claude-b`). Claude Code kee
 | `scripts/` | `sandbox.sh` (the live-check sandbox) and `sync_guide.py` (the guide's copy in the setup skill) |
 | `src/agents_router/jobs.py`, `runner.py` | Job records and the background runner |
 | `src/agents_router/accounts.py`, `config.py` | Account pool, cooldowns, the settings in effect |
+| `src/agents_router/roles.py`, `roles_cli.py`, `roles_grid.py`, `role_run.py`, `role_agents.py`, `roles_propose.py` | Roles: `[roles.*]` settings, `agt roles show/propose/config` and its grid, `agt run --role` (read roles fan out under a group id, edit roles by priority), the `agt-<role>` agent files and the proposed role table (docs/roles.md) |
+| `src/agents_router/settings_write.py` | What `agt config set` and `agt roles config` share: who asks, backup, lock |
 | `src/agents_router/levels.py` | The settings files: `~/.agt/settings.toml`, `<workspace>/.agt/settings.toml` and `settings.local.toml`, and finding the workspace |
 | `src/agents_router/config_cli.py`, `synclog.py` | `agt config show/set/unset`, and agt's log with `agt log` |
 | `src/agents_router/share/` | `agt share`: keeping agents and skills the same across the CLIs. `triggers.py` sets up what runs it without you (the launcher, the macOS LaunchAgent, agt's hook entries), and `watch.py` is what they run, `instructions.py` shares the instruction files, `scope.py` a repo's own folders, `mcp.py` the user MCP servers (Claude's only through `claude mcp`, never by editing `.claude.json`), `plugins.py` the plugins another CLI could install (only `agt share plugins apply` installs them), and `hooks.py` the hooks you approve per CLI, which `hook_run.py` runs and translates (standard library only: the launcher runs it with `python -I`) |
@@ -91,7 +93,8 @@ The sandbox uses only named profiles (`.claude-a`, `.claude-b`). Claude Code kee
 | `src/agents_router/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
 | `src/agents_router/runtimes/` | Claude Code, Codex, Antigravity and Kiro adapters (Kiro's is built from its docs and `tests/fake_kiro.py`; never run `kiro-cli login`, `logout` or `chat` in tests) |
 | `src/agents_router/agy_review/` | The review gate for Antigravity workers (PreToolUse hook, fixed rules, reviewer, policy). Self-contained: no imports from the rest of the package |
-| `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity |
+| `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity (skills include orchestrator-setup and orchestrator-rebalance) |
+| `tests/skill-evals/` | skill-creator eval cases for the roles skills, run isolated in `.agt-eval/` sandboxes; the release gate is in `.claude/skills/agt-maintainer/references/release.md` |
 | `agents/` | Claude Code relay agents (`agents-router:agt-claude` and so on) that run `agt run --follow` |
 | `src/agents_router/follow.py` | `agt follow`: one readable line per worker event, with end markers for the relay agents |
 | `adapters/antigravity/` | The older standalone Antigravity server |

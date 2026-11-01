@@ -1,0 +1,5 @@
+def greet(name, excited=False):
+    message = "Hello, " + name
+    if excited:
+        message.upper()
+    return message + "!" if excited else message

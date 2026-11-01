@@ -1,0 +1,82 @@
+[
+  {
+    "query": "rebalance my roles",
+    "should_trigger": true
+  },
+  {
+    "query": "rebalance the agt roles",
+    "should_trigger": true
+  },
+  {
+    "query": "my roles keep hitting usage limits, can you rebalance them?",
+    "should_trigger": true
+  },
+  {
+    "query": "claude-work is almost out until 14:20, shift the builder off it",
+    "should_trigger": true
+  },
+  {
+    "query": "agt printed a hint to rebalance after skipping a provider for quota, do it",
+    "should_trigger": true
+  },
+  {
+    "query": "move my roles off whichever account is running out of quota",
+    "should_trigger": true
+  },
+  {
+    "query": "redistribute the role providers based on how much quota each account has left",
+    "should_trigger": true
+  },
+  {
+    "query": "the builder always lands on the account with no quota left, fix the order based on usage",
+    "should_trigger": true
+  },
+  {
+    "query": "check my quota and propose better role assignments",
+    "should_trigger": true
+  },
+  {
+    "query": "balance the load across my codex and claude accounts for the roles",
+    "should_trigger": true
+  },
+  {
+    "query": "put codex first on the builder",
+    "should_trigger": false
+  },
+  {
+    "query": "swap kiro for antigravity on the verifier",
+    "should_trigger": false
+  },
+  {
+    "query": "set up my roles from scratch",
+    "should_trigger": false
+  },
+  {
+    "query": "raise usage_ceiling to 95",
+    "should_trigger": false
+  },
+  {
+    "query": "how much quota does my claude-work account have left?",
+    "should_trigger": false
+  },
+  {
+    "query": "rebalance my git branch onto main",
+    "should_trigger": false
+  },
+  {
+    "query": "my last codex job failed with usage_limit, what now?",
+    "should_trigger": false
+  },
+  {
+    "query": "load-balance our nginx upstream servers",
+    "should_trigger": false
+  },
+  {
+    "query": "raise max_jobs_per_account to 3",
+    "should_trigger": false
+  },
+  {
+    "query": "turn the decision maker role off",
+    "should_trigger": false
+  }
+]

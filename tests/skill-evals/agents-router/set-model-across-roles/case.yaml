@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: set-model-across-roles
+expected_outcome: |
+  The agent uses agt roles config --set-model on the codex:work entry (one command, dry run then apply) instead of changing each role separately, and names every role the change touched.
+context:
+  scaffold_script: place-files.sh

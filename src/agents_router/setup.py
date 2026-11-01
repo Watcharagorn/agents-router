@@ -792,8 +792,12 @@ def upstream_installs(config: Config) -> list[str]:
 
 
 def run_setup(config: Config, hosts: list[str], accounts: list[str], dry_run: bool = False,
-              claude_route: str = "auto", claude_profiles: str | None = "all") -> tuple[int, Report]:
+              claude_route: str = "auto", claude_profiles: str | None = "all",
+              role_agents: bool = True) -> tuple[int, Report]:
+    """The plugin in each host, accounts registered, and (`role_agents`) this CLI's role agents kept in line."""
+
     report = Report(dry_run=dry_run)
+    named = named_hosts(hosts)
     if not hosts or "auto" in hosts:
         detected = detect_hosts(config)
         hosts = [host for host in HOSTS if host in detected or host in hosts]
@@ -811,12 +815,196 @@ def run_setup(config: Config, hosts: list[str], accounts: list[str], dry_run: bo
     _check_agt_on_path(report)
     if "antigravity" in hosts:
         report.add_todo("If you haven't signed in to Antigravity yet, run `agy` once and sign in.")
+    if role_agents:
+        sync_role_agents(config, report, claude_folders=selected_folders(report), hosts=named)
     return (1 if report.failed else 0), report
+
+
+# Roles ------------------------------------------------------------------------
+
+ORDER_ASK = ("Which {role} provider goes first? {role} edits files, so it runs on one provider at a time; "
+             "agt tries them in this order.")
+
+
+@dataclass
+class RolePlan:
+    """The role part of setup's one question.
+
+    state: "propose" (a table to write), "set" (roles exist: keep them, only the role agents follow),
+    "off" (the person skipped roles: nothing written), "none" (no CLI with an account to propose).
+    """
+
+    state: str
+    table: dict[str, dict[str, Any]] = field(default_factory=dict)
+    reasons: dict[str, str] = field(default_factory=dict)
+    needs_order: list[dict[str, Any]] = field(default_factory=list)
+    off: list[str] = field(default_factory=list)  # proposed roles the person left out
+
+    def flags(self) -> list[str]:
+        """The flags that stand for this table in setup's apply command."""
+
+        from agents_router import roles
+
+        if self.state == "off":
+            return ["--roles", "off"]
+        if self.state != "propose":
+            return []
+        parts: list[str] = []
+        asked = {item["role"] for item in self.needs_order}  # an order still to ask stays a plain --role
+        for name in roles.BASE_ROLES:
+            if name in self.table:
+                providers = self.table[name]["providers"]
+                ordered = roles.BASE_ROLES[name] == "edit" and len(providers) > 1 and name not in asked
+                parts += ["--role-order" if ordered else "--role", f"{name}={','.join(providers)}"]
+            elif name in self.off:
+                parts += ["--role", f"{name}=off"]
+        return parts
+
+    def digest(self) -> dict[str, Any]:
+        return {"state": self.state, "table": self.table, "off": sorted(self.off),
+                "needs_order": [item["role"] for item in self.needs_order]}
+
+
+def _role_value(value: str, flag: str) -> tuple[str, list[str] | None]:
+    from agents_router import roles
+
+    name, sep, rest = value.partition("=")
+    name, rest = name.strip(), rest.strip()
+    if not sep or not name or not rest:
+        raise ValueError(f"{flag} takes ROLE=PROVIDER[,PROVIDER] (or ROLE=off), got '{value}'")
+    if name not in roles.BASE_ROLES:
+        raise ValueError(f"{flag}: setup sets up the base roles ({', '.join(roles.BASE_ROLES)}); "
+                         f"add a custom role like {name} with `agt roles config` after setup")
+    if rest == "off":
+        return name, None
+    providers = [str(roles.parse_provider(item)) for item in rest.split(",") if item.strip()]
+    if not providers:
+        raise ValueError(f"{flag} {name}: name at least one provider, or {name}=off")
+    return name, providers
+
+
+def plan_roles(config: Config, mode: str = "on", changes: list[str] | None = None,
+               orders: list[str] | None = None) -> RolePlan:
+    """The role table setup proposes, with the person's changes (`--role`, `--role-order`). Raises ValueError."""
+
+    from agents_router import roles, roles_propose
+
+    if mode == "off":
+        return RolePlan("off")
+    if config.roles:
+        if changes or orders:
+            raise ValueError("roles are already set up; change them with `agt roles config` (`agt roles` shows them)")
+        return RolePlan("set")
+    proposal = roles_propose.propose(config, "setup")
+    plan = RolePlan("propose", dict(proposal["roles"]), dict(proposal["reasons"]))
+    ordered: set[str] = set()
+    for flag, values in (("--role", changes or []), ("--role-order", orders or [])):
+        for value in values:
+            name, providers = _role_value(value, flag)
+            if flag == "--role-order":
+                if roles.BASE_ROLES[name] != "edit" or not providers:
+                    raise ValueError(f"--role-order is for an edit role's providers in order (builder); "
+                                     f"{name} runs all its providers at once, so use --role {name}=...")
+                ordered.add(name)
+            if providers is None:
+                plan.table.pop(name, None)
+                plan.reasons.pop(name, None)
+                plan.off.append(name)
+                continue
+            plan.table[name] = {"providers": providers}
+            plan.reasons[name] = "your choice"
+            if name in plan.off:
+                plan.off.remove(name)
+            if roles.BASE_ROLES[name] == "edit" and len(providers) > 1 and name not in ordered:
+                title = name.replace("-", " ").capitalize()
+                plan.needs_order.append({
+                    "role": name, "providers": providers, "ask": ORDER_ASK.format(role=title),
+                    "options": [f"{item} first" for item in providers],
+                    "flag": f"--role-order {name}={','.join(providers)}",
+                })
+    plan.needs_order = [item for item in plan.needs_order if item["role"] not in ordered]
+    plan.table = {name: plan.table[name] for name in roles.BASE_ROLES if name in plan.table}
+    if not plan.table:
+        return RolePlan("off" if plan.off else "none", off=plan.off)
+    try:
+        roles_propose.check(plan.table)
+    except ValueError as exc:
+        raise ValueError(f"the role table isn't valid: {exc}") from None
+    return plan
+
+
+def write_roles(table: dict[str, dict[str, Any]]) -> Path:
+    """Write an approved table as `[roles.*]` tables of the user settings, through the one roles write path
+    (`agt roles config --from`): checked, with a backup, logged and with an undo file. Setup writes only when
+    no role is set at any level; it syncs the role agents itself, for the Claude folders it picked."""
+
+    from agents_router import roles_cli
+
+    return Path(roles_cli.write_table(table, level="user")["file"])
+
+
+def selected_folders(report: Report) -> list[Path]:
+    """The Claude profiles this setup run puts the plugin in."""
+
+    return [Path(item["folder"]) for item in report.claude if item["selected"]]
+
+
+def named_hosts(hosts: list[str] | None) -> list[str] | None:
+    """The CLIs named with --host (not `auto`); None when none was: then the CLI agt runs in."""
+
+    named = [host for host in hosts or [] if host in HOSTS]
+    return named or None
+
+
+def sync_role_agents(config: Config, report: Report, dry_run: bool | None = None,
+                     claude_folders: list[Path] | None = None, hosts: list[str] | None = None) -> None:
+    """This CLI's agt-<role> files (or those of the CLIs `hosts` names) in line with the roles, into the report."""
+
+    from agents_router import role_agents
+
+    dry_run = report.dry_run if dry_run is None else dry_run
+    reloads: set[str] = set()
+    for change in role_agents.changes(config, hosts, dry_run, claude_folders or []):
+        if change.kind in ("write", "remove"):
+            report.done.append(change.line)
+            reloads.add(change.host)
+        elif change.kind == "kept":
+            report.notes.append(change.line)
+        else:
+            report.failed.append(change.line)
+    for host in HOSTS:
+        if host in reloads:
+            report.add_todo(RELOAD[host])
+
+
+def apply_roles(plan: RolePlan, report: Report, claude_folders: list[Path] | None = None,
+                hosts: list[str] | None = None) -> None:
+    """Setup's role step: write the approved table, then the role agents (nothing when roles are skipped)."""
+
+    from agents_router import config as config_module, hosts as hosts_module, roles_propose
+
+    if plan.state in ("off", "none"):
+        return
+    if plan.state == "propose":
+        names = " ".join(f"[roles.{name}]" for name in plan.table)
+        if report.dry_run:
+            report.done.append(f"Roles: would write {names} to {config_module.user_settings_path()}")
+        else:
+            report.done.append(f"Roles: wrote {names} to {write_roles(plan.table)}")
+    loaded = config_module.load_config()  # the roles just written
+    if report.dry_run and plan.state == "propose":
+        loaded.roles = roles_propose.check(plan.table)
+    before = len(report.done) + len(report.notes)
+    sync_role_agents(loaded, report, claude_folders=claude_folders, hosts=hosts)
+    if len(report.done) + len(report.notes) == before and not hosts and hosts_module.detect_host() == "unknown" \
+            and any(role.enabled for role in loaded.roles.values()):
+        report.notes.append("Role agents: none written, because agt runs in no CLI here. Run `agt update` inside "
+                            "Claude Code, Codex or Antigravity to add the agt-<role> agents there.")
 
 
 REPORT_LABELS = ("Claude Code", "Codex", "Antigravity")
 RAN = re.compile(r"^(?:would run|ran) `(.+)`$")
-RELAY = re.compile(r"^(would install|installed) relay agent (\S+) at (\S+)(.*)$")
+RELAY = re.compile(r"^(would install|installed) (relay|role) agent (\S+) at (\S+)(.*)$")
 
 
 def report_rows(items: list[str], mark: ui.Span, ran_as: str | None = None) -> list[list[ui.Line]]:
@@ -833,11 +1021,11 @@ def report_rows(items: list[str], mark: ui.Span, ran_as: str | None = None) -> l
             label, rest = "", item
         relay = RELAY.match(rest)
         if relay:
-            key = (label, relay.group(1), ui.short_path(Path(relay.group(3)).parent))
+            key = (label, relay.group(2), ui.short_path(Path(relay.group(4)).parent))
             if key not in relays:
                 relays[key] = []
                 rows.append([mark, ui.muted(label), key])  # filled in below, once every agent is known
-            relays[key].append(relay.group(2) + relay.group(4))
+            relays[key].append(relay.group(3) + relay.group(5))
             continue
         ran = RAN.match(rest)
         if ran and ran_as and rest.startswith("ran "):
@@ -854,9 +1042,9 @@ def report_rows(items: list[str], mark: ui.Span, ran_as: str | None = None) -> l
         last = label
     for row in rows:
         if len(row) == 3 and isinstance(row[2], tuple) and not isinstance(row[2], ui.Span):  # a relay group's key
-            label, verb, folder = row[2]
+            label, kind, folder = row[2]
             names = relays[row[2]]
-            row[2] = f"{'relay agents' if len(names) > 1 else 'relay agent'} {', '.join(names)} in {folder}"
+            row[2] = f"{kind} {'agents' if len(names) > 1 else 'agent'} {', '.join(names)} in {folder}"
     return rows
 
 
@@ -1169,4 +1357,5 @@ def run_update(config: Config, hosts: list[str], dry_run: bool = False, package:
     found = [host for host in candidates if update_plugin(config, host, report)]
     if not found:
         report.checked.append(("Plugin", "no host has it yet; `agt setup` installs it"))
+    sync_role_agents(config, report, hosts=named_hosts(hosts))  # a profile added since, or a changed template, catches up
     return (1 if report.failed else 0), report

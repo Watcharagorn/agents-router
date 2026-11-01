@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: near-miss-start-review
+expected_outcome: |
+  The user wants the Reviewer role to run, not a change to roles: the agent starts the agt-reviewer agent with the uncommitted diff of greet.py and reports its findings. It changes no settings.
+context:
+  scaffold_script: place-files.sh

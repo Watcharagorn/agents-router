@@ -10,7 +10,7 @@ import re
 import sys
 from typing import Any
 
-from agents_router import levels
+from agents_router import levels, roles
 
 RUNTIMES = ("claude", "codex", "antigravity", "kiro")
 # Runtimes whose extra accounts are "use at your own risk" (Antigravity: Google's FAQ says
@@ -383,6 +383,7 @@ class Config:
     max_depth: int = 1
     max_jobs: int | None = None  # cap on running jobs across all runtimes
     notes: list[str] = field(default_factory=list)  # settings agt ignored, each with its file and line
+    roles: dict[str, Any] = field(default_factory=dict)  # name -> roles.Role, merged over every level
 
     def runtime(self, name: str) -> RuntimeConfig:
         if name not in self.runtimes:
@@ -706,7 +707,7 @@ def from_layers(found: list[levels.Layer], notes: list[str] | None = None) -> Co
             notes.append(f"{levels.where(layer, name, 'accounts')}: [{name}] accounts names '{unknown}', "
                          f"which isn't one of your {name} accounts; ignored")
         runtimes[name].picked = [item for item in chosen if item in known] or None
-    return Config(runtimes=runtimes, notes=notes, **_top_from(top))
+    return Config(runtimes=runtimes, notes=notes, roles=roles.from_layers(found), **_top_from(top))
 
 
 def _account_lines(runtime: str, account: Account) -> list[str]:
@@ -827,7 +828,7 @@ def save_accounts(config: Config, path: Path | None = None) -> Path:
 
 
 def save_config(config: Config, path: Path | None = None) -> Path:
-    """Write every key agt knows as the user settings, keeping the file's `[share]` tables.
+    """Write every key agt knows as the user settings, keeping the file's `[share]` and `[roles.*]` tables.
 
     It writes `primary` and the defaults too, so agt's own commands don't use
     it: they change one key, or the account tables (`save_accounts`).
@@ -838,5 +839,5 @@ def save_config(config: Config, path: Path | None = None) -> Path:
         text = location.read_text(encoding="utf-8")
     except FileNotFoundError:
         text = ""
-    share = levels.split(text, lambda header: header.split(".")[0] == "share")[1]
+    share = levels.split(text, lambda header: header.split(".")[0] in ("share", "roles"))[1]
     return levels.write(location, dump_config(config) + ("\n" + "\n".join(share) + "\n" if share else ""))
