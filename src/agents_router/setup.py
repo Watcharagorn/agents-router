@@ -957,18 +957,20 @@ def named_hosts(hosts: list[str] | None) -> list[str] | None:
 
 
 def sync_role_agents(config: Config, report: Report, dry_run: bool | None = None,
-                     claude_folders: list[Path] | None = None, hosts: list[str] | None = None) -> None:
-    """This CLI's agt-<role> files (or those of the CLIs `hosts` names) in line with the roles, into the report."""
+                     claude_folders: list[Path] | None = None, hosts: list[str] | None = None,
+                     proposed: dict[str, Any] | None = None) -> None:
+    """This CLI's agt-<role> files (or those of the CLIs `hosts` names) in line with the roles in your user
+    settings (or `proposed`, the table a dry run would write there), into the report."""
 
     from agents_router import role_agents
 
     dry_run = report.dry_run if dry_run is None else dry_run
     reloads: set[str] = set()
-    for change in role_agents.changes(config, hosts, dry_run, claude_folders or []):
+    for change in role_agents.changes(config, hosts, dry_run, claude_folders or [], proposed):
         if change.kind in ("write", "remove"):
             report.done.append(change.line)
             reloads.add(change.host)
-        elif change.kind == "kept":
+        elif change.kind in ("kept", "note"):
             report.notes.append(change.line)
         else:
             report.failed.append(change.line)
@@ -992,12 +994,11 @@ def apply_roles(plan: RolePlan, report: Report, claude_folders: list[Path] | Non
         else:
             report.done.append(f"Roles: wrote {names} to {write_roles(plan.table)}")
     loaded = config_module.load_config()  # the roles just written
-    if report.dry_run and plan.state == "propose":
-        loaded.roles = roles_propose.check(plan.table)
+    proposed = roles_propose.check(plan.table) if report.dry_run and plan.state == "propose" else None
     before = len(report.done) + len(report.notes)
-    sync_role_agents(loaded, report, claude_folders=claude_folders, hosts=hosts)
+    sync_role_agents(loaded, report, claude_folders=claude_folders, hosts=hosts, proposed=proposed)
     if len(report.done) + len(report.notes) == before and not hosts and hosts_module.detect_host() == "unknown" \
-            and any(role.enabled for role in loaded.roles.values()):
+            and any(role.enabled for role in (proposed or loaded.roles).values()):
         report.notes.append("Role agents: none written, because agt runs in no CLI here. Run `agt update` inside "
                             "Claude Code, Codex or Antigravity to add the agt-<role> agents there.")
 

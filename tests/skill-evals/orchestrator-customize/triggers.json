@@ -1,0 +1,82 @@
+[
+  {
+    "query": "my builder keeps touching migrations, stop that",
+    "should_trigger": true
+  },
+  {
+    "query": "call the reviewer before every commit, even small ones",
+    "should_trigger": true
+  },
+  {
+    "query": "make the verifier always run the e2e suite",
+    "should_trigger": true
+  },
+  {
+    "query": "add a rule to agt-builder: run the tests before you finish",
+    "should_trigger": true
+  },
+  {
+    "query": "change when the decision maker gets called: only for architecture disagreements",
+    "should_trigger": true
+  },
+  {
+    "query": "I want the reviewer agent to also check for security issues every time",
+    "should_trigger": true
+  },
+  {
+    "query": "edit the role rules for my verifier so it never pushes",
+    "should_trigger": true
+  },
+  {
+    "query": "the reviewer should be used before I open a PR, update its description",
+    "should_trigger": true
+  },
+  {
+    "query": "give my sec role a standing instruction to check OWASP top 10",
+    "should_trigger": true
+  },
+  {
+    "query": "remove the 'never edit migrations' rule from my builder",
+    "should_trigger": true
+  },
+  {
+    "query": "put codex first on the builder",
+    "should_trigger": false
+  },
+  {
+    "query": "swap kiro for antigravity on the verifier",
+    "should_trigger": false
+  },
+  {
+    "query": "rebalance my roles",
+    "should_trigger": false
+  },
+  {
+    "query": "set up my roles",
+    "should_trigger": false
+  },
+  {
+    "query": "turn off the decision maker role",
+    "should_trigger": false
+  },
+  {
+    "query": "raise max_jobs to 6",
+    "should_trigger": false
+  },
+  {
+    "query": "review this diff with the reviewer",
+    "should_trigger": false
+  },
+  {
+    "query": "create a new custom role called sec with read access on codex",
+    "should_trigger": false
+  },
+  {
+    "query": "use opus for the builder",
+    "should_trigger": false
+  },
+  {
+    "query": "add a new subagent for writing release notes to my .claude/agents folder",
+    "should_trigger": false
+  }
+]

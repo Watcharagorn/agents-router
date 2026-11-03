@@ -3,10 +3,13 @@
 import contextlib
 import io
 import json
+import os
 from unittest.mock import patch
 
 from test_share_items import ItemBase
 from test_share_sync import age
+
+from test_role_agents import RoleAgentBase
 
 from agents_router import cli
 from agents_router.share import settings, triggers
@@ -102,3 +105,19 @@ class SetupScreenTests(ItemBase):
             out = self.setup()
         self.assertIn("agt setup  nothing is written until you press Enter", out)
         self.assertTrue(settings.load().enabled)
+
+
+class RoleSentenceTests(RoleAgentBase):
+    """The role table setup proposes shows your "when to call" sentence from this CLI's agt-<role> file."""
+
+    def test_the_proposal_uses_your_sentence(self):
+        from agents_router import role_agents, roles, setup_screen
+        from agents_router.config import load_config
+
+        with patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            self.assertEqual(setup_screen._when_to_call("builder"), roles.BASE_DESCRIPTIONS["builder"])
+            self.agents.mkdir()
+            (self.agents / "agt-builder.md").write_bytes(
+                role_agents.render(load_config().roles["builder"], "claude", "Use for every edit, even tiny."))
+            self.assertEqual(setup_screen._when_to_call("builder"), "Use for every edit, even tiny.")
+

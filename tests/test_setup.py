@@ -688,6 +688,23 @@ class RoleHostTests(SetupBase):
             cli.main(["update", "--no-package", "--host", "antigravity"])
         self.assertFalse((agents / "agt-verifier.md").exists())
 
+    def test_S7_update_in_a_project_keeps_the_user_settings_agents(self):
+        os.environ.pop("CLAUDECODE", None)
+        code, out = self.run_cli("--host", "antigravity", "--share", "off", "--yes")
+        self.assertEqual(code, 0, out)
+        agents = self.agy_dir / "config" / "plugins" / "agents-router-relays" / "agents"
+        before = {path.name: path.read_bytes() for path in agents.iterdir()}
+        project = self.root / "project"
+        (project / ".agt").mkdir(parents=True)
+        (project / ".agt" / "settings.toml").write_text(
+            '[roles.builder]\nenabled = false\n\n[roles.sec]\naccess = "read"\nproviders = ["codex"]\n', encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(project)
+        self.addCleanup(os.chdir, cwd)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["update", "--no-package", "--host", "antigravity"]), 0)
+        self.assertEqual({path.name: path.read_bytes() for path in agents.iterdir()}, before)
+
 
 class RoleSetupTests(ProfileBase):
     """Roles in setup's one question: approve, skip, the Builder's order, and a profile added later (S1-S1c)."""

@@ -32,6 +32,9 @@ def _job_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runtime", default=None, choices=RUNTIMES, help="Default: claude (not with --role).")
     parser.add_argument("--account")
     parser.add_argument("--role", help="Run as a role from [roles.<name>]: agt picks the providers (not with --runtime or --account).")
+    parser.add_argument("--caller", choices=("claude", "codex", "antigravity"),
+                        help="With --role: the CLI whose agt-<role> agent calls; its Role rules go to the worker. "
+                        "agt's role agents pass it.")
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--model")
     parser.add_argument("--effort")

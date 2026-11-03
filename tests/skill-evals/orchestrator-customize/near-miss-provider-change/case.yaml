@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: near-miss-provider-change
+expected_outcome: |
+  A provider change is agents-router's job: the agent uses agt roles config (dry run, then the change) and edits no agt-<role> agent file.
+context:
+  scaffold_script: place-files.sh

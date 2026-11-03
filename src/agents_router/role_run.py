@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import sys
 import time
@@ -202,23 +203,51 @@ def failure(role: Role, skips: list[Skip]) -> str:
 # Starting ------------------------------------------------------------------------------
 
 
-def _task(args: argparse.Namespace, role: Role) -> str:
+def _task(args: argparse.Namespace, role: Role, rules: str | None = None) -> str:
+    """The worker's prompt: the role's prompt_file text, then its Role rules block, then the task."""
+
     task = sys.stdin.read() if args.prompt == "-" else args.prompt
     if not task or not task.strip():
         raise ValueError("prompt is empty")
     preface = role.prompt()
     if role.prompt_file and preface is None:
         raise RoleError(f"role {role.name}: can't read its prompt_file {role.prompt_file}")
-    return f"{preface.strip()}\n\n{task}" if preface and preface.strip() else task
+    parts = [text for text in ((preface or "").strip(), rules or "") if text]
+    return "\n\n".join([*parts, task]) if parts else task
+
+
+def rules_block(role: Role, text: str, source: Path) -> str | None:
+    """The Role rules as the worker gets them, before the task; None for no rules. Never shortened."""
+
+    return f"Role rules for the {role.name} (from {ui.tilde(str(source))}):\n{text.rstrip()}" if text.strip() else None
+
+
+def _too_long(provider: Provider, prompt: str, cwd: str) -> str | None:
+    """Antigravity takes the prompt as one argument of at most 24,000 characters: skip it, never cut the prompt."""
+
+    if provider.runtime != "antigravity":
+        return None
+    from agents_router.hosts import host_context
+    from agents_router.runtimes import antigravity
+
+    size = antigravity.prompt_size(prompt, host_context(detect_host(), cwd))
+    if size <= antigravity.MAX_PROMPT_CHARS:
+        return None
+    return (f"the prompt with agt's notes is up to {size} characters; Antigravity takes at most "
+            f"{antigravity.MAX_PROMPT_CHARS} (shorten the task or the Role rules)")
 
 
 def launch(args: argparse.Namespace) -> Launch:
     """Check the call, pick the providers and start their jobs under one new group. Raises RoleError (exit 2)."""
 
+    from agents_router import role_agents
+
     check_flags(args)
     cwd = str(Path(args.cwd).resolve())
     config, role = load_role(args.role, cwd)
-    prompt = _task(args, role)
+    found = role_agents.caller_rules(role.name, getattr(args, "caller", None), config)  # broken file: RoleError, exit 2
+    rules = rules_block(role, found.text, found.source) if found.source is not None else None
+    prompt = _task(args, role, rules)
     set_session(config, session_folder(detect_host()))  # as create_job does: the session's own profile is never used
     group = jobs.new_group_id()
     now = time.time()
@@ -231,7 +260,12 @@ def launch(args: argparse.Namespace) -> Launch:
             runtime=provider.runtime, prompt=prompt, cwd=cwd, account=account, model=provider.model,
             effort=provider.effort or args.effort, override=args.override, access=access, max_turns=args.max_turns,
             timeout_seconds=args.timeout, add_dirs=[str(Path(item).resolve()) for item in args.add_dir], group=group,
+            rules=rules,
         )
+
+    def check_for(provider: Provider) -> Check:
+        too_long = _too_long(provider, prompt, cwd)
+        return Check(reason=too_long) if too_long else precheck(config, provider, now)
 
     def skip(position: int, provider: Provider, check: Check, reason: str | None = None) -> None:
         skips.append(Skip(provider, position, reason or check.reason or "unusable", check.quota, check.until))
@@ -240,7 +274,7 @@ def launch(args: argparse.Namespace) -> Launch:
         if role.access == "edit":
             fallback: tuple[int, Provider, Check] | None = None
             for position, provider in enumerate(role.providers, 1):
-                check = precheck(config, provider, now)
+                check = check_for(provider)
                 if check.reason and not check.soft:
                     skip(position, provider, check)
                     continue
@@ -270,7 +304,7 @@ def launch(args: argparse.Namespace) -> Launch:
                              for item in skips]
         else:
             for position, provider in enumerate(role.providers, 1):
-                check = precheck(config, provider, now)
+                check = check_for(provider)
                 if check.reason and not check.soft:
                     skip(position, provider, check)
                     continue
@@ -290,6 +324,8 @@ def launch(args: argparse.Namespace) -> Launch:
                      for position, provider, status in started],
             "skipped": [item.to_dict() for item in sorted(skips, key=lambda item: item.position)],
             "failure": None if started else failure(role, skips),
+            "rules": {"file": str(found.source) if found.source else None, "chars": len(found.text),
+                      "note": found.note},
         }
         jobs.write_group(record)
     return Launch(role, record, [status for _, _, status in started])
@@ -302,10 +338,18 @@ def _plain_lines(record: dict[str, Any]) -> list[str]:
     lines = [f"role {record['role']} · {record['access']} · group {record['group']}"]
     lines += [f"  [{number}] {item['provider']} · job {item['job_id']}" for number, item in enumerate(record["jobs"], 1)]
     lines += [f"  skipped {item['provider']} — {item['reason']}" for item in record["skipped"]]
+    lines += _rules_lines(record)
     if any(item.get("quota") for item in record["skipped"]):
         lines.append(f'  hint: to move role {record["role"]} off a provider that keeps running out, ask your agent to '
                      '"rebalance my roles" (orchestrator-rebalance)')
     return lines
+
+
+def _rules_lines(record: dict[str, Any]) -> list[str]:
+    rules = record.get("rules") or {}
+    if rules.get("chars"):
+        return [f"  role rules: {rules['chars']} characters from {ui.tilde(rules['file'])}"]
+    return [f"  role rules: none ({rules['note']})"] if rules.get("note") else []
 
 
 def run(args: argparse.Namespace) -> int:
@@ -313,7 +357,13 @@ def run(args: argparse.Namespace) -> int:
 
     from agents_router.follow import follow_group, group_result
 
-    launched = launch(args)
+    try:
+        launched = launch(args)
+    except RoleError as exc:
+        if not getattr(args, "json", False):
+            raise
+        print(json.dumps({"error": str(exc), "role": args.role}, ensure_ascii=False), file=sys.stderr)
+        return 2
     if args.follow:
         return follow_group(launched.group, None, args.max_wait, window=args.window)
     record = launched.record

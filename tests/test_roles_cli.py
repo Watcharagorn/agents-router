@@ -3,6 +3,8 @@
 import json
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -10,7 +12,9 @@ from unittest.mock import patch
 from helpers import FAKE_HOST, TempHome  # noqa: F401 - sets up the throwaway process first
 from test_config_cli import AGENT, ConfigBase
 
-from agents_router import roles_cli, roles_grid, synclog
+from agents_router import role_agents, roles_cli, roles_grid, synclog
+
+REAL_SYNC = role_agents.sync  # RolesBase patches it; a test that needs the real sync puts this back
 
 ROLES = """# my roles
 [roles.reviewer]
@@ -45,7 +49,7 @@ class RolesBase(ConfigBase):
         sync.start()
         self.addCleanup(sync.stop)
 
-    def _sync(self, loaded, host=None, dry_run=False):
+    def _sync(self, loaded, host=None, dry_run=False, **_):
         self.synced.append(sorted(name for name, role in loaded.roles.items() if role.enabled))
         return []
 
@@ -372,6 +376,39 @@ class FlagTests(RolesBase):
 
         self.assertEqual(load_config().roles["sec"].prompt(), "Look for injection.\n")
 
+    def test_S9_local_prompt_text_gets_its_own_file_kept_out_of_git(self):
+        if shutil.which("git") is None:
+            self.skipTest("needs git")
+        subprocess.run(["git", "init", "-q"], cwd=self.project, check=True)
+        code, out, err = self.agt("roles", "config", "sec", "--access", "read", "--only", "codex:work",
+                                  "--prompt", "Mine everywhere.", "--user", terminal=True)
+        self.assertEqual(code, 0, err)
+        mine = self.home / "roles" / "sec.md"
+        self.assertEqual(mine.read_text(encoding="utf-8"), "Mine everywhere.\n")
+        self.local_file.write_text("# already here\n", encoding="utf-8")  # the settings file exists already
+        code, out, err = self.agt("roles", "config", "sec", "--prompt", "Only in this project.", "--local", terminal=True)
+        self.assertEqual(code, 0, err)
+        local = self.project / ".agt" / "roles" / "sec.local.md"
+        self.assertEqual(local.read_text(encoding="utf-8"), "Only in this project.\n")
+        self.assertEqual(mine.read_text(encoding="utf-8"), "Mine everywhere.\n")  # your user prompt is unchanged
+        self.assertIn('prompt_file = "roles/sec.local.md"', self.text(self.local_file))
+        from agents_router.config import load_config
+
+        self.assertEqual(load_config().roles["sec"].prompt(), "Only in this project.\n")
+        code, out, err = self.agt("roles", "config", "sec", "--prompt", "Changed my mind.", "--local", terminal=True)
+        self.assertEqual(code, 0, err)  # the same prompt_file: only the text changes, and it does
+        self.assertIn("prompt text changed", out)
+        self.assertEqual(local.read_text(encoding="utf-8"), "Changed my mind.\n")
+        self.team_file.write_text('[roles.qa]\naccess = "read"\nproviders = ["codex:work"]\n', encoding="utf-8")
+        code, out, err = self.agt("roles", "config", "qa", "--prompt", "Check the edges.", "--local", terminal=True)
+        self.assertEqual(code, 0, err)
+        exclude = self.text(self.project / ".git" / "info" / "exclude").splitlines()
+        self.assertIn("/.agt/roles/sec.local.md", exclude)
+        self.assertIn("/.agt/roles/qa.local.md", exclude)
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=self.project,
+                                capture_output=True, text=True, check=True).stdout
+        self.assertNotIn(".local.md", status)
+
     def test_primary_is_the_main_account_and_default_is_not_an_account(self):
         code, _, err = self.agt("roles", "config", "reviewer", "--add", "kiro:primary", terminal=True)
         self.assertEqual(code, 0, err)
@@ -500,6 +537,96 @@ class AgentTests(RolesBase):
             code, out, _ = self.agt("roles", "config", "--disable", "builder", terminal=True)
         self.assertEqual(code, 0)
         self.assertIn("Kept ~/.claude/agents/agt-builder.md", out)
+
+
+class AgentSourceTests(RolesBase):
+    """Agent files come from your user settings alone (S7)."""
+
+    def test_S7_an_incomplete_user_role_is_noted_and_the_write_still_saves(self):
+        from agents_router import role_agents
+
+        self.team_file.write_text('[roles.sec]\naccess = "read"\nproviders = ["codex:work"]\n', encoding="utf-8")
+        with patch("agents_router.role_agents.sync", new=REAL_SYNC), \
+                patch.object(role_agents, "_hosts", return_value=["claude"]), \
+                patch.object(role_agents, "folders", return_value=[]):
+            code, out, err = self.agt("roles", "config", "sec", "--description", "Security checks.", "--user",
+                                      terminal=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn('description = "Security checks."', self.text(self.user_file))
+        self.assertIn("no agt-sec agent: your user settings alone don't make a whole sec role", out)
+
+    def test_an_explicit_description_rewrites_the_sentence_in_every_file(self):
+        calls = []
+
+        def sync(loaded, host=None, dry_run=False, **kwargs):
+            calls.append(kwargs)
+            return ["Claude Code (main): installed role agent agt-sec at ~/.claude/agents/agt-sec.md"]
+
+        with patch("agents_router.role_agents.sync", side_effect=sync):
+            code, out, err = self.agt("roles", "config", "sec", "--access", "read", "--only", "codex:work",
+                                      "--description", "Security checks.", "--user", terminal=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[-1]["fresh"], ["sec"])
+        self.assertIn("installed role agent agt-sec", out)
+        with patch("agents_router.role_agents.sync", side_effect=sync):
+            self.agt("roles", "config", "sec", "--add", "kiro:primary", terminal=True)
+        self.assertEqual(calls[-1]["fresh"], ())  # any other change keeps your sentence
+
+    def test_S7_show_names_a_role_with_no_agent(self):
+        self.team_file.write_text('[roles.sec]\naccess = "read"\nproviders = ["codex:work"]\n', encoding="utf-8")
+        code, out, _ = self.agt("roles", "show")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"  ! sec: no agt-sec agent: defined only in {roles_cli.ui.tilde(str(self.team_file))}; "
+                      "add --user to define it for your agent", out)
+        self.assertNotIn("no agt-builder agent", out)
+
+
+class PartsShowTests(RolesBase):
+    """`agt roles show` says what your agt-<role> files add: the sentence, the Role rules, every file's state (S14)."""
+
+    def test_show_reports_your_sentence_rules_and_files(self):
+        from agents_router.config import load_config
+
+        plugins = self.primary / "plugins"
+        plugins.mkdir(parents=True)
+        (plugins / "installed_plugins.json").write_text(json.dumps(
+            {"version": 2, "plugins": {"agents-router@agents-router": [{"scope": "user", "version": "1.0.0"}]}}),
+            encoding="utf-8")
+        path = self.primary / "agents" / "agt-reviewer.md"
+        path.parent.mkdir()
+        path.write_bytes(role_agents.render(load_config().roles["reviewer"], "claude", "Use before every commit.",
+                                            "Check the tests.\n"))
+        code, report = self.json("roles", "show", env={"CLAUDECODE": "1"})
+        self.assertEqual(code, 0, report)
+        row = next(item for item in report["roles"] if item["name"] == "reviewer")
+        self.assertEqual((row["when_to_call"], row["rules_chars"], row["rules_state"]),
+                         ("Use before every commit.", 17, "valid"))
+        [found] = [item for item in row["agent_files"] if item["file"] == str(path)]
+        self.assertEqual((found["cli"], found["state"], found["rules_chars"]), ("claude", "valid", 17))
+        builder = next(item for item in report["roles"] if item["name"] == "builder")
+        self.assertEqual((builder["rules_state"], builder["rules_chars"]), ("absent", 0))
+        code, out, _ = self.agt("roles", "show", env={"CLAUDECODE": "1"})
+        self.assertIn(f"  reviewer: {roles_cli.ui.tilde(str(path))} has Role rules (17 characters) and its own "
+                      "\"when to call\" sentence", out)
+        path.write_text(path.read_text(encoding="utf-8").replace(role_agents.RULES_END + "\n", ""), encoding="utf-8")
+        code, out, _ = self.agt("roles", "show", env={"CLAUDECODE": "1"})
+        self.assertIn("  ! reviewer: ", out)
+        self.assertIn("Role rules end line", out)
+        code, report = self.json("roles", "show", env={"CLAUDECODE": "1"})
+        row = next(item for item in report["roles"] if item["name"] == "reviewer")
+        self.assertEqual(row["rules_state"], "broken")
+
+    def test_show_names_an_archive_while_the_role_is_off(self):
+        archive = self.home / "role-agents" / "archive" / "claude" / "claude-1234abcd" / "agt-builder.toml"
+        archive.parent.mkdir(parents=True)
+        archive.write_text('sentence = "Mine."\nrules = ""\n', encoding="utf-8")
+        self.user_file.write_text(self.user_file.read_text(encoding="utf-8").replace(
+            "[roles.builder]\n", "[roles.builder]\nenabled = false\n"), encoding="utf-8")
+        code, out, _ = self.agt("roles", "show")
+        self.assertIn(f"  builder: your sentence and Role rules wait in {roles_cli.ui.tilde(str(archive))}", out)
+        code, report = self.json("roles", "show")
+        row = next(item for item in report["roles"] if item["name"] == "builder")
+        self.assertEqual(row["archived"], [str(archive)])
 
 
 class LevelTests(RolesBase):

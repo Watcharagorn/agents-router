@@ -1,0 +1,8 @@
+[roles.reviewer]
+providers = ["codex", "claude"]
+
+[roles.builder]
+providers = ["claude", "codex"]
+
+[roles.verifier]
+providers = ["claude"]

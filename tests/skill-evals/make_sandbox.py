@@ -134,6 +134,9 @@ def build(workspace: Path, mode: str) -> Path:
     for folder in (home / ".agt", home / ".claude", home / ".codex", home / ".gemini", home / ".agents-router",
                    root / "records", root / "fakes"):
         folder.mkdir(parents=True, exist_ok=True)
+    # The run can read only its workspace, so its `agt` is this copy: runs put `.agt-eval/bin` first on PATH.
+    (root / "bin").mkdir(exist_ok=True)
+    shutil.copy2(CLONE / "tests" / "skill-evals" / "bin" / "agt", root / "bin" / "agt")
     shutil.copytree(CLONE / "src" / "agents_router", root / "src" / "agents_router", dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__"))
     for name in FAKES:

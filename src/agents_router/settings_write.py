@@ -74,7 +74,7 @@ def locked() -> Iterator[None]:
 
 
 def exclude_local(location: Path) -> str | None:
-    """Keep a new `.agt/settings.local.toml` out of git: one line in the repo's info/exclude."""
+    """Keep a new `.agt/settings.local.toml`, or a local prompt file, out of git: one line in the repo's info/exclude."""
 
     found = gitexclude.repo_of(location)
     if not found:

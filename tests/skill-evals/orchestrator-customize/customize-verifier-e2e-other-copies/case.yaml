@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: customize-verifier-e2e-other-copies
+expected_outcome: |
+  The agent adds a rule to run the e2e suite to the Role rules of this CLI's agt-verifier.md, then notices the Codex copy in agent_files and asks once whether to make the same change there instead of editing it unasked.
+context:
+  scaffold_script: place-files.sh

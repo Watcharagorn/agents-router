@@ -155,6 +155,7 @@ def _create_job(
     host: str | None = None,
     start: bool = True,
     group: str | None = None,
+    rules: str | None = None,
 ) -> dict[str, Any]:
     limits.validate_override(override)
     workspace = levels.find_workspace(cwd)
@@ -210,6 +211,7 @@ def _create_job(
         if previous.get("runtime") != runtime:
             raise ValueError("resume_job belongs to a different runtime")
         resume_account = closed.get("account") or previous.get("account")
+        rules = rules or read_spec(resume_job).rules  # a follow-up keeps the rules snapshot its role call started with
         resume_home = closed.get("home") or next(
             (attempt.get("home") for attempt in reversed(previous.get("attempts") or [])
              if isinstance(attempt, dict) and attempt.get("account") == resume_account and attempt.get("home")), None)
@@ -242,6 +244,7 @@ def _create_job(
         parent={**host_context(host, str(path.resolve())), "config_dir": str(session) if session else None},
         depth=depth + 1,
         created=time.time(),
+        rules=rules,
     )
     folder = job_dir(spec.job_id)
     make_private_dir(folder.parent)

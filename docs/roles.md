@@ -7,7 +7,7 @@ A role is a named job, such as Reviewer or Builder, with one or more providers. 
 | Role | Access | Your agent uses it |
 |---|---|---|
 | decision-maker | read | only when reviewers or providers disagree, with just the points in conflict |
-| reviewer | read | before calling non-trivial work done |
+| reviewer | read | after every bug fix, feature or new tests, without being asked (not a typo or a one-line edit), and for any code review you ask for, in place of a built-in review skill |
 | builder | edit | for edits |
 | verifier | read | after the Builder, to check the change works |
 
@@ -68,4 +68,53 @@ When agt skips a provider for quota, it suggests a rebalance: ask your agent to 
 
 ## Role agents
 
-agt writes one relay agent per enabled role, named `agt-<role>`, only for the CLI you set roles up in: Claude Code (every profile with the plugin), Codex and Antigravity. Kiro has no relay agents. Each file says `Managed by agt roles`; agt never overwrites or deletes a same-named file without that line, so you can turn a role off and write your own `agt-<role>`. `agt share` doesn't copy these files to other CLIs. `agt setup` proposes the role table in its one question, and `agt update` brings the files in line.
+agt writes one relay agent per enabled role, named `agt-<role>`, only for the CLI you set roles up in: Claude Code (every profile with the plugin), Codex and Antigravity. Kiro has no relay agents. The files come from your user settings alone: a project's settings never add, change or remove one, so `agt roles config --disable builder --local` turns the builder off in that project and leaves `agt-builder` for the others. A role set only in a project's file gets no agent; `agt roles show` says so. Each file says `Managed by agt roles`; agt never overwrites or deletes a same-named file without that line, so you can turn a role off and write your own `agt-<role>`. `agt share` doesn't copy these files to other CLIs. `agt setup` proposes the role table in its one question, and `agt update` brings the files in line.
+
+### Your two parts of a role agent
+
+Two parts of each `agt-<role>` file are yours. agt keeps them through every rewrite (`agt setup`, `agt update`, `agt roles config`) and owns the rest.
+
+| Part | Where | What it does |
+|---|---|---|
+| When to call | The start of the frontmatter `description`, before `Runs the <role> role through Agents Router (` | Your main agent reads it to decide when to call the role |
+| Role rules | The `## Role rules` section at the end, between `<!-- agt-role-rules: ... -->` and `<!-- end agt-role-rules -->` | agt puts it before the task on every call, under "Role rules for the <role> (from <file>):" |
+
+```text
+---
+# Managed by agt roles v2: ...
+name: agt-builder
+description: "Use for every edit, even tiny. Runs the builder role through Agents Router (`agt run --role builder`): ..."
+...
+---
+<relay steps>
+
+## Role rules
+
+These rules are for the worker, not for you: ...
+
+<!-- agt-role-rules: agt keeps what's between these lines and sends it to the worker before every task -->
+Run the tests before you finish.
+Never edit migrations.
+<!-- end agt-role-rules -->
+```
+
+- **Clearing the sentence** (nothing before `Runs the ...`) brings back agt's default. An explicit `agt roles config <custom-role> --description "..."` writes the new sentence into every file, edited or not.
+- **A sentence you never changed follows agt's default.** When a release changes a role's default, `agt update` writes the new one. agt keeps a list of its earlier defaults to tell them from yours, so a sentence you edited stays, and `agt roles show` never lists an earlier default as your own.
+- **Text after agt's part** of the description, which ends with `then the complete, self-contained task.`, moves to the end of your sentence on the next sync, and the sync says so.
+- **Each copy is its own.** Every Claude profile, Codex and Antigravity has its own file, and only calls from that CLI or profile use its rules. Codex keeps the body in `developer_instructions = '''...'''`, so its rules can't contain `'''`.
+- **When rules apply.** A role agent passes `--caller claude|codex|antigravity`, and agt reads that CLI's own file: `<profile>/agents/agt-<role>.md`, `<CODEX_HOME>/agents/agt-<role>.toml`, or the relay plugin's `agents/agt-<role>.md`. A run from a terminal, from Kiro or from inside an agt worker gets no rules, and the job's first lines say why. Edits apply to the next new call. A follow-up that has to start a fresh session gets the rules its job started with.
+- **Antigravity's limit.** Antigravity takes at most 24,000 characters of prompt, counting agt's own notes. When a prompt with its rules is longer, agt skips Antigravity with the reason: an edit role uses the next provider, and a read role runs its other providers. Rules are never cut.
+- **Trust.** Role rules steer workers that may edit code. agt reads them only from its own agents folders and refuses a link there. A file without the management line is yours: agt never rewrites it, but `agt run` still sends its Role rules.
+- **Reload.** Claude Code's docs say it watches `~/.claude/agents/` and the next delegation uses an edited file with no restart ([sub-agents](https://code.claude.com/docs/en/sub-agents)). They don't say whether another profile's folder (`CLAUDE_CONFIG_DIR`) is watched the same way; if an edit there doesn't show, restart the session. A session also needs a restart to see the first file in an agents folder that didn't exist when it started. Role rules don't depend on this: agt reads them from the file on every call.
+
+How agt reads a file:
+
+| State | Sync | `agt run --role` |
+|---|---|---|
+| valid | Keeps your two parts and rewrites the rest; no write when nothing changed | Your rules before the task |
+| legacy (written by agt 0.11) | Adds an empty Role rules section and keeps the sentence | No rules |
+| broken: a marker missing, doubled or out of order, or a description agt can't read | Leaves the file as it is and names the line to fix | Exits 2 before any provider starts when agt can't read the file or its markers; a description problem never blocks a run |
+| absent | Writes a new file | No rules, noted in the job's first lines |
+| yours: no management line | Never touched | Your rules before the task (a link or broken markers exit 2) |
+
+**Turning a role off keeps your parts.** When agt removes an edited file (the role is off, deleted, or no longer in your user settings), it first moves your sentence and rules to `role-agents/archive/<cli>/<folder>-<hash>/agt-<role>.toml` in your agt settings folder (`~/.agt` by default). That's outside every agents folder, so no CLI loads it. Turning the role back on puts them back. `agt roles show` names the archive while the role is off and lists every file with its state (`agent_files`, `when_to_call`, `rules_chars`, `rules_state` and `archived` in `--json`).

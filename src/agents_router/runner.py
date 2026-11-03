@@ -373,6 +373,8 @@ class Runner:
             else:
                 self.warnings.append(f"could not move the session from {owner}; starting a new one with a summary")
                 session, prompt = None, fallback_prompt or prompt
+                if self.spec.rules and self.spec.rules not in prompt:  # the new session gets the role's rules too
+                    prompt = f"{self.spec.rules}\n\n{prompt}"
         spec = dataclasses.replace(self.spec, resume_session=session)
         limits = plans.account_limits(self.runtime_config, account)
         capped = plans.cap_effort(spec.effort, limits)

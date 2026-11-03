@@ -1,6 +1,6 @@
 # Set up Agents Router (steps for an agent)
 
-You are installing, updating, repairing or removing Agents Router (`agt`) for the person you work with. Do the routine steps yourself. Ask them once, in one message, about the choices. At the end, tell them only what's left for them: logins and reloads. This guide is for agt 0.11.0 or newer; `agt guide setup` prints the copy that matches the installed version.
+You are installing, updating, repairing or removing Agents Router (`agt`) for the person you work with. Do the routine steps yourself. Ask them once, in one message, about the choices. At the end, tell them only what's left for them: logins and reloads. This guide is for agt 0.12.0 or newer; `agt guide setup` prints the copy that matches the installed version.
 
 ## 0. Before you start
 
@@ -11,12 +11,12 @@ You are installing, updating, repairing or removing Agents Router (`agt`) for th
 ## 1. Install or upgrade
 
 ```bash
-agt --version   # agents-router 0.11.0 or newer: go to step 2
+agt --version   # agents-router 0.12.0 or newer: go to step 2
 uv tool install --managed-python git+https://github.com/Watcharagorn/agents-router
 # without uv: pipx install git+https://github.com/Watcharagorn/agents-router
 ```
 
-- **Older than 0.11.0:** run `agt update`, then `agt guide setup` again, because the steps may have changed.
+- **Older than 0.12.0:** run `agt update`, then `agt guide setup` again, because the steps may have changed.
 - **`agt` not on PATH after the install:** call it by its full path for the rest of setup (`~/.local/bin/agt`, or `%USERPROFILE%\.local\bin\agt.exe` on Windows). Then run `uv tool update-shell` (or `pipx ensurepath`) so new terminals find it. The plugin's hooks call `agt` by name, so the person's next sessions need it on PATH.
 - **Windows:** `agt update` prints the package command instead of running it; run that command yourself.
 - **Not on PyPI:** never `pip install agt`; that's a different project.

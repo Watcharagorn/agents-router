@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from agents_router import jobs, messages
+from agents_router import jobs, messages, ui
 from agents_router.config import load_config
 from agents_router.fsutil import read_json, write_json
 from agents_router.runtimes.base import SUCCESS
@@ -924,6 +924,11 @@ class GroupFollower:
                 self.control(f"{member.tag} {member.provider} is job {member.job_id}")
             for item in skipped:
                 self.control(f"skipped {item['provider']} — {item['reason']}")
+        rules = self.record.get("rules") or {}
+        if rules.get("chars"):
+            self.control(f"role {self.role} · role rules: {rules['chars']} characters from {ui.tilde(rules['file'])}")
+        elif rules.get("note"):
+            self.control(f"role {self.role} · role rules: none ({rules['note']})")
         if any(item.get("quota") for item in skipped):
             self.control(f'hint: to move role {self.role} off a provider that keeps running out, ask your agent to '
                          '"rebalance my roles" (orchestrator-rebalance)')

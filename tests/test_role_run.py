@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from helpers import TempHome
 
-from agents_router import accounts, cli, jobs, messages, profiles
+from agents_router import accounts, cli, jobs, messages, profiles, tools, ui
 
 FRAME_RE = re.compile(r" · job ([a-z0-9-]+) · token ([0-9a-f]{32})$")
 GROUP_FOLLOW_RE = re.compile(r"^agt follow (g-[0-9a-f]+) --from (\d+)((?: --window \d+)?) # agt-token ([0-9a-f]{32})$", re.MULTILINE)
@@ -371,6 +371,159 @@ class RoleRunTests(TempHome):
         self.assertEqual(code, 0, text + err)
         spec = jobs.read_spec(jobs.group_members(self.frame(text)[0])[0])
         self.assertEqual(spec.prompt, "Look for injection bugs.\n\ncheck the login form")
+
+    # Role rules from the calling CLI's own agt-<role> file (S2, S6, S13) ---------------
+
+    def caller_file(self, folder, host="claude", rules="Never edit migrations.\n", name="builder"):
+        from agents_router import role_agents
+        from agents_router.config import load_config
+
+        path = folder / f"agt-{name}{role_agents.SUFFIX[host]}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(role_agents.render(load_config().roles[name], host, rules=rules))
+        return path
+
+    def build(self, *extra, task="fix the test"):
+        code, text, err = self.agt("run", "--follow", "--role", "builder", "--cwd", str(self.project), *extra, task)
+        self.assertEqual(code, 0, text + err)
+        return jobs.read_spec(jobs.group_members(self.frame(text)[0])[0]), text
+
+    def test_S2_rules_go_before_the_task_after_the_prompt_file(self):
+        prompt = self.root / "builder.md"
+        prompt.write_text("Work in small steps.\n", encoding="utf-8")
+        self.roles(f'[roles.builder]\nprompt_file = {json.dumps(str(prompt))}\nproviders = ["claude:a1"]')
+        path = self.caller_file(self.primary / "agents", rules="Run the tests before you finish.\nNever edit migrations.\n")
+        spec, text = self.build("--caller", "claude")
+        self.assertEqual(spec.prompt, f"Work in small steps.\n\nRole rules for the builder (from {ui.tilde(str(path))}):\n"
+                                      "Run the tests before you finish.\nNever edit migrations.\n\nfix the test")
+        self.assertEqual(spec.rules, f"Role rules for the builder (from {ui.tilde(str(path))}):\n"
+                                     "Run the tests before you finish.\nNever edit migrations.")
+        self.assertIn("role rules: 56 characters from", text)
+        group = jobs.read_group(self.frame(text)[0])
+        self.assertEqual(group["rules"]["chars"], 56)
+
+    def test_S11_a_fresh_session_follow_up_gets_the_rules_snapshot_first(self):
+        import shutil
+
+        self.roles('[roles.builder]\nproviders = ["claude"]')  # any account: the follow-up may land on another
+        self.caller_file(self.primary / "agents", rules="Never edit migrations.\n")
+        spec, _ = self.build("--caller", "claude")
+        self.caller_file(self.primary / "agents", rules="An edit made later.\n")  # edits apply to new calls only
+        owner = jobs.read_status(spec.job_id)["account"]
+        accounts.set_cooldown("claude", owner, time.time() + 3600, "test")
+        shutil.rmtree(self.root / "homes" / owner / "projects", ignore_errors=True)  # the transcript can't move
+        result = tools.call("subagent_message", {"job_id": spec.job_id, "text": "and the docs"})
+        follow_up = result["new_job"]["job_id"]
+        self.assertEqual(jobs.read_spec(follow_up).rules, spec.rules)
+        jobs.wait_for(follow_up, 60)
+        status = jobs.read_status(follow_up)
+        self.assertIn("could not move the session", " ".join(status.get("warnings") or []), status)
+        sent = self.records()[-1]["stdin"]
+        self.assertTrue(sent.startswith(spec.rules + "\n\n"), sent)
+        self.assertIn("and the docs", sent)
+        self.assertNotIn("An edit made later.", sent)
+
+    def test_S12_long_rules_skip_antigravity_for_the_next_provider(self):
+        gemini = self.root / "gemini"
+        self.roles('[roles.builder]\nproviders = ["antigravity", "claude:a1"]\n\n[roles.reviewer]\n'
+                   'providers = ["antigravity", "claude:a1"]\n\n[antigravity]\nprimary = '
+                   + json.dumps(str(gemini / "antigravity-cli")))
+        long = "Never edit migrations.\n" * 1100  # about 25,000 characters
+        self.caller_file(self.primary / "agents", rules=long)
+        spec, text = self.build("--caller", "claude")
+        self.assertEqual(spec.runtime, "claude")
+        self.assertIn(long.rstrip(), spec.prompt)  # never shortened
+        self.assertIn("skipped provider 1 antigravity — the prompt with agt's notes is up to", text)
+        self.assertIn("Antigravity takes at most 24000", text)
+        self.caller_file(self.primary / "agents", rules=long, name="reviewer")
+        code, text, err = self.run_role("reviewer", "--caller", "claude")
+        self.assertEqual(code, 0, text + err)
+        members = jobs.group_members(self.frame(text)[0])
+        self.assertEqual([jobs.read_spec(job).runtime for job in members], ["claude"])
+        self.assertIn("skipped antigravity — the prompt with agt's notes is up to", text)
+
+    def test_S6_two_claude_profiles_send_their_own_rules(self):
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]')
+        self.caller_file(self.primary / "agents", rules="Rules of the primary.\n")
+        other = self.root / "claude-ntb"
+        self.caller_file(other / "agents", rules="Rules of claude-ntb.\n")
+        spec, _ = self.build("--caller", "claude")
+        self.assertIn("Rules of the primary.", spec.prompt)
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(other)}):
+            spec, _ = self.build("--caller", "claude")
+        self.assertIn("Rules of claude-ntb.", spec.prompt)
+        self.assertNotIn("Rules of the primary.", spec.prompt)
+
+    def test_S13_codex_reads_codex_home_not_the_worker_home(self):
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]\n\n[codex]\nprimary = ' + json.dumps(str(self.root / "codex-w")))
+        self.caller_file(self.root / "codex-w" / "agents", "codex", rules="From the worker home.\n")
+        path = self.caller_file(self.root / "codex-home" / "agents", "codex", rules="From CODEX_HOME.\n")
+        spec, _ = self.build("--caller", "codex")
+        self.assertIn(f"(from {ui.tilde(str(path))}):\nFrom CODEX_HOME.", spec.prompt)
+        self.assertNotIn("From the worker home.", spec.prompt)
+
+    def test_S13_antigravity_reads_its_relay_plugin(self):
+        gemini = self.root / "gemini"
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]\n\n[antigravity]\nprimary = '
+                   + json.dumps(str(gemini / "antigravity-cli")))
+        path = self.caller_file(gemini / "config" / "plugins" / "agents-router-relays" / "agents", "antigravity",
+                                rules="From Antigravity.\n")
+        spec, _ = self.build("--caller", "antigravity")
+        self.assertIn(f"(from {ui.tilde(str(path))}):\nFrom Antigravity.", spec.prompt)
+
+    def test_terminal_kiro_and_nested_workers_send_none_and_say_why(self):
+        from agents_router import role_agents
+        from agents_router.config import load_config
+
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]')
+        self.caller_file(self.primary / "agents")
+        spec, text = self.build()  # no --caller: a terminal, Kiro or another tool
+        self.assertEqual(spec.prompt, "fix the test")
+        self.assertIn("role rules: none (no calling agent", text)
+        nested = role_agents.caller_rules("builder", "claude", load_config(), env={**os.environ, "AGT_DEPTH": "1"})
+        self.assertEqual((nested.text, nested.source), ("", None))
+        self.assertIn("a worker started by agt", nested.note)
+
+    def test_a_file_without_the_management_line_still_sends_its_rules(self):
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]')
+        path = self.caller_file(self.primary / "agents", rules="Mine entirely.\n")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(line for line in lines if "Managed by agt roles" not in line) + "\n", encoding="utf-8")
+        spec, _ = self.build("--caller", "claude")
+        self.assertIn("Mine entirely.", spec.prompt)
+
+    def test_a_linked_file_or_folder_exits_2_before_anything_starts(self):
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]')
+        real = self.caller_file(self.root / "elsewhere" / "agents")
+        (self.primary / "agents").mkdir()
+        (self.primary / "agents" / "agt-builder.md").symlink_to(real)
+        code, out, err = self.agt("run", "--follow", "--role", "builder", "--caller", "claude", "--cwd", str(self.project), "x")
+        self.assertEqual((code, out), (2, ""), err)
+        self.assertIn("is a link", " ".join(err.split()))
+        (self.primary / "agents" / "agt-builder.md").unlink()
+        (self.primary / "agents").rmdir()
+        (self.primary / "agents").symlink_to(real.parent)
+        code, out, err = self.agt("run", "--follow", "--role", "builder", "--caller", "claude", "--cwd", str(self.project), "x")
+        self.assertEqual((code, out), (2, ""), err)
+        self.assertIn("is a link", " ".join(err.split()))
+        self.assertEqual(self.job_ids(), [])
+
+    def test_S8_a_broken_file_exits_2_naming_the_line(self):
+        from agents_router import role_agents
+
+        self.roles('[roles.builder]\nproviders = ["claude:a1"]')
+        path = self.caller_file(self.primary / "agents")
+        text = path.read_text(encoding="utf-8")
+        line = text.splitlines().index(role_agents.RULES_START) + 1
+        path.write_text(text.replace(role_agents.RULES_END + "\n", ""), encoding="utf-8")
+        code, out, err = self.agt("run", "--follow", "--role", "builder", "--caller", "claude", "--cwd", str(self.project), "x")
+        self.assertEqual((code, out), (2, ""), err)  # no frame started, so none is left half-open
+        self.assertIn(f"{path}:{line}:", " ".join(err.split()))
+        code, out, err = self.agt("run", "--json", "--role", "builder", "--caller", "claude", "--cwd", str(self.project), "x")
+        self.assertEqual(code, 2)
+        report = json.loads(err)
+        self.assertIn(f"{path}:{line}:", report["error"])
+        self.assertEqual(self.job_ids(), [])
 
     # Refusals (exit 2, nothing starts) ---------------------------------------------------
 

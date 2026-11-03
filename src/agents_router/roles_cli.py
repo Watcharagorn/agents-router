@@ -278,10 +278,13 @@ def _unknown(name: str, known: list[str]) -> RoleError:
 
 def prompt_path(name: str, level: str, location: Path) -> tuple[Path, str]:
     """Where --prompt's text goes, and what prompt_file says: in the workspace file, `roles/<name>.md` beside it
-    (relative, so the committed file works in every clone); otherwise your user folder, by its full path."""
+    (relative, so the committed file works in every clone); in the local file, `roles/<name>.local.md` beside it,
+    kept out of git; otherwise your user folder, by its full path."""
 
     if level == "workspace":
         return location.parent / "roles" / f"{name}.md", f"roles/{name}.md"
+    if level == "local":
+        return location.parent / "roles" / f"{name}.local.md", f"roles/{name}.local.md"
     target = config.user_settings_path().parent / "roles" / f"{name}.md"
     return target, str(target)
 
@@ -697,6 +700,21 @@ def _write(args: argparse.Namespace, edit: Edit) -> int:
     widens = change.widens if not edit.grid else []
     needs = bool(widens) and who["by"] == "agent" and not args.user_said
     retry = _command(extra=' --user-said "<the user\'s words>"')
+    if not change.names and edit.prompt is not None and edit.role:  # same prompt_file: only its text may change
+        target = prompt_path(edit.role, level, location)[0]
+        text = edit.prompt if edit.prompt.endswith("\n") else edit.prompt + "\n"
+        if settings_write.read_text(target) != text:
+            if not args.dry_run:
+                fsutil.make_private_dir(target.parent)
+                fsutil.write_text(target, text)
+                if level == "local":
+                    settings_write.exclude_local(target)
+            if args.json:
+                print(json.dumps({"changes": {}, "prompt_text": str(target), "file": str(location), "level": level,
+                                  "dry_run": args.dry_run}, indent=2))
+            else:
+                print(f"{edit.role:<9} prompt text {'would change' if args.dry_run else 'changed'} in {ui.tilde(str(target))}")
+            return 0
     if not change.names:
         if args.json:
             print(json.dumps({"changes": {}, "file": str(location), "level": level, "dry_run": args.dry_run}, indent=2))
@@ -735,7 +753,10 @@ def _write(args: argparse.Namespace, edit: Edit) -> int:
         saved = _commit(edit, change, lines, who, workspace, "agt roles config (grid)" if edit.grid else _command())
     from agents_router import role_agents
 
-    saved["agents"] = role_agents.sync(config.load_config())
+    # Agent files are user-wide: only a description written to your user settings replaces the sentence in them.
+    described = edit.role if edit.role and level == "user" and (
+        edit.description is not None or "description" in (edit.unset or [])) else None
+    saved["agents"] = role_agents.sync(config.load_config(), fresh=[described] if described else ())
     return _print_saved(args, edit, {**report, **saved})
 
 
@@ -775,13 +796,15 @@ def _commit(edit: Edit, change: Change, lines: list[str], who: dict[str, Any], w
     location, level = change.location, change.level
     synclog.notice(workspace)  # a hand edit made before this change is logged as one
     backup = settings_write.backup(location, level)
-    if edit.prompt is not None and edit.role:
-        target = prompt_path(edit.role, level, location)[0]
-        fsutil.make_private_dir(target.parent)
-        fsutil.write_text(target, edit.prompt if edit.prompt.endswith("\n") else edit.prompt + "\n")
+    prompt = prompt_path(edit.role, level, location)[0] if edit.prompt is not None and edit.role else None
+    if prompt is not None:
+        fsutil.make_private_dir(prompt.parent)
+        fsutil.write_text(prompt, edit.prompt if edit.prompt.endswith("\n") else edit.prompt + "\n")
     levels.write(location, change.new_text)
     synclog.saved(location)
     excluded = settings_write.exclude_local(location) if level == "local" and not change.old_text else None
+    if prompt is not None and level == "local":  # every local prompt file, even beside a settings file kept out already
+        excluded = settings_write.exclude_local(prompt) or excluded
     undo_file = (config.state_dir() / "backups" / "settings"
                  / f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 10**9}-{level}-roles-undo.json")
     fsutil.make_private_dir(undo_file.parent)
@@ -863,6 +886,8 @@ def _choices(loaded: config.Config):
 
 
 def _table_json(loaded: config.Config) -> dict[str, Any]:
+    from agents_router import role_agents
+
     workspace = levels.find_workspace()
     rows = []
     for role in roles.ordered(loaded.roles):
@@ -871,9 +896,15 @@ def _table_json(loaded: config.Config) -> dict[str, Any]:
             problem = show_problem(loaded, provider)
             providers.append({"provider": str(provider), "entry": provider.entry(), "model": provider.model,
                               "effort": provider.effort, "usable": problem is None, "reason": problem})
+        mine = role_agents.here(role.name, loaded)
         rows.append({"name": role.name, "access": role.access, "enabled": role.enabled, "base": role.base,
                      "use_when": role.use_when, "level": role.level(), "providers": providers,
-                     **({"prompt_file": role.prompt_file} if role.prompt_file else {})})
+                     **({"prompt_file": role.prompt_file} if role.prompt_file else {}),
+                     "when_to_call": (mine or {}).get("when_to_call") or role.use_when,
+                     "rules_chars": (mine or {}).get("rules_chars", 0),
+                     "rules_state": (mine or {}).get("state"),
+                     "agent_files": role_agents.agent_files(role.name, loaded),
+                     "archived": [str(path) for path in role_agents.archived(role.name)]})
     return {"roles": rows, "files": {level: str(path) for level, path in settings_write.files(workspace).items()}}
 
 
@@ -885,7 +916,51 @@ def _table_lines(loaded: config.Config) -> list[ui.Line]:
     lines = roles_grid.RoleGrid(found).table()
     notes = [f"  ! {role.name}: {problem}" for role in found for provider in role.providers
              if (problem := show_problem(loaded, provider))]
+    notes += _agent_notes(found)
+    notes += _parts_notes(loaded, found)
     return lines + ([""] + notes if notes else [])
+
+
+def _parts_notes(loaded: config.Config, found: list[roles.Role]) -> list[str]:
+    """What your agt-<role> file in this CLI adds: your sentence, your Role rules, or the line to fix; and archives."""
+
+    from agents_router import role_agents
+
+    out = []
+    for role in found:
+        mine = role_agents.here(role.name, loaded) if role.enabled else None
+        if mine and mine["state"] == "broken":
+            out.append(f"  ! {role.name}: {mine['problem']}")
+        elif mine and mine["state"] != "absent":
+            parts = ([f"Role rules ({mine['rules_chars']} characters)"] if mine["rules_chars"] else []) + (
+                ["its own \"when to call\" sentence"] if mine["when_to_call"] not in (None, role.use_when) else [])
+            if parts:
+                out.append(f"  {role.name}: {ui.tilde(mine['file'])} has {' and '.join(parts)}")
+        for path in role_agents.archived(role.name) if not role.enabled else []:
+            out.append(f"  {role.name}: your sentence and Role rules wait in {ui.tilde(str(path))} until it's on again")
+    return out
+
+
+def _agent_notes(found: list[roles.Role]) -> list[str]:
+    """A line for each enabled role that gets no agt-<role> agent: agent files come from your user settings alone."""
+
+    from agents_router import role_agents
+
+    try:
+        mine, problems = role_agents.user_roles()
+    except (levels.SettingsError, RoleError):
+        return []
+    out = []
+    for role in found:
+        if not role.enabled or role.name in mine:
+            continue
+        if not any(layer.level == "user" for layer in role.sources.values()):
+            where = ui.tilde(str(next(iter(role.sources.values())).path))
+            out.append(f"  ! {role.name}: no agt-{role.name} agent: defined only in {where}; "
+                       "add --user to define it for your agent")
+        else:
+            out += [f"  ! {role.name}: {note}" for note in problems if note.startswith(f"no agt-{role.name} agent:")]
+    return out
 
 
 def _show(as_json: bool) -> int:

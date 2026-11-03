@@ -238,6 +238,18 @@ def proposal(args: argparse.Namespace, screen: dict[str, Any]) -> dict[str, Any]
     return data
 
 
+def _when_to_call(name: str) -> str:
+    """The role's "when to call" sentence: yours from this CLI's agt-<role> file, else agt's default."""
+
+    from agents_router import config, role_agents, roles
+
+    try:
+        mine = role_agents.here(name, config.load_config())
+    except ValueError:
+        mine = None
+    return (mine or {}).get("when_to_call") or roles.BASE_DESCRIPTIONS[name]
+
+
 def roles_proposal(screen: dict[str, Any]) -> dict[str, Any]:
     """The role part of the proposal: the table, why, the agents it writes and any order to ask."""
 
@@ -250,7 +262,7 @@ def roles_proposal(screen: dict[str, Any]) -> dict[str, Any]:
     data: dict[str, Any] = {"state": plan.state, "means": ROLE_STATES[plan.state], "agents_for": agents_for}
     if plan.state == "propose":
         data["table"] = {name: {"access": roles.BASE_ROLES[name], "providers": table["providers"],
-                                "use_when": roles.BASE_DESCRIPTIONS[name], "why": plan.reasons.get(name, "")}
+                                "use_when": _when_to_call(name), "why": plan.reasons.get(name, "")}
                          for name, table in plan.table.items()}
         data["left_out"] = plan.off
     data["planned"] = report.done
