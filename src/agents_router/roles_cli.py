@@ -70,7 +70,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     change.add_argument("--disable", action="append", default=[], metavar="ROLES", help="Turn roles off.")
     change.add_argument("--access", choices=roles.ACCESS, help="A custom role's access.")
     change.add_argument("--prompt", metavar="TEXT", help="A custom role's instructions, added before each task.")
-    change.add_argument("--description", metavar="TEXT", help="A custom role's 'use me when' line.")
+    change.add_argument("--description", metavar="TEXT",
+                        help="A custom role's 'use me when' line: what it does and when to call it. A new role needs it.")
     change.add_argument("--delete", action="store_true", help="Delete a custom role from the file.")
     change.add_argument("--unset", action="append", default=[], metavar="KEYS",
                         help="Remove keys from the role's table in this file (a bad hand edit, or an override of a "
@@ -273,7 +274,7 @@ def _order_names(names: Any) -> list[str]:
 def _unknown(name: str, known: list[str]) -> RoleError:
     listed = ", ".join(_order_names(known)) or "none yet (agt setup or agt roles config sets them up)"
     return RoleError(f"there's no role {name}. Roles: {listed}. To make a custom role: "
-                     f"agt roles config {name} --access read --only <provider>")
+                     f"agt roles config {name} --access read --only <provider> --description \"<what it does>\"")
 
 
 def prompt_path(name: str, level: str, location: Path) -> tuple[Path, str]:
@@ -496,6 +497,19 @@ def plan_change(edit: Edit, user: Path, workspace: levels.Workspace | None, foun
     change = Change(level, location, old_text, new_text, names, own_before, own_after,
                     _merge([lower, own_before]), _merge([lower, own_after]), full_before,
                     _merge([lower, own_after, *(_raw(layer) for layer in higher)]), higher, summary)
+    for name in names:  # a custom role's description is the only thing that tells your agent when to call it
+        after = change.full_after.get(name)
+        if name in roles.BASE_ROLES or not after or _described(after):
+            continue
+        if name in full_before and not _described(full_before[name]):
+            continue  # made before descriptions were needed: still runs, and other changes still work
+        if name not in full_before:
+            needs = ("\"description\": what it does and when to call it" if edit.tables is not None
+                     else "--description \"<what it does and when to call it>\"")
+            raise RoleError(f"{'--from: roles.' if edit.tables is not None else ''}{name} is a new custom role, "
+                            f"so it needs {needs}, in the user's words")
+        raise RoleError(f"{name} needs its description: it tells your agent what the role does and when to call it. "
+                        f"Give a new one instead: agt roles config {name} --description \"<what it does>\"")
     if names:
         after_layers = levels.layers(user, workspace, override={location: new_text})
         change.loaded = config.from_layers(after_layers)  # the shape of every role, as agt will load it
@@ -507,6 +521,11 @@ def plan_change(edit: Edit, user: Path, workspace: levels.Workspace | None, foun
                     if problem:
                         raise RoleError(problem)
     return change
+
+
+def _described(table: dict[str, Any]) -> bool:
+    description = table.get("description")
+    return isinstance(description, str) and bool(description.strip())
 
 
 def account_problem(loaded: config.Config, provider: roles.Provider) -> str | None:
@@ -915,7 +934,7 @@ def _table_lines(loaded: config.Config) -> list[ui.Line]:
     found = roles.ordered(loaded.roles)
     if not found:
         return ["No roles yet. agt setup proposes a role table; or make one: "
-                "agt roles config <name> --access read --only <provider>"]
+                "agt roles config <name> --access read --only <provider> --description \"<what it does>\""]
     lines = roles_grid.RoleGrid(found).table()
     notes = [f"  ! {role.name}: {problem}" for role in found for provider in role.providers
              if (problem := show_problem(loaded, provider))]

@@ -52,7 +52,7 @@ agt setup --dry-run --json
 | `plugin` | The plugin commands per CLI and profile (`planned`, `already`, `failed`) |
 | `claude_profiles` | Each Claude Code profile: `name`, `folder`, `this_session`, `gets_plugin` |
 | `share`, `repos`, `switches` | Sharing agents and skills between the CLIs, the repos with their own, and the on/off lines |
-| `roles` | The proposed role table (`table`: each role's providers, `use_when` and `why`), the `agt-<role>` agents it writes for this CLI (`planned`), `needs_order` and the four `answers` |
+| `roles` | The proposed role table (`table`: each role's `access`, `providers`, `use_when` and `why`), the `agt-<role>` agents it writes for this CLI (`planned`), `needs_order`, the four `answers`, and on a first setup `custom`: the question about a role of their own and the command that adds it |
 | `needs_answer` | Items whose copies differ: the person picks one |
 | `still_needed` | What's left for the person after setup |
 | `command`, `next` | The command that applies this exact plan, and what to do before running it |
@@ -61,10 +61,10 @@ agt setup --dry-run --json
    - the Claude profiles that get the plugin, with their folders, marking this session's;
    - the share table (each item with its folders) and the excluded items;
    - the switches, on or off;
-   - the role table, one line per role with its providers (an edit role's in order), and that its `agt-<role>` agents are for this CLI only;
+   - the role table. Open it with one line on what a role is: a named job your agent hands to its `agt-<role>` agent, and agt picks the provider from the role's settings. Then one bullet per role: **<name>** (<access>; <providers>): <use_when>. Join a read role's providers with " + "; give an edit role's in order, joined with ", then ". Quote `use_when` word for word: it says what the role does and when your agent calls it. Say that the `agt-<role>` agents are for this CLI only, and that they can later change when a role is called or give it standing rules by asking (the orchestrator-customize skill);
    - each `needs_answer` item.
 
-   Offer these answers: **Approve** (as proposed), **Change a role** (or another item), **Skip roles**, or **Cancel**. If `roles.state` is `set`, the roles stay as they are and there is nothing to ask about them.
+   Offer these answers: **Approve** (as proposed), **Change a role** (or another item), **Skip roles**, or **Cancel**. If `roles.state` is `set`, the roles stay as they are and there is nothing to ask about them. When `roles.custom` is there (a first setup), end the message with its `ask`: "Want a role of your own too? Tell me its name, what it does, read or edit, and its providers."
 2. **Put the answers in flags** and run the dry run again.
 3. **Run the new proposal's `command` exactly as given.** It ends in `--yes --if-plan <id>`, which refuses when anything changed since the dry run.
 
@@ -82,14 +82,18 @@ agt setup --dry-run --json
 | Delegation rules, Codex's session line | `--rules on`, `--codex-session-line on` |
 | The plugin only | `--share off` |
 | A role with other providers, or left out | `--role reviewer=codex,antigravity`, `--role verifier=off` |
-| No roles at all (Skip roles) | `--roles off`: no role settings and no role agents |
+| No roles at all (Skip roles) | `--roles off`: no role settings and no role agents. Tell them they can set roles up later by asking you (the orchestrator-setup skill) |
 | The order of an edit role's providers | `--role-order builder=<first>,<second>` |
 
 - Profiles already on this machine (`~/.claude`, `~/.claude-*`) need no `--account`. `--account NAME=FOLDER` is only for a logged-in folder somewhere else.
 - No question is needed for the install, the PATH fix or the dry run. Everything `command` does needs the person's answer first.
 - A command that exits 3 with `needs_choice` changed nothing. Ask its `ask` and run its `retry` with the answer.
 - **Builder with several providers.** When the person gives an edit role (the Builder) more than one provider, `roles.needs_order` asks which goes first: it runs on one provider at a time, in that order. Ask it, then add its `--role-order` flag. Read-only roles run all their providers at once, so they have no order.
-- Roles are changed later with `agt roles config`, never by editing `[roles.*]` by hand. Custom roles are added there too, not in setup.
+- **A role of your own.** Setup writes only the base roles. Add each custom role after `command` succeeds, with `roles.custom.command`: `agt roles config <name> --access read|edit --only <providers> --description "<what it does>"`. A role made before that changes the plan: `--if-plan` refuses, and setup stops proposing the base roles.
+  - The description is the person's: what the role does and when their agent should call it, in their words. If they didn't say, ask. Never write it yourself; agt refuses a new custom role without one.
+  - An edit role also needs `--user-said "<their words>"`.
+  - When their request already approved the proposal, run `command` first, then offer a role of your own in your final message.
+- Roles are changed later with `agt roles config`, never by editing `[roles.*]` by hand.
 - **Role agents go to the CLI you run in.** agt can't tell Antigravity from a plain terminal, so an agent running in Antigravity adds `--host antigravity` to the dry run and to `agt update`. With `--host`, the role agents go to each CLI it names.
 
 ## 3. Claude profiles in practice

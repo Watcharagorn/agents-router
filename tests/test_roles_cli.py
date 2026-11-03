@@ -366,9 +366,62 @@ class FlagTests(RolesBase):
         self.assertEqual(code, 0, err)
         self.assertNotIn("roles.security", self.text(self.user_file))
 
+    def test_a_new_custom_role_needs_its_description(self):
+        before = self.user_file.read_bytes()
+        for extra in ((), ("--description", ""), ("--description", "   ")):
+            code, _, err = self.agt("roles", "config", "docs", "--access", "read", "--only", "codex:work", *extra,
+                                    terminal=True)
+            self.assertEqual(code, 2, (extra, err))
+            self.assertIn("docs is a new custom role, so it needs --description", err)
+            self.same_bytes(self.user_file, before)
+        proposal = self.root / "p.json"
+        proposal.write_text(json.dumps({"roles": {"docs": {"access": "read", "providers": ["codex:work"]}}}),
+                            encoding="utf-8")
+        code, _, err = self.agt("roles", "config", "--from", str(proposal), terminal=True)
+        self.assertEqual(code, 2)
+        self.assertIn('--from: roles.docs is a new custom role, so it needs "description"', err)
+        self.same_bytes(self.user_file, before)
+        self.assertEqual(self.backups(), [])
+        _, _, err = self.agt("roles", "config", "typo", "--add", "codex:work", terminal=True)
+        self.assertIn('--only <provider> --description "<what it does>"', err)  # the hint names a command that works
+
+    def test_a_custom_role_keeps_its_description(self):
+        code, _, err = self.agt("roles", "config", "docs", "--access", "read", "--only", "codex:work",
+                                "--description", "Writes the docs", terminal=True)
+        self.assertEqual(code, 0, err)
+        before = self.user_file.read_bytes()
+        for argv in (("docs", "--unset", "description"), ("docs", "--description", " ")):
+            code, _, err = self.agt("roles", "config", *argv, terminal=True)
+            self.assertEqual(code, 2, (argv, err))
+            self.assertIn("docs needs its description", err)
+            self.same_bytes(self.user_file, before)
+        code, _, err = self.agt("roles", "config", "docs", "--description", "Writes and fixes the docs", terminal=True)
+        self.assertEqual(code, 0, err)
+
+    def test_a_rebalance_written_back_keeps_a_custom_role_description(self):
+        code, _, err = self.agt("roles", "config", "docs", "--access", "read", "--only", "codex:work",
+                                "--description", "Writes the docs", terminal=True)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.agt("roles", "propose", "--rebalance", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["roles"]["docs"]["description"], "Writes the docs")
+        proposal = self.root / "rebalance.json"
+        proposal.write_text(out, encoding="utf-8")
+        code, _, err = self.agt("roles", "config", "--from", str(proposal), terminal=True)
+        self.assertEqual(code, 0, err)  # orchestrator-rebalance's write-back isn't refused
+        self.assertIn('description = "Writes the docs"', self.text(self.user_file))
+
+    def test_a_custom_role_from_before_descriptions_still_changes(self):
+        self.user_file.write_text(self.accounts + ROLES + '\n[roles.old]\naccess = "read"\nproviders = ["codex:work"]\n',
+                                  encoding="utf-8")
+        code, _, err = self.agt("roles", "config", "old", "--add", "kiro:primary", terminal=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn('[roles.old]', self.text(self.user_file))
+
     def test_workspace_prompt_file_is_relative_to_the_settings_file(self):
         code, out, err = self.agt("roles", "config", "sec", "--access", "read", "--only", "codex:work",
-                                  "--prompt", "Look for injection.", "--workspace", terminal=True)
+                                  "--description", "Checks security", "--prompt", "Look for injection.", "--workspace",
+                                  terminal=True)
         self.assertEqual(code, 0, err)
         self.assertEqual((self.project / ".agt" / "roles" / "sec.md").read_text(encoding="utf-8"), "Look for injection.\n")
         self.assertIn('prompt_file = "roles/sec.md"', self.text(self.team_file))
@@ -381,7 +434,8 @@ class FlagTests(RolesBase):
             self.skipTest("needs git")
         subprocess.run(["git", "init", "-q"], cwd=self.project, check=True)
         code, out, err = self.agt("roles", "config", "sec", "--access", "read", "--only", "codex:work",
-                                  "--prompt", "Mine everywhere.", "--user", terminal=True)
+                                  "--description", "Checks security", "--prompt", "Mine everywhere.", "--user",
+                                  terminal=True)
         self.assertEqual(code, 0, err)
         mine = self.home / "roles" / "sec.md"
         self.assertEqual(mine.read_text(encoding="utf-8"), "Mine everywhere.\n")
@@ -488,7 +542,7 @@ class AgentTests(RolesBase):
     def test_every_widening_needs_words_and_narrowing_does_not(self):
         widening = [
             ("builder", "--order", "kiro:primary,claude:claude-work/opus"),  # --order brings in a new entry
-            ("sec", "--access", "edit", "--only", "codex:work"),  # custom role created as edit
+            ("sec", "--access", "edit", "--only", "codex:work", "--description", "Fixes security bugs"),  # created as edit
             ("--disable", "verifier"),
             ("--enable", "builder"),
         ]

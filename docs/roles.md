@@ -11,7 +11,7 @@ A role is a named job, such as Reviewer or Builder, with one or more providers. 
 | builder | edit | for edits |
 | verifier | read | after the Builder, to check the change works |
 
-You can add custom roles, each with its own access, prompt and providers.
+You can add custom roles, each with its own access, prompt and providers, and a description in your words of what it does and when your agent should call it. A new custom role needs that description.
 
 ## How a role runs
 
@@ -57,7 +57,7 @@ Change roles with `agt roles config`, never by hand-editing, so every change is 
 | `agt roles config <role> --order <providers>` | an edit role's priority |
 | `agt roles config --set-model/--set-effort <provider>=<value>` | one provider in every role that uses it |
 | `agt roles config --enable/--disable <roles>` | turn roles on or off, base roles included |
-| `agt roles config <new-role> --access read --only <providers>` | a custom role (`--prompt`, `--description`, `--delete`) |
+| `agt roles config <new-role> --access read --only <providers> --description "<what it does>"` | a custom role (`--prompt`, `--delete`); the description is required |
 | `agt roles propose [--rebalance] [--json]` · `agt roles config --from FILE` | a proposed table, then writing it |
 
 Add `--dry-run` to see a change without writing it. Name `--user`, `--workspace` or `--local` to pick the file; with none, a change goes where the role is set now, else your user file, never the committed workspace file. A refused command writes nothing. After a write agt prints the file, the level, any override from another level, the backup and one undo command.
@@ -68,7 +68,7 @@ When agt skips a provider for quota, it suggests a rebalance: ask your agent to 
 
 ## Role agents
 
-agt writes one relay agent per enabled role, named `agt-<role>`, only for the CLI you set roles up in: Claude Code (every profile with the plugin), Codex and Antigravity. Kiro has no relay agents. The files come from your user settings alone: a project's settings never add, change or remove one, so `agt roles config --disable builder --local` turns the builder off in that project and leaves `agt-builder` for the others. A role set only in a project's file gets no agent; `agt roles show` says so. Each file says `Managed by agt roles`; agt never overwrites or deletes a same-named file without that line, so you can turn a role off and write your own `agt-<role>`. `agt share` doesn't copy these files to other CLIs. `agt setup` proposes the role table in its one question, and `agt update` brings the files in line.
+agt writes one relay agent per enabled role, named `agt-<role>`, only for the CLI you set roles up in: Claude Code (every profile with the plugin), Codex and Antigravity. Kiro has no relay agents. The files come from your user settings alone: a project's settings never add, change or remove one, so `agt roles config --disable builder --local` turns the builder off in that project and leaves `agt-builder` for the others. A role set only in a project's file gets no agent; `agt roles show` says so. Each file says `Managed by agt roles`; agt never overwrites or deletes a same-named file without that line, so you can turn a role off and write your own `agt-<role>`. `agt share` doesn't copy these files to other CLIs. `agt setup` proposes the role table in its one question, with what each role does and when your agent calls it, and asks whether you want a role of your own (added after setup, with its description). `agt update` brings the files in line.
 
 ### Your two parts of a role agent
 

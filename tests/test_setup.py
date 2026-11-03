@@ -10,8 +10,9 @@ from unittest.mock import patch
 
 import helpers  # noqa: F401  (isolates the test process from your real folders)
 
-from agents_router import cli, setup
+from agents_router import cli, role_agents, setup
 from agents_router.config import default_primary, load_config
+from agents_router.roles import BASE_DESCRIPTIONS, Role, parse_provider
 from agents_router.runtimes.claude import ClaudeRuntime
 
 FAKE_HOST = Path(__file__).with_name("fake_host.py")
@@ -724,6 +725,12 @@ class RoleSetupTests(ProfileBase):
         self.assertEqual(list(roles["table"]), ["decision-maker", "reviewer", "builder", "verifier"])
         self.assertEqual(set(roles["answers"]), {"Approve", "Change a role", "Skip roles", "Cancel"})
         self.assertEqual(roles["needs_order"], [])
+        self.assertEqual(roles["table"]["builder"]["access"], "edit")
+        self.assertEqual(roles["table"]["builder"]["use_when"], BASE_DESCRIPTIONS["builder"])
+        self.assertIn("use_when word for word", proposal["next"])
+        self.assertTrue(roles["custom"]["ask"].startswith("Want a role of your own too?"))  # asked on a first setup
+        self.assertIn('--description "<what it does', roles["custom"]["command"])
+        self.assertIn("only after `command` succeeds", roles["custom"]["when"])
         self.assertIn("would install role agent agt-reviewer", " ".join(roles["planned"]))
         self.assertIn("role table", proposal["next"])
         self.assertIn("--role-order builder=", proposal["command"])  # the approved table, as flags
@@ -745,10 +752,30 @@ class RoleSetupTests(ProfileBase):
         again = self.proposal()
         self.assertEqual(again["roles"]["state"], "set")
         self.assertNotIn("--role", again["command"])
+        self.assertNotIn("custom", again["roles"])
+
+    def test_the_screen_shows_what_each_role_does_and_offers_your_own(self):
+        code, preview = self.run_cli("--host", "claude", "--share", "off", "--dry-run")
+        self.assertEqual(code, 0, preview)
+        roles_part = preview.split("\nRoles\n", 1)[1]
+        for name, sentence in BASE_DESCRIPTIONS.items():
+            self.assertIn(f"\n    {sentence}\n", roles_part, name)  # under its role's row
+        self.assertLess(roles_part.index("  builder "), roles_part.index(BASE_DESCRIPTIONS["builder"]))
+        self.assertIn("Want a role of your own too? Add it after setup; TEXT says what it does:\n"
+                      '    agt roles config NAME --access read --only PROVIDER --description "TEXT"', roles_part)
+
+    def test_the_screen_shows_your_own_sentence(self):
+        agent = self.ntb / "agents" / "agt-builder.md"  # this session's profile
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        role = Role("builder", "edit", [parse_provider("codex")])
+        agent.write_bytes(role_agents.render(role, "claude", sentence="Use for every file change."))
+        table = self.proposal()["roles"]["table"]
+        self.assertEqual(table["builder"]["use_when"], "Use for every file change.")
 
     def test_S1a_skip_roles_writes_nothing(self):
         proposal = self.proposal("--roles", "off")
         self.assertEqual(proposal["roles"]["state"], "off")
+        self.assertNotIn("custom", proposal["roles"])
         self.assertIn("--roles off", proposal["command"])
         code, out = self.run_cli(*proposal["command"].split()[2:])
         self.assertEqual(code, 0, out)
