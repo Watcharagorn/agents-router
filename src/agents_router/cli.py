@@ -28,11 +28,13 @@ def _print(value: Any) -> None:
 
 
 def _job_arguments(parser: argparse.ArgumentParser) -> None:
+    from agents_router.role_agents import HOSTS as CALLERS  # the CLIs with agt-<role> agents
+
     parser.add_argument("prompt", help="The task. Use '-' to read it from stdin.")
     parser.add_argument("--runtime", default=None, choices=RUNTIMES, help="Default: claude (not with --role).")
     parser.add_argument("--account")
     parser.add_argument("--role", help="Run as a role from [roles.<name>]: agt picks the providers (not with --runtime or --account).")
-    parser.add_argument("--caller", choices=("claude", "codex", "antigravity"),
+    parser.add_argument("--caller", choices=CALLERS,
                         help="With --role: the CLI whose agt-<role> agent calls; its Role rules go to the worker. "
                         "agt's role agents pass it.")
     parser.add_argument("--cwd", default=os.getcwd())

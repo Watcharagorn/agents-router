@@ -705,10 +705,7 @@ def _write(args: argparse.Namespace, edit: Edit) -> int:
         text = edit.prompt if edit.prompt.endswith("\n") else edit.prompt + "\n"
         if settings_write.read_text(target) != text:
             if not args.dry_run:
-                fsutil.make_private_dir(target.parent)
-                fsutil.write_text(target, text)
-                if level == "local":
-                    settings_write.exclude_local(target)
+                _write_prompt(target, text, level)
             if args.json:
                 print(json.dumps({"changes": {}, "prompt_text": str(target), "file": str(location), "level": level,
                                   "dry_run": args.dry_run}, indent=2))
@@ -789,6 +786,15 @@ def _write_table(table: dict[str, dict[str, Any] | None], level: str | None, who
     return _commit(edit, change, lines, who, workspace, command_text)
 
 
+def _write_prompt(target: Path, text: str, level: str) -> str | None:
+    """Write --prompt's text to its file, ending in a newline. Every local prompt file is kept out of git, even beside
+    a settings file kept out already; returns the exclude file when that added its line."""
+
+    fsutil.make_private_dir(target.parent)
+    fsutil.write_text(target, text if text.endswith("\n") else text + "\n")
+    return settings_write.exclude_local(target) if level == "local" else None
+
+
 def _commit(edit: Edit, change: Change, lines: list[str], who: dict[str, Any], workspace: levels.Workspace | None,
             command_text: str) -> dict[str, Any]:
     """Write a checked change: backup, the file, agt's log and the undo file. Prints nothing."""
@@ -797,14 +803,11 @@ def _commit(edit: Edit, change: Change, lines: list[str], who: dict[str, Any], w
     synclog.notice(workspace)  # a hand edit made before this change is logged as one
     backup = settings_write.backup(location, level)
     prompt = prompt_path(edit.role, level, location)[0] if edit.prompt is not None and edit.role else None
-    if prompt is not None:
-        fsutil.make_private_dir(prompt.parent)
-        fsutil.write_text(prompt, edit.prompt if edit.prompt.endswith("\n") else edit.prompt + "\n")
+    excluded = settings_write.exclude_local(location) if level == "local" and not change.old_text else None
+    if prompt is not None:  # before the settings file, which names it
+        excluded = _write_prompt(prompt, edit.prompt, level) or excluded
     levels.write(location, change.new_text)
     synclog.saved(location)
-    excluded = settings_write.exclude_local(location) if level == "local" and not change.old_text else None
-    if prompt is not None and level == "local":  # every local prompt file, even beside a settings file kept out already
-        excluded = settings_write.exclude_local(prompt) or excluded
     undo_file = (config.state_dir() / "backups" / "settings"
                  / f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 10**9}-{level}-roles-undo.json")
     fsutil.make_private_dir(undo_file.parent)

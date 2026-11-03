@@ -530,6 +530,12 @@ def _hosts(loaded: Any, host: str | list[str] | None) -> list[str]:
     if found != "unknown":
         return [found] if found in HOSTS else []
     # A plain terminal: keep in line only the CLIs that already have agt's role agents.
+    return _holding(loaded)
+
+
+def _holding(loaded: Any) -> list[str]:
+    """The CLIs that already hold agt's role agents."""
+
     return [name for name in HOSTS if any(own_files(folder) for folder in folders(loaded, name))]
 
 
@@ -570,7 +576,7 @@ def changes(loaded: Any, host: str | list[str] | None = None, dry_run: bool = Fa
 
     named = _hosts(loaded, host)
     if fresh and host is None:  # an explicit --description reaches every CLI that holds agt's role agents
-        named += [name for name in HOSTS if name not in named and any(own_files(folder) for folder in folders(loaded, name))]
+        named += [name for name in _holding(loaded) if name not in named]
     if not named:
         return []
     notes: list[str] = []
@@ -649,7 +655,7 @@ def _sync_folder(folder: Folder, wanted: dict[str, roles.Role], dry_run: bool, f
         default = known[name].use_when if name in known else roles.BASE_DESCRIPTIONS.get(name, "")
         kept = None
         try:
-            if parts.state != "broken" and (parts.rules or not unedited(name, parts.sentence, default)):
+            if parts.rules or not unedited(name, parts.sentence, default):
                 kept = _archive(folder, name, parts, dry_run)  # your edits outlive the file
             if not dry_run:
                 path.unlink()

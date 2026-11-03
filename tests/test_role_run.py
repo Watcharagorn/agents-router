@@ -423,6 +423,38 @@ class RoleRunTests(TempHome):
         self.assertIn("and the docs", sent)
         self.assertNotIn("An edit made later.", sent)
 
+    def test_S11_a_follow_up_that_fails_over_gives_the_next_account_the_rules_first(self):
+        from agents_router.runner import Runner
+        from agents_router.runtimes.base import USAGE_LIMIT, AttemptResult
+
+        self.roles('[roles.builder]\nproviders = ["claude"]')
+        self.caller_file(self.primary / "agents", rules="Never edit migrations.\n")
+        spec, _ = self.build("--caller", "claude")
+        owner = jobs.read_status(spec.job_id)["account"]
+        follow_up = jobs.create_job(runtime="claude", prompt="and the docs", cwd=str(self.project),
+                                    resume_job=spec.job_id, start=False)["job_id"]
+        self.assertEqual(jobs.read_spec(follow_up).rules, spec.rules)
+        runner = Runner(follow_up)
+        real_attempt, calls = runner._attempt, []
+
+        def attempt(lease, prompt, session, owner, fallback):
+            calls.append(lease.account.name)
+            if len(calls) == 1:  # the limit came before the worker named a session: there is nothing to move
+                return AttemptResult(USAGE_LIMIT, message="You've hit your session limit", text="half done")
+            return real_attempt(lease, prompt, session, owner, fallback)
+
+        with patch.object(runner, "_attempt", side_effect=attempt):
+            self.assertEqual(runner.run(), 0)
+        self.assertEqual(calls, [owner, {"a1": "a2", "a2": "a1"}[owner]])
+        record = self.records()[-1]
+        self.assertEqual(os.path.basename(record["env"]["CLAUDE_CONFIG_DIR"]), calls[1])
+        self.assertNotIn("--resume", record["argv"])  # a fresh session on the next account
+        sent = record["stdin"]
+        self.assertTrue(sent.startswith(spec.rules + "\n\n"), sent)
+        self.assertEqual(sent.count(spec.rules), 1)
+        self.assertIn("and the docs", sent)
+        self.assertIn("reached its usage limit", sent)
+
     def test_S12_long_rules_skip_antigravity_for_the_next_provider(self):
         gemini = self.root / "gemini"
         self.roles('[roles.builder]\nproviders = ["antigravity", "claude:a1"]\n\n[roles.reviewer]\n'

@@ -345,11 +345,18 @@ def _plain_lines(record: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _rules_lines(record: dict[str, Any]) -> list[str]:
+def rules_line(record: dict[str, Any]) -> str | None:
+    """`role rules: N characters from FILE`, or `role rules: none (why)`, for a role call's record; None without either."""
+
     rules = record.get("rules") or {}
     if rules.get("chars"):
-        return [f"  role rules: {rules['chars']} characters from {ui.tilde(rules['file'])}"]
-    return [f"  role rules: none ({rules['note']})"] if rules.get("note") else []
+        return f"role rules: {rules['chars']} characters from {ui.tilde(rules['file'])}"
+    return f"role rules: none ({rules['note']})" if rules.get("note") else None
+
+
+def _rules_lines(record: dict[str, Any]) -> list[str]:
+    line = rules_line(record)
+    return [f"  {line}"] if line else []
 
 
 def run(args: argparse.Namespace) -> int:
