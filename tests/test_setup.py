@@ -434,6 +434,109 @@ class UpdateTests(SetupBase):
         self.assertEqual(setup.detect_install("/usr", "/usr/lib/site", editable, None, "py"), ("editable", None))
         self.assertEqual(setup.detect_install("/usr", None, None, None, "py"), ("unknown", None))
 
+    def test_detect_install_in_custom_tool_folders(self):
+        # UV_TOOL_DIR and PIPX_HOME can put the tool venvs anywhere; the file each tool leaves in a venv tells them.
+        uv = self.root / "uv-tools" / "agents-router"  # the sandbox's UV_TOOL_DIR
+        pipx = self.root / "tool-home" / "venvs" / "agents-router"
+        if setup._tool_installer(uv) or setup._tool_installer(pipx):
+            self.skipTest(f"{self.root} already looks like uv's or pipx's own folder")
+        uv.mkdir(parents=True)
+        pipx.mkdir(parents=True)
+        self.assertEqual(setup.detect_install(str(uv), "/x", None, None, "py")[0], "pip")
+        self.assertEqual(setup.detect_install(str(pipx), "/x", None, None, "py")[0], "pip")
+        (uv / "uv-receipt.toml").write_text('[tool]\nrequirements = [{ name = "agents-router" }]\n', encoding="utf-8")
+        (pipx / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+        url = "git+https://github.com/Watcharagorn/agents-router"
+        method, argv = setup.detect_install(str(uv), "/x", None, None, "py")
+        self.assertEqual((method, argv[1:]), ("uv", ["tool", "install", "--force", "--compile-bytecode", url]))
+        method, argv = setup.detect_install(str(pipx), "/x", None, None, "py")
+        self.assertEqual((method, argv[1:]), ("pipx", ["install", "--force", url]))
+
+    def tool_venvs(self):
+        """A uv tool venv whose receipt links agt into root/bin, and a pipx venv, both outside the default folders."""
+
+        uv = self.root / "uv-tools" / "agents-router"
+        pipx = self.root / "tool-home" / "venvs" / "agents-router"
+        uv.mkdir(parents=True)
+        pipx.mkdir(parents=True)
+        link = json.dumps(str(self.root / "bin" / "agt"))  # a JSON string is a TOML string too
+        (uv / "uv-receipt.toml").write_text(
+            f'[tool]\nentrypoints = [\n    {{ name = "agt", install-path = {link}, from = "agents-router" }},\n]\n',
+            encoding="utf-8")
+        (pipx / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+        return uv, pipx
+
+    def test_reinstall_folders_are_where_agt_is(self):
+        uv, pipx = self.tool_venvs()
+        self.assertEqual(setup._reinstall_folders("uv", uv), {"UV_TOOL_DIR": str(self.root / "uv-tools"),
+                                                              "UV_TOOL_BIN_DIR": str(self.root / "bin")})
+        self.assertEqual(setup._reinstall_folders("pipx", pipx), {"PIPX_HOME": str(self.root / "tool-home")})
+        (pipx / "pipx_metadata.json").unlink()  # PIPX_HOME comes from the folder alone
+        self.assertEqual(setup._reinstall_folders("pipx", pipx), {"PIPX_HOME": str(self.root / "tool-home")})
+        self.assertEqual(setup._reinstall_folders("pip-user", uv), {})
+        # Without a receipt that reads, uv still gets its tool folder; its bin folder is left to the shell.
+        (uv / "uv-receipt.toml").write_text("[tool\n", encoding="utf-8")
+        self.assertEqual(setup._reinstall_folders("uv", uv), {"UV_TOOL_DIR": str(self.root / "uv-tools")})
+        (uv / "uv-receipt.toml").unlink()
+        self.assertEqual(setup._reinstall_folders("uv", uv), {"UV_TOOL_DIR": str(self.root / "uv-tools")})
+
+    def test_update_reinstalls_where_agt_is_whatever_the_shell_sets(self):
+        # UV_TOOL_DIR or PIPX_HOME set when agt was installed, then unset or changed: the reinstall still replaces
+        # this agt instead of putting a second copy in the default folder.
+        uv, pipx = self.tool_venvs()
+        names = ["UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "PIPX_HOME"]
+        seen = self.root / "seen.json"
+        record = [sys.executable, "-c", "import json, os, sys; json.dump({name: os.environ.get(name) for name in "
+                  "sys.argv[2:]}, open(sys.argv[1], 'w'))", str(seen), *names]
+        elsewhere = {name: str(self.root / "elsewhere" / name) for name in names}
+        expected = {"uv": {"UV_TOOL_DIR": str(self.root / "uv-tools"), "UV_TOOL_BIN_DIR": str(self.root / "bin")},
+                    "pipx": {"PIPX_HOME": str(self.root / "tool-home")}}
+        for shell in ({}, elsewhere):
+            for method, venv in (("uv", uv), ("pipx", pipx)):
+                with self.subTest(shell=bool(shell), method=method), patch.dict(os.environ, shell), \
+                        patch.object(sys, "prefix", str(venv)):
+                    for name in names:
+                        if name not in shell:
+                            os.environ.pop(name, None)
+                    code, out = self.run_update(info=(method, record))
+                    self.assertEqual(code, 0, out)
+                    got = json.loads(seen.read_text(encoding="utf-8"))
+                    self.assertEqual({name: got[name] for name in expected[method]}, expected[method])
+
+    def test_a_reinstall_typed_by_hand_names_the_folders_the_shell_wouldnt_pick(self):
+        # On Windows the person runs the reinstall; the to-do names each folder their uv or pipx wouldn't pick.
+        uv, pipx = self.tool_venvs()
+        uv_dir, bin_dir, pipx_home = (str(self.root / name) for name in ("uv-tools", "bin", "tool-home"))
+        here = {"UV_TOOL_DIR": uv_dir, "UV_TOOL_BIN_DIR": bin_dir, "PIPX_HOME": pipx_home}
+
+        def todo(method, venv, picks):
+            probes = []
+
+            def probe(argv, env, timeout=300):
+                probes.append(argv)
+                name = next(name for name, words in setup.FOLDER_PROBES.items() if argv[1:] == words)
+                return (0, picks[name] + "\n", "") if name in picks else (2, "", "unknown command")
+
+            report = setup.Report()
+            argv = [method, "install", "--force", "src"]
+            with patch.object(setup, "_install_info", return_value=(method, argv)), \
+                 patch.object(setup, "_replaces_running_program", return_value=True), \
+                 patch.object(setup, "run_command", side_effect=probe), patch.object(sys, "prefix", str(venv)):
+                setup.update_package(report)
+            self.assertTrue(all(argv[0] == method for argv in probes), probes)
+            self.assertEqual(len(report.todo), 1, report.todo)
+            return report.todo[0]
+
+        self.assertEqual(todo("uv", uv, here), "Update the agt package now with `uv install --force src` "
+                                               "(Windows can't replace agt while it's running).")
+        self.assertIn(f"`uv install --force src` and UV_TOOL_DIR set to `{uv_dir}`, UV_TOOL_BIN_DIR to `{bin_dir}` (",
+                      todo("uv", uv, {"UV_TOOL_DIR": str(self.root / "other"), "UV_TOOL_BIN_DIR": str(self.root / "b")}))
+        self.assertIn(f"` and UV_TOOL_BIN_DIR set to `{bin_dir}` (", todo("uv", uv, {"UV_TOOL_DIR": uv_dir}))
+        self.assertIn(f"`pipx install --force src` and PIPX_HOME set to `{pipx_home}` (", todo("pipx", pipx, {}))
+        self.assertNotIn(" set to ", todo("pipx", pipx, here))
+        warned = {name: f"warning: a newer version is out\n{folder}\n\nwarning: again" for name, folder in here.items()}
+        self.assertNotIn(" set to ", todo("uv", uv, warned))
+
     def test_update_reinstalls_from_where_agt_came_from(self):
         uv = "/home/u/.local/share/uv/tools/agents-router"
         git = json.dumps({"url": "https://example.com/fork/agents-router", "vcs_info": {"vcs": "git", "commit_id": "abc"}})

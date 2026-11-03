@@ -1142,14 +1142,76 @@ def detect_install(prefix: str, location: str | None, direct_url: str | None, us
     if isinstance(info, dict) and (info.get("dir_info") or {}).get("editable"):
         return "editable", None
     source = recorded_source(direct_url) or PACKAGE_SOURCE
-    parts = [part.lower() for part in Path(prefix).parts]
-    if "venvs" in parts and any("pipx" in part for part in parts):
+    tool = _tool_installer(Path(prefix))
+    if tool == "pipx":
         return "pipx", [shutil.which("pipx") or "pipx", "install", "--force", source]
-    if "uv" in parts and "tools" in parts:
+    if tool == "uv":
         return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", "--compile-bytecode", source]
     if user_site and Path(location).resolve().is_relative_to(Path(user_site).resolve()):
         return "pip-user", [executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-deps", source]
     return "pip", [executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", source]
+
+
+def _tool_installer(venv: Path) -> str | None:
+    """The tool that made `venv`: "pipx", "uv", or None for any other venv.
+
+    Each leaves a file in the venv, wherever PIPX_HOME or UV_TOOL_DIR put it. Their default folders
+    (`.../pipx/venvs/<name>`, `.../uv/tools/<name>`) are the fallback, for a venv without the file.
+    """
+
+    if (venv / "pipx_metadata.json").is_file():
+        return "pipx"
+    if (venv / "uv-receipt.toml").is_file():
+        return "uv"
+    parts = [part.lower() for part in venv.parts]
+    if "venvs" in parts and any("pipx" in part for part in parts):
+        return "pipx"
+    if "uv" in parts and "tools" in parts:
+        return "uv"
+    return None
+
+
+def _reinstall_folders(method: str, venv: Path) -> dict[str, str]:
+    """The settings that make uv or pipx reinstall agt into `venv`, where it is now, whatever this shell has set.
+
+    uv keeps a tool in UV_TOOL_DIR/<name> and links its commands into UV_TOOL_BIN_DIR, which its receipt records;
+    pipx keeps it in PIPX_HOME/venvs/<name>. Without them, each would install a second copy in its default folder
+    and leave the agt on PATH as it was. Empty for a pip install.
+    """
+
+    if method == "pipx":
+        return {"PIPX_HOME": str(venv.parent.parent)}
+    if method != "uv":
+        return {}
+    folders = {"UV_TOOL_DIR": str(venv.parent)}
+    import tomllib
+
+    try:
+        receipt = tomllib.loads((venv / "uv-receipt.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return folders
+    entrypoints = receipt.get("tool", {}).get("entrypoints") if isinstance(receipt.get("tool"), dict) else None
+    for entry in entrypoints if isinstance(entrypoints, list) else []:
+        if isinstance(entry, dict) and entry.get("name") == "agt" and isinstance(entry.get("install-path"), str):
+            folders["UV_TOOL_BIN_DIR"] = str(Path(entry["install-path"]).parent)
+    return folders
+
+
+FOLDER_PROBES = {"UV_TOOL_DIR": ["tool", "dir"], "UV_TOOL_BIN_DIR": ["tool", "dir", "--bin"],
+                 "PIPX_HOME": ["environment", "--value", "PIPX_HOME"]}
+
+
+def _folders_to_set(tool: str, folders: dict[str, str]) -> str:
+    """For a reinstall the person types: " and UV_TOOL_DIR set to `...`" for each of `folders` that `tool` (uv or
+    pipx) wouldn't pick from this shell, so their command replaces this agt. Empty when it would pick them all."""
+
+    differ = []
+    for name, folder in folders.items():
+        code, stdout, _ = run_command([tool, *FOLDER_PROBES[name]], None, timeout=60)
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]  # the folder, maybe with a warning
+        if code != 0 or not any(same_path(line, folder) for line in lines):
+            differ.append(f"{name} {'to' if differ else 'set to'} `{folder}`")
+    return " and " + ", ".join(differ) if differ else ""
 
 
 def install_source() -> str:
@@ -1210,10 +1272,12 @@ def update_package(report: Report) -> bool:
     if report.dry_run:
         report.done.append(f"agt ({method} install): would run `{shown}`")
         return False
+    folders = _reinstall_folders(method, Path(sys.prefix))
     if _replaces_running_program(method):
-        report.add_todo(f"Update the agt package now with `{shown}` (Windows can't replace agt while it's running).")
+        report.add_todo(f"Update the agt package now with `{shown}`{_folders_to_set(argv[0], folders)} "
+                        "(Windows can't replace agt while it's running).")
         return False
-    code, stdout, stderr = _run_shown("updating agt", argv, None, shown, timeout=600)
+    code, stdout, stderr = _run_shown("updating agt", argv, {**os.environ, **folders}, shown, timeout=600)
     if code != 0:
         report.failed.append(f"agt: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
         return False
