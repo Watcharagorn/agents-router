@@ -1,7 +1,7 @@
 ---
 type: llm
-focus: trace
+focus: last_message
 weight: 1
 ---
 
-Before creating the security-auditor role, the agent asks the user what it should do or when their agent should call it. Offering an example sentence is fine
+The final message asks the user what the security-auditor role should do
