@@ -59,6 +59,18 @@ class PlainTests(unittest.TestCase):
             "`agt share plugins` says why. ~/.claude",
         ])
 
+    def test_inline_tilde_shortens_only_outside_backticks(self):
+        home = str(Path.home())
+        text = f"source {home}/pkg; run `pipx install {home}/pkg`"
+        rendered = render([ui.inline_tilde(text)], io.StringIO())
+        self.assertEqual(rendered, f"source ~/pkg; run `pipx install {home}/pkg`\n")
+
+    def test_inline_tilde_with_an_odd_backtick_shortens_the_whole_line(self):
+        home = str(Path.home())
+        text = f"a path {home}/x with one ` backtick"
+        rendered = render([ui.inline_tilde(text)], io.StringIO())
+        self.assertEqual(rendered, "a path ~/x with one ` backtick\n")
+
     def test_columns_line_up_by_terminal_cells(self):
         lines = [ui.plain(line) for line in ui.columns([["ภาษา", "a"], ["中文", "b"], ["x", "c", ""]], indent=0)]
         self.assertEqual(lines, ["ภาษา  a", "中文  b", "x     c"])

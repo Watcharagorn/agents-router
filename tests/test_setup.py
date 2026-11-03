@@ -455,6 +455,7 @@ class UpdateTests(SetupBase):
 
     def test_detect_install_in_global_pipx_home(self):
         with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True), \
+             patch.object(setup, "_tool_installer", return_value="pipx"), \
              patch.object(setup.shutil, "which", return_value=None):
             os.environ.pop("PIPX_GLOBAL_HOME", None)
             url = setup.PACKAGE_SOURCE
@@ -473,7 +474,8 @@ class UpdateTests(SetupBase):
                                      ("pipx-global", ["pipx", "install", "--global", "--force", url]))
 
     def test_detect_default_global_pipx_home_when_shell_sets_another(self):
-        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True):
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True), \
+             patch.object(setup, "_tool_installer", return_value="pipx"):
             os.environ.pop("PIPX_GLOBAL_HOME", None)
             os.environ["PIPX_GLOBAL_HOME"] = str(self.root / "other-global-home")
             self.assertEqual(setup.detect_install("/opt/pipx/venvs/agents-router", "/x", None, None, "py")[0],
@@ -632,6 +634,29 @@ class UpdateTests(SetupBase):
                 self.assertEqual(report.todo, [f"Update the agt package now with `sudo {env}pipx install --global "
                                                f"--force {shlex.quote(str(source))}` (a global pipx install needs root)."])
                 run.assert_not_called()
+
+    def test_non_root_global_pipx_todo_keeps_the_full_path_in_its_backticks(self):
+        # A global home under the person's home: ~ out of backticks is fine, but the command they paste keeps the
+        # full path, or a quoted ~ wouldn't expand.
+        from agents_router import ui
+
+        home = Path.home() / "agt-global-home"
+        venv = home / "venvs" / "agents-router"
+        venv.mkdir(parents=True)
+        self.addCleanup(setup.shutil.rmtree, home, True)
+        (venv / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+        argv = ["pipx", "install", "--global", "--force", setup.PACKAGE_SOURCE]
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=1000, create=True), \
+             patch.object(sys, "prefix", str(venv)), \
+             patch.object(setup, "_install_info", return_value=("pipx-global", argv)), \
+             patch.object(setup, "run_command", side_effect=AssertionError("ran a command")):
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            report = setup.Report()
+            self.assertFalse(setup.update_package(report))
+            ui.set_color(None)
+            rendered = setup.format_report(report, "update")
+        self.assertIn(f"`sudo env PIPX_GLOBAL_HOME={shlex.quote(str(home))} pipx install", rendered)
+        self.assertNotIn("~/agt-global-home`", rendered)
 
     def test_root_global_pipx_dry_run_prints_the_reinstall_command(self):
         argv = ["pipx", "install", "--global", "--force", setup.PACKAGE_SOURCE]

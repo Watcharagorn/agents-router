@@ -1037,7 +1037,7 @@ def report_rows(items: list[str], mark: ui.Span, ran_as: str | None = None) -> l
             said.add(label)
             ran = None
             rest = ran_as
-        text: ui.Line = ui.muted(ran.group(1)) if ran else ui.inline(ui.tilde(rest))
+        text: ui.Line = ui.muted(ran.group(1)) if ran else ui.inline_tilde(rest)
         if not label:  # a line that isn't about one CLI takes the label's place
             rows.append([mark, text])
         else:
@@ -1056,7 +1056,7 @@ def still_needed(todo: list[str], heading: str = "Still needed from you") -> lis
 
     if not todo:
         return []
-    return ["", ui.bold(heading), *(["  ", f"{n}. ", *ui.inline(ui.tilde(item))] for n, item in enumerate(todo, 1))]
+    return ["", ui.bold(heading), *(["  ", f"{n}. ", *ui.inline_tilde(item)] for n, item in enumerate(todo, 1))]
 
 
 def report_lines(report: Report, name: str = "setup", *, todo: bool = True, footer: bool = True) -> list[ui.Line]:
@@ -1075,7 +1075,7 @@ def report_lines(report: Report, name: str = "setup", *, todo: bool = True, foot
     if report.checked:
         lines += ["", *ui.columns([[ui.muted(what), ui.inline(how)] for what, how in report.checked], gap=3)]
     if report.notes:
-        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline(ui.tilde(note))] for note in report.notes)]
+        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline_tilde(note)] for note in report.notes)]
     if todo:
         lines += still_needed(report.todo)
     if footer:

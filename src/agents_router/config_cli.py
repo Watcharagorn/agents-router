@@ -498,7 +498,7 @@ def _show(args: argparse.Namespace) -> int:
         lines += ["", [ui.muted(f"{rest} more setting{'s use their' if rest != 1 else ' uses its'} defaults; "),
                        ui.code("agt config show --all"), ui.muted(" lists every one.")]]
     if notes:
-        lines += ["", *([ui.warn("Note:"), " ", *ui.inline(ui.tilde(note))] for note in notes)]
+        lines += ["", *([ui.warn("Note:"), " ", *ui.inline_tilde(note)] for note in notes)]
     ui.out(*lines)
     return 2 if error else 0
 

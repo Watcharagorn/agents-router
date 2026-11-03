@@ -436,7 +436,7 @@ def _apply_roles(screen: dict[str, Any], folders: list[Any], todo: list[str]) ->
     setup.apply_roles(screen["roles"], report, folders, setup.named_hosts(screen["hosts"]))
     rows = setup.report_rows(report.done, ui.ok("+")) + setup.report_rows(report.failed, ui.Span("error-mark", "✗"))
     lines: list[ui.Line] = ["", *ui.columns(rows, gap=2)] if rows else []
-    lines += [["  ", *ui.inline(ui.tilde(note))] for note in report.notes]
+    lines += [["  ", *ui.inline_tilde(note)] for note in report.notes]
     if lines:
         ui.out(*lines)
     for item in report.todo:
