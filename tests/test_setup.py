@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import helpers  # noqa: F401  (isolates the test process from your real folders)
+import helpers  # isolates the test process from your real folders
 
 from agents_router import cli, role_agents, setup
 from agents_router.config import default_primary, load_config
@@ -284,17 +284,17 @@ class UpdateTests(SetupBase):
         out = io.StringIO()
         with patch.object(setup, "_install_info", return_value=(method, argv)), \
              patch.object(setup, "_replaces_running_program", return_value=False), \
-             patch.object(setup.subprocess, "run", side_effect=self.new_agt(setup.subprocess.run)), redirect_stdout(out):
+             patch.object(setup.subprocess, "run", side_effect=self.new_agt(setup.subprocess.run, argv)), redirect_stdout(out):
             code = cli.main(["update", *args])
         return code, out.getvalue()
 
-    def new_agt(self, real_run):
+    def new_agt(self, real_run, reinstall):
         """The agt a reinstall hands over to, run here with the test's fakes: a real child would miss its patches."""
 
         def run(argv, **kwargs):
-            if not any("agents_router" in str(arg) for arg in argv) and Path(str(argv[0])).stem != "agt":
-                return real_run(argv, **kwargs)
-            self.assertEqual(argv[:4], [sys.executable, "-P", "-m", "agents_router"])  # any other agt fails here, unrun
+            if argv == reinstall or argv[:2] == [sys.executable, str(helpers.FAKE_HOST)]:
+                return real_run(argv, **kwargs)  # the reinstall's stand-in, or a fake host
+            self.assertEqual(argv[:4], [sys.executable, "-P", "-m", "agents_router"])  # anything else fails here, unrun
             self.handed_over.append((argv, kwargs["env"][setup.REINSTALLED_ENV]))
             with patch.dict(os.environ, kwargs["env"]):
                 return setup.subprocess.CompletedProcess(argv, cli.main(argv[4:]))
