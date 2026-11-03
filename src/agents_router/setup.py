@@ -72,6 +72,7 @@ class Report:
     todo: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     checked: list[tuple[str, str]] = field(default_factory=list)  # (what, how it stands): nothing done, nothing wrong
+    reinstalled: str = ""  # set when this process reinstalled agt: its own files are now another version's
     # Claude Code profiles setup could install into: {"name", "folder", "this", "selected"}
     claude: list[dict[str, Any]] = field(default_factory=list)
 
@@ -1257,28 +1258,56 @@ def _replaces_running_program(method: str) -> bool:
     return method in ("pipx", "uv") or Path(sys.argv[0]).stem.lower() == "agt"
 
 
-def update_package(report: Report) -> None:
+def update_package(report: Report) -> bool:
+    """Reinstall agt; True when it did, which leaves this process running the old code over the new files."""
+
     method, argv = _install_info()
     if method in ("editable", "checkout"):
         report.unchanged.append("agt: runs from a checkout of the repository; update it with `git pull` there.")
-        return
+        return False
     if argv is None:
         report.failed.append(f"agt: couldn't tell how the package was installed. Reinstall it with {MANUAL_PACKAGE}.")
-        return
+        return False
     shown = " ".join([Path(argv[0]).stem, *argv[1:]])
     if report.dry_run:
         report.done.append(f"agt ({method} install): would run `{shown}`")
-        return
+        return False
     folders = _reinstall_folders(method, Path(sys.prefix))
     if _replaces_running_program(method):
         report.add_todo(f"Update the agt package now with `{shown}`{_folders_to_set(argv[0], folders)} "
                         "(Windows can't replace agt while it's running).")
-        return
+        return False
     code, stdout, stderr = _run_shown("updating agt", argv, {**os.environ, **folders}, shown, timeout=600)
     if code != 0:
         report.failed.append(f"agt: `{shown}` failed (exit {code}): {_last_line(stdout, stderr)}")
-        return
-    report.done.append(f"agt: reinstalled with `{shown}`")  # from its install source, which isn't always GitHub
+        return False
+    report.reinstalled = f"agt: reinstalled with `{shown}`"  # from its install source, which isn't always GitHub
+    report.done.append(report.reinstalled)
+    return True
+
+
+REINSTALLED_ENV = "AGT_UPDATE_REINSTALLED"  # the reinstall line, for the new agt that finishes the update
+
+
+def finish_in_new_agt(hosts: list[str], report: Report) -> int | None:
+    """Run the rest of `agt update` in the agt just installed; its exit code, or None when it couldn't start.
+
+    The modules this process hasn't imported yet are now the new version's, and mixing them with the old ones it
+    has loaded breaks (0.11 to 0.12 failed on a name 0.12 added). The new agt reports everything, this line too.
+    """
+
+    argv = [sys.executable, "-P", "-m", "agents_router", "update", "--no-package"]  # -P: not from the current folder
+    for host in hosts:
+        argv += ["--host", host]
+    if ui.color_flag():
+        argv += ["--color", ui.color_flag()]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        code = subprocess.run(argv, env={**os.environ, REINSTALLED_ENV: report.reinstalled}).returncode
+    except OSError:
+        return None
+    return 128 - code if code < 0 else code  # killed by a signal: the shell's 128 + its number
 
 
 def _update_steps(host: str, state: dict[str, Any]) -> list[list[str]]:
@@ -1414,10 +1443,18 @@ def update_plugin(config: Config, host: str, report: Report) -> bool:
     return True
 
 
-def run_update(config: Config, hosts: list[str], dry_run: bool = False, package: bool = True) -> tuple[int, Report]:
+def run_update(config: Config, hosts: list[str], dry_run: bool = False, package: bool = True) -> tuple[int, Report | None]:
+    """Update agt and the plugin; no report when the new agt finished the update and printed its own."""
+
     report = Report(dry_run=dry_run)
-    if package:
-        update_package(report)
+    if package and update_package(report):
+        code = finish_in_new_agt(hosts, report)
+        if code is not None:
+            return code, None
+        report.failed.append("agt: reinstalled, but the new agt didn't start; run `agt update --no-package` to finish.")
+        return 1, report
+    if not package and os.environ.get(REINSTALLED_ENV):
+        report.done.append(os.environ[REINSTALLED_ENV])  # the agt that reinstalled this one handed the update over
     candidates = HOSTS if not hosts or "auto" in hosts else [host for host in HOSTS if host in hosts]
     found = [host for host in candidates if update_plugin(config, host, report)]
     if not found:

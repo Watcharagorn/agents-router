@@ -151,6 +151,7 @@ Run `agt doctor`.
 | `agt: command not found` | `ls ~/.local/bin/agt` | Full path for now; `uv tool update-shell` (or `pipx ensurepath`), then a new terminal |
 | No `agt-*` agents or agents-router tools in a session | `agt doctor`; `agt setup --dry-run --json` lists that profile | `agt setup --claude-profiles <profile>`, then `/reload-plugins` or a new session there |
 | `agt doctor`: a profile has an older plugin | Its line names the profile | `agt update`, then reload that profile |
+| `agt update` ends in a Python traceback | The update started from agt 0.12.0 or older, which finished it in the old program | Run `agt update` again: the first run already installed the new agt, which finishes it |
 | No `agt-<role>` agents (`agt-reviewer` and so on) | `agt roles` shows the roles; a role that is off has no agent | Run `agt update` from inside that CLI (in Antigravity, `agt update --host antigravity`): it writes them for that CLI, and for a Claude profile added later |
 | A role agent isn't agt's | `agt update` says it kept the file (no `Managed by agt roles` line) | It's the person's own; agt never overwrites or deletes it. Rename it if they want agt's back |
 | Refused: "this session runs in …" | `agt accounts` | Name another profile, or use a built-in subagent |
