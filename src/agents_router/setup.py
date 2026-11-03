@@ -1141,14 +1141,33 @@ def detect_install(prefix: str, location: str | None, direct_url: str | None, us
     if isinstance(info, dict) and (info.get("dir_info") or {}).get("editable"):
         return "editable", None
     source = recorded_source(direct_url) or PACKAGE_SOURCE
-    parts = [part.lower() for part in Path(prefix).parts]
-    if "venvs" in parts and any("pipx" in part for part in parts):
+    tool = _tool_installer(Path(prefix))
+    if tool == "pipx":
         return "pipx", [shutil.which("pipx") or "pipx", "install", "--force", source]
-    if "uv" in parts and "tools" in parts:
+    if tool == "uv":
         return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", "--compile-bytecode", source]
     if user_site and Path(location).resolve().is_relative_to(Path(user_site).resolve()):
         return "pip-user", [executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-deps", source]
     return "pip", [executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", source]
+
+
+def _tool_installer(venv: Path) -> str | None:
+    """The tool that made `venv`: "pipx", "uv", or None for any other venv.
+
+    Each leaves a file in the venv, wherever PIPX_HOME or UV_TOOL_DIR put it. Their default folders
+    (`.../pipx/venvs/<name>`, `.../uv/tools/<name>`) are the fallback, for a venv without the file.
+    """
+
+    if (venv / "pipx_metadata.json").is_file():
+        return "pipx"
+    if (venv / "uv-receipt.toml").is_file():
+        return "uv"
+    parts = [part.lower() for part in venv.parts]
+    if "venvs" in parts and any("pipx" in part for part in parts):
+        return "pipx"
+    if "uv" in parts and "tools" in parts:
+        return "uv"
+    return None
 
 
 def install_source() -> str:

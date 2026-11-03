@@ -356,6 +356,24 @@ class UpdateTests(SetupBase):
         self.assertEqual(setup.detect_install("/usr", "/usr/lib/site", editable, None, "py"), ("editable", None))
         self.assertEqual(setup.detect_install("/usr", None, None, None, "py"), ("unknown", None))
 
+    def test_detect_install_in_custom_tool_folders(self):
+        # UV_TOOL_DIR and PIPX_HOME can put the tool venvs anywhere; the file each tool leaves in a venv tells them.
+        uv = self.root / "uv-tools" / "agents-router"  # the sandbox's UV_TOOL_DIR
+        pipx = self.root / "tool-home" / "venvs" / "agents-router"
+        if setup._tool_installer(uv) or setup._tool_installer(pipx):
+            self.skipTest(f"{self.root} already looks like uv's or pipx's own folder")
+        uv.mkdir(parents=True)
+        pipx.mkdir(parents=True)
+        self.assertEqual(setup.detect_install(str(uv), "/x", None, None, "py")[0], "pip")
+        self.assertEqual(setup.detect_install(str(pipx), "/x", None, None, "py")[0], "pip")
+        (uv / "uv-receipt.toml").write_text('[tool]\nrequirements = [{ name = "agents-router" }]\n', encoding="utf-8")
+        (pipx / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+        url = "git+https://github.com/Watcharagorn/agents-router"
+        method, argv = setup.detect_install(str(uv), "/x", None, None, "py")
+        self.assertEqual((method, argv[1:]), ("uv", ["tool", "install", "--force", "--compile-bytecode", url]))
+        method, argv = setup.detect_install(str(pipx), "/x", None, None, "py")
+        self.assertEqual((method, argv[1:]), ("pipx", ["install", "--force", url]))
+
     def test_update_reinstalls_from_where_agt_came_from(self):
         uv = "/home/u/.local/share/uv/tools/agents-router"
         git = json.dumps({"url": "https://example.com/fork/agents-router", "vcs_info": {"vcs": "git", "commit_id": "abc"}})
