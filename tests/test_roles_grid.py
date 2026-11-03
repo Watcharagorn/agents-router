@@ -54,6 +54,14 @@ class GridState(unittest.TestCase):
         press(state, "left", "+")  # a read role has no order
         self.assertEqual(list(state.tables()), ["builder"])
 
+    def test_a_full_role_shows_places_and_reorders_like_an_edit_role(self):
+        state = roles_grid.RoleGrid([role("ops", "full", ["kiro:primary", "codex:work"])])
+        lines = [ui.plain(line) for line in state.table()]
+        self.assertRegex(lines[2], r"kiro:primary\s+—\s+—\s+1")
+        press(state, "down", "+")  # the codex:work row moves to 1st
+        self.assertEqual(state.tables(), {"ops": {"providers": ["codex:work", "kiro:primary"]}})
+        self.assertEqual(state.changes(), ["ops: codex:work moves to 1st, kiro:primary to 2nd"])
+
     def test_m_and_e_change_the_row_in_every_role(self):
         choices = lambda entry: ([None, "gpt-6.1-sol", "gpt-6.1-mini"], [None, "low", "high"])
         state = press(grid(choices=choices), "m", "e")

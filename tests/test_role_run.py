@@ -247,6 +247,20 @@ class RoleRunTests(TempHome):
         self.assertEqual(len(self.job_ids()), 1)
         self.assertEqual(jobs.read_spec(jobs.group_members(group)[0]).access, "edit")
 
+    def test_full_role_runs_one_provider_with_full_access(self):
+        self.roles('[roles.ops]\naccess = "full"\nproviders = ["claude:a1", "claude:a2"]')
+        code, text, err = self.run_role("ops", task="run the script")
+        self.assertEqual(code, 0, text + err)
+        group, _, lines = self.frame(text)
+        self.assertRegex(lines[0], r"^\[agt\] Agents Router · role ops · full · 1 job \(group g-[0-9a-f]+\) · job ")
+        self.assertTrue(any(line.startswith("[agt] role ops · full · provider 1 of 2: claude:a1") for line in lines), lines)
+        self.assertEqual(result_body(text), "done on a1")
+        self.assertEqual(len(self.job_ids()), 1)
+        job = jobs.group_members(group)[0]
+        self.assertEqual(json.loads((self.home / "jobs" / job / "spec.json").read_text(encoding="utf-8"))["access"], "full")
+        argv = self.records()[-1]["argv"]
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
+
     def test_S3a_near_limit_moves_to_next(self):
         self.roles('[roles.builder]\nproviders = ["claude:a1", "claude:a2"]')
         accounts.update_usage("claude", "a1", windows={"five_hour": {"utilization": 0.96, "resets_at": time.time() + 3600}})
@@ -570,7 +584,7 @@ class RoleRunTests(TempHome):
 
     def test_role_with_runtime_or_account_exit_2(self):
         self.roles('[roles.reviewer]\nproviders = ["claude:a1"]')
-        for flags in (("--runtime", "codex"), ("--account", "a1"), ("--model", "opus")):
+        for flags in (("--runtime", "codex"), ("--account", "a1"), ("--model", "opus"), ("--access", "full")):
             code, out, err = self.agt("run", "--role", "reviewer", *flags, "--cwd", str(self.project), "x")
             self.assertEqual(code, 2, out + err)
             self.assertIn(f"leave out {flags[0]}", err)

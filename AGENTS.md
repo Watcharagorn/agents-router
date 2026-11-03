@@ -84,7 +84,7 @@ The sandbox uses only named profiles (`.claude-a`, `.claude-b`). Claude Code kee
 | `scripts/` | `sandbox.sh` (the live-check sandbox) and `sync_guide.py` (the guide's copy in the setup skill) |
 | `src/agents_router/jobs.py`, `runner.py` | Job records and the background runner |
 | `src/agents_router/accounts.py`, `config.py` | Account pool, cooldowns, the settings in effect |
-| `src/agents_router/roles.py`, `roles_cli.py`, `roles_grid.py`, `role_run.py`, `role_agents.py`, `roles_propose.py` | Roles: `[roles.*]` settings, `agt roles show/propose/config` and its grid, `agt run --role` (read roles fan out under a group id, edit roles by priority), the `agt-<role>` agent files and the proposed role table (docs/roles.md) |
+| `src/agents_router/roles.py`, `roles_cli.py`, `roles_grid.py`, `role_run.py`, `role_agents.py`, `roles_propose.py` | Roles: `[roles.*]` settings, `agt roles show/propose/config` and its grid, `agt run --role` (read roles fan out under a group id, edit and full roles by priority), the `agt-<role>` agent files and the proposed role table (docs/roles.md) |
 | `src/agents_router/settings_write.py` | What `agt config set` and `agt roles config` share: who asks, backup, lock |
 | `src/agents_router/levels.py` | The settings files: `~/.agt/settings.toml`, `<workspace>/.agt/settings.toml` and `settings.local.toml`, and finding the workspace |
 | `src/agents_router/config_cli.py`, `synclog.py` | `agt config show/set/unset`, and agt's log with `agt log` |

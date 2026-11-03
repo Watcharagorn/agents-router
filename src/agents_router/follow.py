@@ -32,6 +32,7 @@ from typing import Any, Callable, TextIO
 from agents_router import jobs, messages
 from agents_router.config import load_config
 from agents_router.fsutil import read_json, write_json
+from agents_router.roles import ONE_AT_A_TIME
 from agents_router.runtimes.base import SUCCESS
 
 POLL_SECONDS = 0.5
@@ -901,7 +902,7 @@ class GroupFollower:
 
     @property
     def edit(self) -> bool:
-        return self.record.get("access") == "edit"
+        return self.record.get("access") in ONE_AT_A_TIME
 
     def header(self) -> None:
         count = len(self.members)
@@ -915,8 +916,8 @@ class GroupFollower:
             for item in skipped:
                 self.control(f"role {self.role} · skipped provider {item['position']} {item['provider']} — {item['reason']}")
             for member, item in zip(self.members, self.record.get("jobs") or []):
-                self.control(f"role {self.role} · edit · provider {item.get('position', 1)} of {total}: "
-                             f"{member.provider} · {member.tag} is job {member.job_id}")
+                self.control(f"role {self.role} · {self.record.get('access')} · provider {item.get('position', 1)} "
+                             f"of {total}: {member.provider} · {member.tag} is job {member.job_id}")
         else:
             available = f"{count} of {total} providers available" if skipped else f"{plural(count, 'job')} in parallel"
             self.control(f"role {self.role} · read · {available}")
@@ -1057,7 +1058,7 @@ def group_result(record: dict[str, Any], claim: bool = False) -> tuple[str, int]
             heading = f"## {provider}"
         else:
             heading = f"## {provider} · FAILED · {_failure(result)}"
-        if record.get("access") == "edit" and len(members) == 1:
+        if record.get("access") in ONE_AT_A_TIME and len(members) == 1:
             return body, succeeded
         sections.append(heading + ("\n" + body if body else ""))
     for item in record.get("skipped") or []:

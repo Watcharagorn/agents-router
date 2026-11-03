@@ -46,7 +46,7 @@ def _job_arguments(parser: argparse.ArgumentParser) -> None:
         "never set this on your own judgment. Use only when the user asked for more jobs in this conversation "
         "or confirmed after a warning explaining how much of the 5-hour window is left.",
     )
-    parser.add_argument("--access", default="edit", choices=ACCESS_LEVELS)
+    parser.add_argument("--access", choices=ACCESS_LEVELS, help="Default: edit (not with --role).")
     parser.add_argument("--max-turns", type=int)
     parser.add_argument("--timeout", type=int, default=1800, help="Seconds (default 1800).")
     parser.add_argument("--add-dir", action="append", default=[])
@@ -63,7 +63,7 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
         model=args.model,
         effort=args.effort,
         override=args.override,
-        access=args.access,
+        access=args.access or "edit",
         max_turns=args.max_turns,
         timeout_seconds=args.timeout,
         add_dirs=[str(Path(item).resolve()) for item in args.add_dir],

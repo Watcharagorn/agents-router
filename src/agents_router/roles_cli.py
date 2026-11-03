@@ -2,7 +2,7 @@
 
 `agt roles` (or `show`) prints the roles table: provider entries as rows,
 roles as columns, a tick for a read role and the place in the order for an
-edit role, with roles that are off and providers agt can't use marked.
+edit or full role, with roles that are off and providers agt can't use marked.
 `propose` prints a role table from your CLIs, accounts and quota (`--json`
 gives the file `config --from` reads). `config` changes roles: with no flags a
 person at a terminal gets the grid, anyone else the same table read-only.
@@ -15,11 +15,12 @@ agt's load error names for a bad hand edit.
 Every write takes a backup first, goes to agt's log, and prints one undo
 command, which is refused once the file has changed since.
 
-From an agent, a change that widens edit access (a provider joins an edit role,
-`--order` brings in a new entry, a custom role made or turned edit) and every
-`--enable`/`--disable` needs `--user-said "<the user's words>"`; without it the
-command exits 3 and writes nothing. A refused part refuses the whole command
-(exit 2), so the file stays as it was.
+From an agent, a change that widens access (a provider joins an edit or full
+role, `--order` brings in a new entry, a custom role made edit or full, or moved
+up from read to edit or to full) and every `--enable`/`--disable` needs
+`--user-said "<the user's words>"`; without it the command exits 3 and writes
+nothing. A refused part refuses the whole command (exit 2), so the file stays
+as it was.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from typing import Any
 from agents_router import config, fsutil, levels, plans, roles, roles_grid, settings_write, synclog, ui
 
 LEVEL_FLAGS = tuple(f"--{level}" for level in levels.LEVELS)
+FULL = "full access (any command, no sandbox)"  # what an agent asks the user's words for
 RoleError = roles.RoleError
 
 Tables = dict[str, dict[str, Any]]
@@ -60,7 +62,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     change.add_argument("--from", dest="from_file", metavar="FILE",
                         help="Write the role tables in this JSON file (from `agt roles propose --json`).")
     for flag, text in (("only", "The role's providers, replacing the list."), ("add", "Providers to add."),
-                       ("remove", "Providers to remove."), ("order", "An edit role's providers in priority order.")):
+                       ("remove", "Providers to remove."),
+                       ("order", "An edit or full role's providers in priority order.")):
         change.add_argument(f"--{flag}", metavar="ENTRIES", help=text + " Comma-separated.")
     change.add_argument("--set-model", action="append", default=[], metavar="ENTRY=MODEL",
                         help="The model of an entry (codex:work=gpt-6.1-sol) in every role using it.")
@@ -68,7 +71,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
                         help="The effort of an entry in every role using it.")
     change.add_argument("--enable", action="append", default=[], metavar="ROLES", help="Turn roles on.")
     change.add_argument("--disable", action="append", default=[], metavar="ROLES", help="Turn roles off.")
-    change.add_argument("--access", choices=roles.ACCESS, help="A custom role's access.")
+    change.add_argument("--access", choices=roles.ACCESS,
+                        help="A custom role's access: read, edit, or full (edit plus the shell, with no sandbox).")
     change.add_argument("--prompt", metavar="TEXT", help="A custom role's instructions, added before each task.")
     change.add_argument("--description", metavar="TEXT",
                         help="A custom role's 'use me when' line: what it does and when to call it. A new role needs it.")
@@ -82,8 +86,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     change.add_argument("--dry-run", action="store_true", help="Print the change and write nothing.")
     change.add_argument("--json", action="store_true")
     change.add_argument("--user-said", metavar="WORDS",
-                        help="From an agent: the user's own words, for a change that widens edit access or turns a role "
-                             "on or off.")
+                        help="From an agent: the user's own words, for a change that widens a role's access or turns a "
+                             "role on or off.")
     change.add_argument("--if-unchanged", metavar="HASH", help=argparse.SUPPRESS)  # in the undo command
 
 
@@ -406,7 +410,7 @@ def _apply_role(edit: Edit, tables: Tables, lower: Tables, known: list[str], lev
     access = _access(name, view(name))
     chosen = list(current)
     if edit.order is not None:
-        if access != "edit":
+        if access not in roles.ONE_AT_A_TIME:
             raise RoleError(f"{name} has read access, so its providers all run at once and have no order.\n"
                             "Use --only, --add or --remove to choose them.")
         first = [_match(provider, current) for provider in edit.order]
@@ -564,7 +568,7 @@ def show_problem(loaded: config.Config, provider: roles.Provider) -> str | None:
 
 
 def _widens(before: Tables, after: Tables) -> list[str]:
-    """Why this change widens edit access or turns a role on or off: what an agent needs the user's words for."""
+    """Why this change widens a role's access or turns a role on or off: what an agent needs the user's words for."""
 
     reasons = []
     for name in _order_names([*before, *after]):
@@ -575,18 +579,30 @@ def _widens(before: Tables, after: Tables) -> list[str]:
         access = _access(name, new)
         if on_before != on_after:
             reasons.append(f"{name} would be turned {'on' if on_after else 'off'}"
-                           + (", and it edits files" if on_after and access == "edit" else ""))
+                           + (f", and it {_does(access)}" if on_after and access in roles.ONE_AT_A_TIME else ""))
             continue
-        if not on_after or access != "edit":
+        if not on_after or access not in roles.ONE_AT_A_TIME:
             continue
+        was = _access(name, old)
         if old is None and name not in roles.BASE_ROLES:
-            reasons.append(f"the new role {name} would edit files")
-        elif _access(name, old) != "edit":
-            reasons.append(f"{name} would go from read to edit access")
+            reasons.append(f"the new role {name} would " + ("have " + FULL if access == "full" else "edit files"))
+        elif _rank(was) < _rank(access):
+            reasons.append(f"{name} would go from {was} to {access} access" if was in roles.ACCESS
+                           else f"{name} would get {access} access")
         else:
             had = _entries(old)
-            reasons += [f"{entry} would join {name}, which edits files" for entry in _entries(new) if entry not in had]
+            reasons += [f"{entry} would join {name}, which {_does(access)}" for entry in _entries(new) if entry not in had]
     return reasons
+
+
+def _rank(access: Any) -> int:
+    """read < edit < full; anything else (no access yet, a bad hand edit) counts as read."""
+
+    return roles.ACCESS.index(access) if access in roles.ACCESS else 0
+
+
+def _does(access: str | None) -> str:
+    return "has " + FULL if access == "full" else "edits files"
 
 
 def _lines(change: Change, covered: set[str]) -> list[str]:
@@ -625,7 +641,7 @@ def _lines(change: Change, covered: set[str]) -> list[str]:
             parts += [f"- {text}" for text in removed] + [f"+ {text}" for text in added]
             kept_was = [entry for entry in _entries(old) if entry in _entries(new)]
             kept_now = [entry for entry in _entries(new) if entry in _entries(old)]
-            if access == "edit" and kept_was != kept_now:
+            if access in roles.ONE_AT_A_TIME and kept_was != kept_now:
                 parts.append("order  " + "   ".join(f"{index} {text}" for index, text in enumerate(now, 1)))
         for key in ("description", "prompt_file"):
             if old.get(key) != new.get(key):

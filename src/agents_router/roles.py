@@ -3,17 +3,19 @@
 A role lives in `[roles.<name>]` in any settings file:
 
     [roles.reviewer]
-    access    = "read"                                   # read | edit
+    access    = "read"                                   # read | edit | full
     providers = ["codex:work/gpt-6.1-sol:high", "antigravity:primary"]
 
     [roles.builder]
     access    = "edit"
     providers = ["claude:claude-work/opus", "codex:work"]   # order = priority
 
-A read role runs every provider in parallel; an edit role runs one, the first
-in its order that has room. `enabled = false` turns a role off, base roles
-included, so you can use your own agent instead. A custom role's `prompt_file`
-may be relative: to the folder of the settings file that names it.
+A read role runs every provider in parallel; an edit or full role runs one,
+the first in its order that has room. Full access is edit plus every tool, the
+shell included, with no sandbox or permission prompts; only a custom role can
+have it. `enabled = false` turns a role off, base roles included, so you can
+use your own agent instead. A custom role's `prompt_file` may be relative: to
+the folder of the settings file that names it.
 
 Levels merge per role and per key, later levels winning; a `providers` list
 replaces the one below it. Loading checks only the shape: a provider naming
@@ -32,7 +34,8 @@ from agents_router import levels
 EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")  # plans.EFFORTS; plans imports config, which imports this
 
 RUNTIMES = ("claude", "codex", "antigravity", "kiro")
-ACCESS = ("read", "edit")
+ACCESS = ("read", "edit", "full")
+ONE_AT_A_TIME = ("edit", "full")  # roles that change things: one provider, the first in their order with room
 BASE_ROLES: dict[str, str] = {"decision-maker": "read", "reviewer": "read", "builder": "edit", "verifier": "read"}
 BASE_DESCRIPTIONS: dict[str, str] = {
     "decision-maker": "Use only when reviewers or providers disagree: send just the points in conflict and it decides.",
@@ -168,7 +171,7 @@ def _check_key(name: str, key: str, value: Any) -> None:
         raise RoleError(f"[roles.{name}] has no key {key}; keys: {', '.join(KEYS)}")
     if key == "access":
         if value not in ACCESS:
-            raise RoleError(f"[roles.{name}] access must be \"read\" or \"edit\", not {value!r}")
+            raise RoleError(f"[roles.{name}] access must be \"read\", \"edit\" or \"full\", not {value!r}")
         if name in BASE_ROLES and value != BASE_ROLES[name]:
             raise RoleError(f"{name} is a base role with {BASE_ROLES[name]} access, which can't change; "
                             "make a custom role for other access")
@@ -230,10 +233,10 @@ def from_layers(found: list[levels.Layer]) -> dict[str, Role]:
             if not enabled:
                 continue  # a custom role turned off before it was ever made: nothing to run
             raise levels.SettingsError(f"{levels.where(last, 'roles.' + name, None)}: custom role {name} needs "
-                                       "access = \"read\" or \"edit\"" + _fix(last, f"{name} --access read"))
+                                       "access = \"read\", \"edit\" or \"full\"" + _fix(last, f"{name} --access read"))
         providers = [parse_provider(item) for item in table.get("providers", [])]
         if enabled and not providers:
-            hint = (f"role {name} has edit access, so its providers need an order" if access == "edit"
+            hint = (f"role {name} has {access} access, so its providers need an order" if access in ONE_AT_A_TIME
                     else f"role {name} has no providers")
             raise levels.SettingsError(f"{levels.where(last, 'roles.' + name, 'providers')}: {hint}; "
                                        f"to stop using it: agt roles config --disable {name}")

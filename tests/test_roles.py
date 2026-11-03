@@ -55,6 +55,12 @@ providers = ["codex:work"]
         self.assertEqual(found["builder"].access, "edit")
         self.assertEqual([str(p) for p in found["builder"].providers], ["claude:claude-work/opus", "codex:work"])
 
+    def test_a_custom_role_can_have_full_access(self):
+        found = roles.from_layers([layer("user", '[roles.general-worker]\naccess = "full"\n'
+                                                 'providers = ["kiro", "codex:work"]\n')])
+        self.assertEqual(found["general-worker"].access, "full")
+        self.assertEqual(found["general-worker"].as_table()["access"], "full")
+
     def test_workspace_merges_per_key_and_providers_replace(self):
         ws = '[roles.reviewer]\nproviders = ["kiro:primary"]\n[roles.builder]\nenabled = false\n'
         found = roles.from_layers([layer("user", self.USER), layer("workspace", ws)])
@@ -109,11 +115,18 @@ class ShapeChecks(unittest.TestCase):
     def test_base_role_access_cannot_change(self):
         self.refused('[roles.reviewer]\naccess = "edit"\nproviders = ["codex"]\n', "base role")
 
+    def test_base_role_cannot_have_full_access(self):
+        self.refused('[roles.builder]\naccess = "full"\nproviders = ["codex"]\n', "base role with edit access")
+        self.refused('[roles.helper]\naccess = "admin"\nproviders = ["codex"]\n', 'access must be "read", "edit" or "full"')
+
     def test_custom_role_needs_access(self):
         self.refused('[roles.helper]\nproviders = ["codex"]\n', "needs access")
 
     def test_edit_role_without_providers(self):
         self.refused('[roles.builder]\nproviders = []\n', "edit access, so its providers need an order", "--disable builder")
+
+    def test_full_role_without_providers(self):
+        self.refused('[roles.ops]\naccess = "full"\nproviders = []\n', "full access, so its providers need an order")
 
     def test_bad_provider(self):
         self.refused('[roles.reviewer]\nproviders = ["gemini"]\n', "runtime must be one of")

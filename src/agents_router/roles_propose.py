@@ -5,7 +5,7 @@ Interface (fixed; other modules call it):
         mode "setup": a table for the base roles (Q5): read-only roles mix vendors, the Builder lists
         the strongest runtime with room first, the Decision Maker gets one provider.
         mode "rebalance": the current table with moves from remaining quota (Q8): an account under
-        20% left in its current window, or cooling down, moves back in an edit role's order, and a
+        20% left in its current window, or cooling down, moves back in an edit or full role's order, and a
         read-only role swaps it for another account of that runtime with room (or drops it when
         other providers stay). Antigravity and Kiro print no usage figures, so only their cooldowns
         and recent jobs count (D11). Roles that are off are kept as they are.
@@ -193,7 +193,7 @@ def _rebalance(loaded: Any) -> dict[str, Any]:
         if not low:
             reasons[role.name] = "no change"
             continue
-        if role.access == "edit":
+        if role.access in roles.ONE_AT_A_TIME:
             order = [p for p, s in states if s is None or not s.low] + [p for p, _ in low]
             if order == role.providers:
                 reasons[role.name] = "no change (" + "; ".join(state.why() for _, state in low) + ", but nothing has more room)"

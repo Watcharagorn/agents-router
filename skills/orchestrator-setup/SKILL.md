@@ -30,9 +30,9 @@ It returns the table (`roles`: each role's access and providers) and one reason 
 
 ## 3. Show it and ask once
 
-Show the whole proposal as a table: role, access, providers in order (for edit roles the order is the priority), and the reason. Name what differs from today's table. Then ask once with your question tool: **Save it** (recommended) · **Change a role** · **Keep my current roles**.
+Show the whole proposal as a table: role, access, providers in order (for edit and full roles the order is the priority), and the reason. Name what differs from today's table. Then ask once with your question tool: **Save it** (recommended) · **Change a role** · **Keep my current roles**.
 
-- **Change a role:** ask what that role should have. When an edit role gets more than one provider, ask which goes first. Update the JSON file, then show the whole table again and ask again.
+- **Change a role:** ask what that role should have. When an edit or full role gets more than one provider, ask which goes first. Update the JSON file, then show the whole table again and ask again.
 - A custom role is one more row: a name (not `claude`, `codex`, `antigravity` or `kiro`), `access`, `description`, optional `prompt_file`, and providers. The `description` is required: what the role does and when the user's agent should call it, in the user's words. If they didn't say, ask; never write it yourself. agt refuses a new custom role without one.
 - **Keep:** change nothing, and say so.
 
@@ -44,6 +44,6 @@ Write nothing before the user approves.
 agt roles config --from "$TMPDIR/agt-roles-proposal.json" --user-said "<the user's approval, in their words>" --json
 ```
 
-`--user-said` is needed because a new table can add a provider to an edit role or turn a role on. If agt exits 3 (`needs_user_words`), ask the user as its `ask` says and run its `retry` with the answer. If it exits 2, nothing was written: show the reason and fix the table with the user.
+`--user-said` is needed because a new table can add a provider to an edit or full role or turn a role on. If agt exits 3 (`needs_user_words`), ask the user as its `ask` says and run its `retry` with the answer. If it exits 2, nothing was written: show the reason and fix the table with the user.
 
 Then report from agt's result: the file and level it wrote, any workspace file that overrides a role here (`overridden_by`), the role agents it created or removed (they load after `/reload-plugins` or a restart), and the undo command.

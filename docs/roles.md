@@ -13,12 +13,20 @@ A role is a named job, such as Reviewer or Builder, with one or more providers. 
 
 You can add custom roles, each with its own access, prompt and providers, and a description in your words of what it does and when your agent should call it. A new custom role needs that description.
 
+| Access | The role's jobs can | Providers run |
+|---|---|---|
+| read | read files and search; no edits | all at once |
+| edit | read and edit files in the workspace; the shell depends on the CLI (Kiro has none) | one, in priority order |
+| full | everything edit can, plus every tool and the shell, with no sandbox or permission prompts | one, in priority order |
+
+Only a custom role can have full access. Every provider of a full role gets it: Claude Code runs with `bypassPermissions`, Codex with `--dangerously-bypass-approvals-and-sandbox`, Kiro with `--trust-all-tools`, and Antigravity without its review gate.
+
 ## How a role runs
 
 - **Read role:** every usable provider runs in parallel as an ordinary job, all under one group id (`g-…`). The result has one section per provider, plus FAILED and SKIPPED sections, and ends DONE if at least one succeeded. `agt follow`, `agt cancel`, `agt jobs` and `agt message` accept the group id.
-- **Edit role:** one job, on the first provider in the role's order that agt's limits admit, preferring one below the usage ceiling. A job that fails partway is not retried on the next provider.
+- **Edit or full role:** one job with the role's access, on the first provider in the role's order that agt's limits admit, preferring one below the usage ceiling. A job that fails partway is not retried on the next provider.
 - A provider whose account is unknown, logged out, cooling down or at its limit is skipped with the reason. If none can run, the call exits 1.
-- `agt run --role <name>` can't be combined with `--runtime`, `--account` or `--model`: the role's providers set those.
+- `agt run --role <name>` can't be combined with `--runtime`, `--account`, `--model` or `--access`: the role's providers set the first three, and the role's settings set its access.
 
 ## Settings
 
@@ -54,15 +62,15 @@ Change roles with `agt roles config`, never by hand-editing, so every change is 
 | `agt roles` / `agt roles show [--json]` | the table, with roles that are off and providers that can't run |
 | `agt roles config` (at a terminal) | the grid: providers as rows, roles as columns. Space ticks, `a`/`n` whole column, `m`/`e` model and effort, `+`/`-` order, `d` duplicate row, `o` turns the role under the cursor on or off. Enter saves |
 | `agt roles config <role> --only/--add/--remove <providers>` | a role's providers (a role keeps at least one) |
-| `agt roles config <role> --order <providers>` | an edit role's priority |
+| `agt roles config <role> --order <providers>` | an edit or full role's priority |
 | `agt roles config --set-model/--set-effort <provider>=<value>` | one provider in every role that uses it |
 | `agt roles config --enable/--disable <roles>` | turn roles on or off, base roles included |
-| `agt roles config <new-role> --access read --only <providers> --description "<what it does>"` | a custom role (`--prompt`, `--delete`); the description is required |
+| `agt roles config <new-role> --access read --only <providers> --description "<what it does>"` | a custom role (`--access read`, `edit` or `full`; `--prompt`, `--delete`); the description is required |
 | `agt roles propose [--rebalance] [--json]` · `agt roles config --from FILE` | a proposed table, then writing it |
 
 Add `--dry-run` to see a change without writing it. Name `--user`, `--workspace` or `--local` to pick the file; with none, a change goes where the role is set now, else your user file, never the committed workspace file. A refused command writes nothing. After a write agt prints the file, the level, any override from another level, the backup and one undo command.
 
-From an agent, a change that widens edit access (a provider added to an edit role, a new edit role) and `--enable`/`--disable` need the user's words: `--user-said "<their words>"`. Without them the command exits 3 and says what to ask.
+From an agent, a change that widens access needs the user's words: `--user-said "<their words>"`. That is a provider added to an edit or full role, a new edit or full role, a role moved from read to edit or full, or from edit to full, and every `--enable`/`--disable`. Without them the command exits 3 and says what to ask. Narrowing access (full to edit, edit to read) needs no words.
 
 When agt skips a provider for quota, it suggests a rebalance: ask your agent to "rebalance my roles", and it proposes a new mapping with reasons and changes nothing before you approve.
 
@@ -103,7 +111,7 @@ Never edit migrations.
 - **Text after agt's part** of the description, which ends with `then the complete, self-contained task.`, moves to the end of your sentence on the next sync, and the sync says so.
 - **Each copy is its own.** Every Claude profile, Codex and Antigravity has its own file, and only calls from that CLI or profile use its rules. Codex keeps the body in `developer_instructions = '''...'''`, so its rules can't contain `'''`.
 - **When rules apply.** A role agent passes `--caller claude|codex|antigravity`, and agt reads that CLI's own file: `<profile>/agents/agt-<role>.md`, `<CODEX_HOME>/agents/agt-<role>.toml`, or the relay plugin's `agents/agt-<role>.md`. A run from a terminal, from Kiro or from inside an agt worker gets no rules, and the job's first lines say why. Edits apply to the next new call. A follow-up that has to start a fresh session gets the rules its job started with.
-- **Antigravity's limit.** Antigravity takes at most 24,000 characters of prompt, counting agt's own notes. When a prompt with its rules is longer, agt skips Antigravity with the reason: an edit role uses the next provider, and a read role runs its other providers. Rules are never cut.
+- **Antigravity's limit.** Antigravity takes at most 24,000 characters of prompt, counting agt's own notes. When a prompt with its rules is longer, agt skips Antigravity with the reason: an edit or full role uses the next provider, and a read role runs its other providers. Rules are never cut.
 - **Trust.** Role rules steer workers that may edit code. agt reads them only from its own agents folders and refuses a link there. A file without the management line is yours: agt never rewrites it, but `agt run` still sends its Role rules.
 - **Reload.** Claude Code's docs say it watches `~/.claude/agents/` and the next delegation uses an edited file with no restart ([sub-agents](https://code.claude.com/docs/en/sub-agents)). They don't say whether another profile's folder (`CLAUDE_CONFIG_DIR`) is watched the same way; if an edit there doesn't show, restart the session. A session also needs a restart to see the first file in an agents folder that didn't exist when it started. Role rules don't depend on this: agt reads them from the file on every call.
 

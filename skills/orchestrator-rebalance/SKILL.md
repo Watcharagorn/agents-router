@@ -37,7 +37,7 @@ If `agt roles propose` exits 2 naming a file and line, the settings have a bad h
 
 If nothing changes, say so with the quota lines, and stop.
 
-Otherwise show each changed role: old providers → new providers (for edit roles, the order is the priority), and its reason from `reasons`, such as "claude:claude-work has 8% left (under 20%) until it resets at 14:20: moved back in the order". Say which roles stay as they are. Then ask once with your question tool: **Apply** (recommended) · **Keep current mapping**. If the user wants only some moves, drop the others from the JSON file and show the result again.
+Otherwise show each changed role: old providers → new providers (for edit and full roles, the order is the priority), and its reason from `reasons`, such as "claude:claude-work has 8% left (under 20%) until it resets at 14:20: moved back in the order". Say which roles stay as they are. Then ask once with your question tool: **Apply** (recommended) · **Keep current mapping**. If the user wants only some moves, drop the others from the JSON file and show the result again.
 
 Change nothing before the answer. **Keep** leaves the mapping as it is.
 
@@ -47,6 +47,6 @@ Change nothing before the answer. **Keep** leaves the mapping as it is.
 agt roles config --from "$TMPDIR/agt-roles-rebalance.json" --user-said "<the user's approval, in their words>" --json
 ```
 
-`--user-said` is needed because a move can add a provider to an edit role. If agt exits 3 (`needs_user_words`), ask as its `ask` says and run its `retry` with the answer. If it exits 2, nothing was written: show the reason.
+`--user-said` is needed because a move can add a provider to an edit or full role. If agt exits 3 (`needs_user_words`), ask as its `ask` says and run its `retry` with the answer. If it exits 2, nothing was written: show the reason.
 
 Report from agt's result: the roles that changed, the file and level, any workspace file that overrides a role here (`overridden_by`), and the undo command. Role agents need no reload: they read the mapping each time they run.

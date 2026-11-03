@@ -290,9 +290,9 @@ ROLE_ANSWERS = {
 # Setup writes only the base roles. A custom role is added after `command` succeeds: one made before it turns the
 # roles to "set", so --if-plan refuses and setup stops proposing the base roles.
 CUSTOM_ROLE = {
-    "ask": "Want a role of your own too? Tell me its name, what it does, read or edit, and its providers.",
-    "command": 'agt roles config <name> --access read|edit --only <providers> --description "<what it does, in their words>"',
-    "when": "only after `command` succeeds, one command per role; an edit role also needs --user-said \"<their words>\"",
+    "ask": "Want a role of your own too? Tell me its name, what it does, read, edit or full access, and its providers.",
+    "command": 'agt roles config <name> --access read|edit|full --only <providers> --description "<what it does, in their words>"',
+    "when": "only after `command` succeeds, one command per role; an edit or full role also needs --user-said \"<their words>\"",
 }
 
 

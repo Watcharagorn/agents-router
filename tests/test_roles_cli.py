@@ -300,6 +300,21 @@ class FlagTests(RolesBase):
         self.assertIn("Use --only, --add or --remove to choose them.", err)
         self.same_bytes(self.user_file, before)
 
+    def test_full_role_has_an_order_and_a_base_role_cannot_be_full(self):
+        code, out, err = self.agt("roles", "config", "ops", "--access", "full", "--only", "codex:work,claude:personal",
+                                  "--description", "Runs shell tasks", terminal=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("Added [roles.ops] (full, 2 providers, in this order)", out)
+        code, out, err = self.agt("roles", "config", "ops", "--order", "claude:personal,codex:work", terminal=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("order  1 claude:personal   2 codex:work", out)
+        self.assertIn('providers = ["claude:personal", "codex:work"]', self.text(self.user_file))
+        before = self.user_file.read_bytes()
+        code, _, err = self.agt("roles", "config", "builder", "--access", "full", terminal=True)
+        self.assertEqual(code, 2)
+        self.assertIn("builder is a base role with edit access, which can't change", err)
+        self.same_bytes(self.user_file, before)
+
     def test_S6d_last_provider_refused(self):
         self.user_file.write_text(self.accounts + '[roles.reviewer]\nproviders = ["codex:work"]\n', encoding="utf-8")
         before = self.user_file.read_bytes()
@@ -571,6 +586,50 @@ class AgentTests(RolesBase):
     def test_a_person_at_a_terminal_needs_no_words(self):
         code, _, err = self.agt("roles", "config", "builder", "--add", "kiro:primary", terminal=True)
         self.assertEqual(code, 0, err)
+
+    def test_full_access_from_an_agent_needs_words(self):
+        from agents_router import config
+
+        self.user_file.write_text(self.accounts + ROLES + '\n[roles.general-worker]\naccess = "edit"\n'
+                                  'description = "Runs shell tasks"\nproviders = ["kiro:primary", "codex:work"]\n',
+                                  encoding="utf-8")
+        before = self.user_file.read_bytes()
+        code, refusal = self.json("roles", "config", "general-worker", "--access", "full", "--user", env=AGENT)
+        self.assertEqual(code, 3)
+        self.assertEqual(refusal["ask"], "general-worker would go from edit to full access. Ask the user, and pass "
+                                         "their own words.")
+        self.same_bytes(self.user_file, before)
+        code, out, err = self.agt("roles", "config", "general-worker", "--access", "full", "--user", "--user-said",
+                                  "change the access of all provider to full for general worker", env=AGENT)
+        self.assertEqual(code, 0, err)
+        self.assertIn("general-worker access edit → full", " ".join(out.split()))
+        self.assertIn('access = "full"', self.text(self.user_file))
+        self.assertEqual(config.load_config().roles["general-worker"].access, "full")
+
+    def test_every_widening_to_full_needs_words_and_narrowing_does_not(self):
+        self.user_file.write_text(self.accounts + ROLES
+                                  + '\n[roles.sec]\naccess = "read"\ndescription = "Checks"\nproviders = ["codex:work"]\n'
+                                  + '\n[roles.ops]\naccess = "full"\ndescription = "Runs"\nproviders = ["codex:work"]\n'
+                                  + '\n[roles.off]\naccess = "full"\ndescription = "Runs"\nproviders = ["codex:work"]\n'
+                                  + 'enabled = false\n', encoding="utf-8")
+        before = self.user_file.read_bytes()
+        asks = {
+            ("sec", "--access", "full"): "sec would go from read to full access",
+            ("ops", "--add", "claude:personal"):
+                "claude:personal would join ops, which has full access (any command, no sandbox)",
+            ("ops", "--order", "claude:personal,codex:work"):
+                "claude:personal would join ops, which has full access (any command, no sandbox)",
+            ("deploy", "--access", "full", "--only", "codex:work", "--description", "Runs"):
+                "the new role deploy would have full access (any command, no sandbox)",
+            ("--enable", "off"): "off would be turned on, and it has full access (any command, no sandbox)",
+        }
+        for argv, ask in asks.items():
+            code, refusal = self.json("roles", "config", *argv, env=AGENT)
+            self.assertEqual((code, refusal["ask"]), (3, f"{ask}. Ask the user, and pass their own words."), argv)
+            self.same_bytes(self.user_file, before)
+        for argv in (("ops", "--access", "edit"), ("ops", "--access", "read"), ("--set-effort", "codex:work=low")):
+            code, out, err = self.agt("roles", "config", *argv, env=AGENT)
+            self.assertEqual(code, 0, (argv, out, err))  # narrowing (full to edit, edit to read) needs no words
 
     def test_S8_disable_builder(self):
         code, out, err = self.agt("roles", "config", "--disable", "builder", terminal=True)
