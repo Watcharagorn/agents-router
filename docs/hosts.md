@@ -127,7 +127,7 @@ That's chosen per job with `runtime` (`claude`, `codex`, `antigravity` or `kiro`
 
 ## Updating, and the MCP server alone
 
-`agt update` (`--dry-run` first) reinstalls `agt` with the tool and source that installed it, then updates the plugin wherever it is, every Claude Code profile included. On Windows it prints the package command for you to run. By hand:
+`agt update` (`--dry-run` first) reinstalls `agt` with the tool and source that installed it, into the folder it's in now (a `UV_TOOL_DIR` or `PIPX_HOME` set only at install time included), then updates the plugin wherever it is, every Claude Code profile included. On Windows it prints the package command for you to run, with any of those variables your shell needs set. By hand:
 
 | Host | Update | MCP server only (no skill, relay agents or hooks) |
 |---|---|---|
