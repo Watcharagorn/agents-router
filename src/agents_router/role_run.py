@@ -2,12 +2,13 @@
 
 A read role starts one ordinary job per usable provider, all at once, tied together by
 one group id (`g-<hex>`); each job goes through the usual admission on its own (caps,
-cooldowns, usage ceiling, the nested-delegation depth). An edit role starts one job: on
-the first provider in its order that `limits.admit` accepts, preferring one below the
-runtime's usage ceiling. A provider whose account is unknown, logged out, turned off or
-cooling down is skipped with the reason; with none left the call fails at once (exit 1).
-An edit job that fails mid-run is not retried on the next provider: the main session
-judges partial edits.
+cooldowns, usage ceiling, the nested-delegation depth). An edit or full role starts one
+job, with the role's access: on the first provider in its order that `limits.admit`
+accepts, preferring one below the runtime's usage ceiling. A provider whose account is
+unknown, logged out, turned off or cooling down is skipped with the reason; with none
+left the call fails at once (exit 1).
+An edit or full job that fails mid-run is not retried on the next provider: the main
+session judges partial edits.
 
 Every role call gets a group, even an edit role's single job, so `agt follow`, `agt
 cancel` and the relays' end markers work the same way for both.
@@ -26,7 +27,7 @@ from typing import Any
 from agents_router import accounts, jobs, limits, quota, ui
 from agents_router.config import Account, Config, RuntimeConfig, load_config, session_folder, set_session
 from agents_router.hosts import detect_host
-from agents_router.roles import Provider, Role, RoleError, unknown_role
+from agents_router.roles import ONE_AT_A_TIME, Provider, Role, RoleError, unknown_role
 
 
 class NoProvider(RuntimeError):
@@ -76,6 +77,9 @@ def check_flags(args: argparse.Namespace) -> None:
     if clashes:
         raise RoleError(f"--role {args.role} picks the runtime and account from [roles.{args.role}]; "
                         f"leave out {' and '.join(clashes)}, or run without --role")
+    if getattr(args, "access", None):
+        raise RoleError(f"--role {args.role} runs with the access in [roles.{args.role}]; leave out --access "
+                        f"(`agt roles config {args.role} --access <level>` changes a custom role's)")
     if args.model:
         raise RoleError(f"--role {args.role} takes each provider's model from [roles.{args.role}]; leave out --model "
                         "(`agt roles config --set-model <provider>=<model>` changes it)")
@@ -251,7 +255,7 @@ def launch(args: argparse.Namespace) -> Launch:
     set_session(config, session_folder(detect_host()))  # as create_job does: the session's own profile is never used
     group = jobs.new_group_id()
     now = time.time()
-    access = "edit" if role.access == "edit" else "read"
+    access = role.access
     started: list[tuple[int, Provider, dict[str, Any]]] = []
     skips: list[Skip] = []
 
@@ -271,7 +275,7 @@ def launch(args: argparse.Namespace) -> Launch:
         skips.append(Skip(provider, position, reason or check.reason or "unusable", check.quota, check.until))
 
     try:
-        if role.access == "edit":
+        if role.access in ONE_AT_A_TIME:
             fallback: tuple[int, Provider, Check] | None = None
             for position, provider in enumerate(role.providers, 1):
                 check = check_for(provider)

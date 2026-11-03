@@ -125,6 +125,24 @@ class KiroJobTests(TempHome):
         self.assertEqual(body, ["| Looked at it.", "| Done: count the files"])
         self.assertRegex(lines[-1], r"^\[agt\] DONE · success · .* · job \S+ · token [0-9a-f]{32}$")
 
+    def test_a_full_role_runs_kiro_with_every_tool_trusted(self):
+        import contextlib
+        import io
+
+        from agents_router import cli
+
+        (self.home / "settings.toml").write_text('[roles.general-worker]\naccess = "full"\nproviders = ["kiro"]\n',
+                                                 encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch("sys.stdin", io.StringIO("")):
+            code = cli.main(["run", "--role", "general-worker", "--cwd", str(self.project), "count the files"])
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        (job,) = [path.name for path in (self.home / "jobs").iterdir()]
+        self.assertEqual(jobs.read_spec(job).access, "full")
+        argv = self.records()[-1]["argv"]
+        self.assertIn("--trust-all-tools", argv)
+        self.assertFalse(any(arg.startswith("--trust-tools=") for arg in argv), argv)
+
     def test_a_usage_limit_is_reported_as_one(self):
         os.environ["FAKE_KIRO_SCENARIO"] = "limit"
         status = jobs.wait_for(jobs.create_job(runtime="kiro", prompt="t", cwd=str(self.project), access="read")["job_id"], 60)

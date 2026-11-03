@@ -81,6 +81,14 @@ providers = ["claude"]
         self.assertEqual(proposal["roles"]["verifier"], {"providers": ["claude"], "enabled": False})
         self.assertEqual(proposal["reasons"]["verifier"], "off; skipped")
 
+    def test_a_full_role_moves_back_in_its_order_like_the_builder(self):
+        self.settings('[roles.ops]\naccess = "full"\ndescription = "Runs"\nproviders = ["claude", "antigravity", "codex"]\n')
+        self.used("claude", 0.92)
+        proposal = roles_propose.propose(load_config(), "rebalance")
+        self.assertEqual(proposal["roles"]["ops"]["providers"], ["antigravity", "codex", "claude"])  # none dropped
+        self.assertEqual(proposal["roles"]["ops"]["access"], "full")
+        self.assertIn("moved back in the order", proposal["reasons"]["ops"])
+
     def test_S4_rebalance_shows_quota(self):
         self.settings(self.TABLE)
         self.used("claude", 0.92)

@@ -1,17 +1,18 @@
 """The roles table: provider entries as rows, roles as columns, read-only or as the `agt roles config` grid.
 
 A row is one provider entry: runtime, account, model and effort. A read role's
-cell is a tick; an edit role's cell is the entry's place in its order. The
-"role on/off" row above the providers shows each role's switch. A role that is
+cell is a tick; an edit or full role's cell is the entry's place in its order.
+The "role on/off" row above the providers shows each role's switch. A role that is
 off keeps its column and its providers, dimmed, so turning it back on restores
 it as it was.
 
 Keys in the grid: arrows (or h/j/k/l) move, Space ticks (on the on/off row it
 flips the role), `a`/`n` tick or clear the whole column, `m`/`e` step the row's
 model or effort through the choices the runtime allows, `+`/`-` move the row
-earlier or later in an edit role's order, `d` copies the row (so one account can
-serve one role on one model and another role on another), `o` turns the role
-under the cursor on or off, Enter saves, Esc or `q` quits with nothing changed.
+earlier or later in an edit or full role's order, `d` copies the row (so one
+account can serve one role on one model and another role on another), `o` turns
+the role under the cursor on or off, Enter saves, Esc or `q` quits with nothing
+changed.
 
 `RoleGrid` is plain state: `press` a key, read `lines`, then `tables()` for what
 to save, so tests drive it with scripted keys. `share.picker.choose` runs it on
@@ -149,7 +150,7 @@ class RoleGrid:
             ticks.extend(item.key for item in self.entries if item.key not in ticks)
         elif key == "n":
             ticks.clear()
-        elif key in ("+", "-") and entry is not None and column.access == "edit" and entry.key in ticks:
+        elif key in ("+", "-") and entry is not None and column.access in roles.ONE_AT_A_TIME and entry.key in ticks:
             at = ticks.index(entry.key)
             to = max(0, at - 1) if key == "+" else min(len(ticks) - 1, at + 1)
             ticks.insert(to, ticks.pop(at))
@@ -204,7 +205,7 @@ class RoleGrid:
             joined = [labels[key] for key in after if key not in before]
             left = [labels[key] for key in before if key not in after]
             parts += [f"{label} joins" for label in joined] + [f"{label} leaves" for label in left]
-            if column.access == "edit":
+            if column.access in roles.ONE_AT_A_TIME:
                 kept_before = [key for key in before if key in after]
                 kept_after = [key for key in after if key in before]
                 if kept_before != kept_after:
@@ -231,14 +232,14 @@ class RoleGrid:
         ticks = self.ticks.get(column.name, [])
         if entry.key not in ticks:
             return EMPTY
-        return str(ticks.index(entry.key) + 1) if column.access == "edit" else TICK
+        return str(ticks.index(entry.key) + 1) if column.access in roles.ONE_AT_A_TIME else TICK
 
     def _changed(self, column: Column, entry: Entry | None) -> bool:
         if entry is None:
             return column.enabled != self.first_enabled[column.name]
         before = self.first_ticks.get(column.name, [])
         return (entry.key in before) != (entry.key in self.ticks.get(column.name, [])) or (
-            column.access == "edit" and self._cell(column, entry) != EMPTY
+            column.access in roles.ONE_AT_A_TIME and self._cell(column, entry) != EMPTY
             and entry.key in before and before.index(entry.key) != self.ticks[column.name].index(entry.key))
 
     def _visible(self, widths: list[int], room: int | None) -> tuple[int, int]:

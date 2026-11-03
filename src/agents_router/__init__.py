@@ -1,3 +1,3 @@
 """Agents Router: delegate tasks to installed agent CLIs under your own logins."""
 
-__version__ = "0.12.4"
+__version__ = "0.13.0"
