@@ -77,7 +77,7 @@ agt-sandbox <command>          # one command inside the sandbox; alone, a sandbo
 Steps and exact commands: [references/release.md](references/release.md).
 
 In short:
-1. Run the full suite. When the Roles section of agents-router, setup's role step, orchestrator-rebalance or orchestrator-customize changed, the graded skill cases in `tests/skill-evals/` must pass too: real model runs on the person's quota, so only with their OK. The benchmark and trigger tuning only advise.
+1. Run the full suite. When the change touches a skill with cases in `tests/skill-evals/`, that skill's graded cases must pass too, and only those (`--tag <skill>`, `-j 4`): real model runs on the person's quota, so only with their OK. The benchmark and trigger tuning only advise.
 2. Raise the version.
 3. Commit with the subject `Agents Router X.Y.Z: <what changed for the person>`.
 4. Push the branch and open a pull request.
