@@ -286,7 +286,10 @@ def cmd_guide(args: argparse.Namespace) -> int:
 
 def cmd_update(args: argparse.Namespace) -> int:
     code, report = setup.run_update(load_config(), args.host or ["auto"], dry_run=args.dry_run, package=not args.no_package)
-    _refresh_share_launcher(args.dry_run)
+    if report is None:
+        return code  # the new agt finished the update, the launcher too, and printed it
+    if not report.reinstalled:  # else the new agt didn't start, and the launcher would get a Python that may be gone
+        _refresh_share_launcher(args.dry_run)
     ui.out(*setup.report_lines(report, "update"))
     return code
 

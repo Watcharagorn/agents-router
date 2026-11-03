@@ -130,6 +130,10 @@ def set_color(mode: str | None) -> None:
     _flag = mode
 
 
+def color_flag() -> str | None:
+    return _flag
+
+
 def take_color_flag(argv: list[str]) -> tuple[list[str], str | None]:
     """argv without its --color option, which may come anywhere before `--`, and the value it gave."""
 
