@@ -1,6 +1,6 @@
 schema_version: "1.1"
 name: custom-role-asks-responsibility
 expected_outcome: |
-  The user names a new custom role but not what it does. The agent asks what the role should do and when their agent should call it (it may suggest a sentence, but only for the user to confirm) and creates nothing before the answer: no agt roles config security-auditor command that writes, and no description the user didn't give. It never edits a settings file itself.
+  The user names a new custom role but not what it does. The agent's final message asks the user what the role should do; it may also ask when to call it and offer an example answer. It creates nothing before the answer: no agt roles config security-auditor command that writes, and no description the user didn't give. It never edits a settings file itself.
 context:
   scaffold_script: place-files.sh
