@@ -292,9 +292,9 @@ class UpdateTests(SetupBase):
         """The agt a reinstall hands over to, run here with the test's fakes: a real child would miss its patches."""
 
         def run(argv, **kwargs):
-            if "agents_router" not in argv:
+            if not any("agents_router" in str(arg) for arg in argv) and Path(str(argv[0])).stem != "agt":
                 return real_run(argv, **kwargs)
-            self.assertEqual(argv[1:4], ["-P", "-m", "agents_router"])  # never a real agt from a test
+            self.assertEqual(argv[:4], [sys.executable, "-P", "-m", "agents_router"])  # any other agt fails here, unrun
             self.handed_over.append((argv, kwargs["env"][setup.REINSTALLED_ENV]))
             with patch.dict(os.environ, kwargs["env"]):
                 return setup.subprocess.CompletedProcess(argv, cli.main(argv[4:]))
@@ -367,6 +367,19 @@ class UpdateTests(SetupBase):
         report = setup.Report(reinstalled="agt: reinstalled with `uv tool install --force x`")
         with patch.object(setup.subprocess, "run", return_value=setup.subprocess.CompletedProcess([], -15)):
             self.assertEqual(setup.finish_in_new_agt(["auto"], report), 143)
+
+    def test_a_new_agt_that_cant_be_run_didnt_start(self):
+        report = setup.Report(reinstalled="agt: reinstalled with `uv tool install --force x`")
+        with patch.object(setup.subprocess, "run", side_effect=FileNotFoundError(sys.executable)):
+            self.assertIsNone(setup.finish_in_new_agt(["auto"], report))
+
+    def test_a_failed_reinstall_finishes_in_this_agt(self):
+        self.run_cli("--host", "claude")
+        self.log.unlink()
+        code, out = self.run_update("--host", "claude", info=("pip-user", [sys.executable, "-c", "raise SystemExit(1)"]))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.handed_over, [])
+        self.assertIn(["plugin", "update", "agents-router@agents-router"], [c["argv"] for c in self.calls()])
 
     def test_codex_from_a_local_clone_updates_without_a_fetch(self):
         # Codex refuses `marketplace upgrade` for a marketplace added from a folder; it reads that folder in place.
