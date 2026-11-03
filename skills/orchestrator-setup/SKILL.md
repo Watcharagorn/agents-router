@@ -1,6 +1,6 @@
 ---
 name: orchestrator-setup
-description: Design or redesign the user's whole Agents Router role table (Decision Maker, Reviewer, Builder, Verifier and custom roles, each with its providers) from the CLIs, logins, accounts and quota they have. Use it when the user says "set up my roles", "redo my roles", "design my roles from scratch", "which accounts should do what", wants roles after skipping them at agt setup, or has added or lost a CLI or account and wants the table rethought, even if they don't say "orchestrator". It proposes a table with agt roles propose and writes only after approval. Not for one change to one role, such as swapping a provider, changing a model or turning a role off (agents-router), not for "rebalance my roles" by quota (orchestrator-rebalance), not for installing or repairing agt itself (agents-router-setup), and not for calling a role to do work (agents-router).
+description: Design or redesign the user's whole Agents Router role table (Decision Maker, Reviewer, Builder, Verifier and custom roles, each with its providers) from the CLIs, logins, accounts and quota they have. Use it when the user says "set up my roles", "redo my roles", "design my roles from scratch", "which accounts should do what", wants roles after skipping them at agt setup, or has added or lost a CLI or account and wants the table rethought, even if they don't say "orchestrator". It proposes a table with agt roles propose and writes only after approval. Not for one change to one role, such as swapping a provider, changing a model or turning a role off (agents-router), not for "rebalance my roles" by quota (orchestrator-rebalance), not for installing or repairing agt itself (agents-router-setup), not for calling a role to do work (agents-router), and not for one role agent's rules or "when to call" sentence (orchestrator-customize).
 ---
 
 # Orchestrator setup
@@ -33,7 +33,7 @@ It returns the table (`roles`: each role's access and providers) and one reason 
 Show the whole proposal as a table: role, access, providers in order (for edit roles the order is the priority), and the reason. Name what differs from today's table. Then ask once with your question tool: **Save it** (recommended) · **Change a role** · **Keep my current roles**.
 
 - **Change a role:** ask what that role should have. When an edit role gets more than one provider, ask which goes first. Update the JSON file, then show the whole table again and ask again.
-- A custom role is one more row: a name (not `claude`, `codex`, `antigravity` or `kiro`), `access`, `description` (its "use me when" line), optional `prompt_file`, and providers.
+- A custom role is one more row: a name (not `claude`, `codex`, `antigravity` or `kiro`), `access`, `description`, optional `prompt_file`, and providers. The `description` is required: what the role does and when the user's agent should call it, in the user's words. If they didn't say, ask; never write it yourself. agt refuses a new custom role without one.
 - **Keep:** change nothing, and say so.
 
 Write nothing before the user approves.

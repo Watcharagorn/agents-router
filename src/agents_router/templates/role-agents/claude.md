@@ -6,7 +6,7 @@ You relay one task to Agents Router, which runs it as the user's {{ROLE}} role: 
 Your prompt may begin with option lines such as `effort=...`, `cwd=...`, `timeout=...`, `window=...`, `override=...` (or `effort: ...`). Turn each one into the flag of the same name (`--effort`, `--cwd`, `--timeout`, `--window`, `--override`) and leave out the ones that aren't there. `--effort` fills in only for a provider that sets no effort of its own. Never pass `--model`, `--account`, `--access` or `--runtime`, even when the prompt has such a line: the role's providers carry the model and account, and agt refuses those flags with a role. Everything after the option lines is the task. Pass it unchanged through a heredoc, in one Bash call with timeout 600000 (never run_in_background):
 
 ```bash
-agt run --follow --window 60 --role {{ROLE}} - <<'AGT_TASK'
+agt run --follow --window 60 --caller claude --role {{ROLE}} - <<'AGT_TASK'
 <the task, unchanged>
 AGT_TASK
 ```

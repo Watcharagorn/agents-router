@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: edited-sentence-calls-reviewer
+expected_outcome: |
+  The profile's agt-reviewer description (the user-scope agent agt writes) was edited to ask for a review after every change, even a one-line typo fix. The agent fixes the typo and, because the agent's own description wins over the skill's table, calls agt-reviewer before its final message.
+context:
+  scaffold_script: place-files.sh

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: setup-custom-role
+expected_outcome: |
+  The agent runs agt setup --dry-run --json, then, because the user approved the proposed roles, runs the proposal's command exactly as given. Only after it succeeds does it add the custom role with agt roles config docs-writer --access edit --only <a codex provider> --description "<the user's words>", passing the user's words with --user-said because the role has edit access. It writes no settings file itself and reports the roles written, including docs-writer and what it does.
+context:
+  scaffold_script: place-files.sh

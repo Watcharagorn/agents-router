@@ -100,6 +100,7 @@ class JobSpec:
     depth: int = 1
     created: float = 0.0
     override: str | None = None  # user's words authorizing this start to exceed agt's caps
+    rules: str | None = None  # the Role rules block the role call put before the task; a fresh-session follow-up repeats it
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

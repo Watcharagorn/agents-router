@@ -238,6 +238,18 @@ def proposal(args: argparse.Namespace, screen: dict[str, Any]) -> dict[str, Any]
     return data
 
 
+def _when_to_call(name: str) -> str:
+    """The role's "when to call" sentence: yours from this CLI's agt-<role> file, else agt's default."""
+
+    from agents_router import config, role_agents, roles
+
+    try:
+        mine = role_agents.here(name, config.load_config())
+    except ValueError:
+        mine = None
+    return (mine or {}).get("when_to_call") or roles.BASE_DESCRIPTIONS[name]
+
+
 def roles_proposal(screen: dict[str, Any]) -> dict[str, Any]:
     """The role part of the proposal: the table, why, the agents it writes and any order to ask."""
 
@@ -250,9 +262,10 @@ def roles_proposal(screen: dict[str, Any]) -> dict[str, Any]:
     data: dict[str, Any] = {"state": plan.state, "means": ROLE_STATES[plan.state], "agents_for": agents_for}
     if plan.state == "propose":
         data["table"] = {name: {"access": roles.BASE_ROLES[name], "providers": table["providers"],
-                                "use_when": roles.BASE_DESCRIPTIONS[name], "why": plan.reasons.get(name, "")}
+                                "use_when": _when_to_call(name), "why": plan.reasons.get(name, "")}
                          for name, table in plan.table.items()}
         data["left_out"] = plan.off
+        data["custom"] = CUSTOM_ROLE
     data["planned"] = report.done
     if report.notes:
         data["notes"] = report.notes
@@ -264,7 +277,7 @@ def roles_proposal(screen: dict[str, Any]) -> dict[str, Any]:
 ROLE_STATES = {
     "propose": "a role table to write to your user settings, with one agt-<role> agent per role for this CLI",
     "set": "roles are already set up: kept as they are; only the agt-<role> agents follow them",
-    "off": "roles skipped: no role settings and no role agents are written",
+    "off": "roles skipped: no role settings and no role agents are written; ask your agent to set up your roles later",
     "none": "no CLI with an account to propose roles from; `agt roles propose` can later",
 }
 ROLE_ANSWERS = {
@@ -274,13 +287,23 @@ ROLE_ANSWERS = {
     "Skip roles": "--roles off",
     "Cancel": "run nothing",
 }
+# Setup writes only the base roles. A custom role is added after `command` succeeds: one made before it turns the
+# roles to "set", so --if-plan refuses and setup stops proposing the base roles.
+CUSTOM_ROLE = {
+    "ask": "Want a role of your own too? Tell me its name, what it does, read or edit, and its providers.",
+    "command": 'agt roles config <name> --access read|edit --only <providers> --description "<what it does, in their words>"',
+    "when": "only after `command` succeeds, one command per role; an edit role also needs --user-said \"<their words>\"",
+}
 
 
 NEXT = ("Ask the user once, in one message: the share table, the switches, the Claude profiles that get the plugin "
         "(claude_profiles, with their folders) and the role table (roles.table), with the answers Approve, Change a role, "
-        "Skip roles or Cancel. Ask each roles.needs_order question before the command runs. Apply their answer by "
-        "changing the flags and running --dry-run --json again, then run `command` exactly as given. Never run it "
-        "before they answer.")
+        "Skip roles or Cancel. Show each role as one line with its access, its providers and its use_when word for word: "
+        "what the role does and when your agent calls it. When roles.custom is there, also ask its `ask`. Ask each "
+        "roles.needs_order question before the command runs. Apply their answer by changing the flags and running "
+        "--dry-run --json again, then run `command` exactly as given. Never run it before they answer. Add a custom "
+        "role only after `command` succeeds, with roles.custom.command and the user's own words as --description; "
+        "never write that description yourself.")
 
 
 def _and(names: list[str]) -> str:
@@ -350,13 +373,17 @@ def role_lines(screen: dict[str, Any]) -> list[ui.Line]:
             shown = "   ".join(f"{n} {item}" for n, item in enumerate(providers, 1))
         else:
             shown = "  +  ".join(providers)
-        rows.append([name, shown, ui.muted(plan.reasons.get(name, ""))])
-    lines: list[ui.Line] = ["", ui.bold("Roles"), *ui.columns(rows, indent=2, gap=2)]
+        rows.append([name, shown, [ui.hang(""), ui.muted(plan.reasons.get(name, ""))]])  # a long why wraps in its column
+    lines: list[ui.Line] = ["", ui.bold("Roles")]
+    for name, row in zip(plan.table, ui.columns(rows, indent=2, gap=2)):
+        lines += [row, ["    ", _when_to_call(name)]]  # what the role does: the sentence you approve
     agents = setup.report_rows([line for line in report.done if not line.startswith("Roles: ")], ui.ok("+"))
     if agents:
         lines += ui.columns(agents, gap=2)
     lines.append(["  ", ui.muted("Change one with "), ui.code("--role ROLE=PROVIDER[,PROVIDER]"), ui.muted("; skip roles with "),
                   ui.code("--roles off"), ui.muted(".")])
+    lines += [["  ", ui.muted("Want a role of your own too? Add it after setup; TEXT says what it does:")],
+              ["    ", ui.cmd('agt roles config NAME --access read --only PROVIDER --description "TEXT"')]]
     return lines
 
 

@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: customize-builder-rules
+expected_outcome: |
+  The agent adds a rule such as "Never edit migrations" between the agt-role-rules markers of .agt-eval/home/claude-profile/agents/agt-builder.md, changes nothing else, confirms rules_state is valid, and says the next builder call uses it.
+context:
+  scaffold_script: place-files.sh

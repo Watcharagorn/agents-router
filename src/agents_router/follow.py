@@ -924,6 +924,11 @@ class GroupFollower:
                 self.control(f"{member.tag} {member.provider} is job {member.job_id}")
             for item in skipped:
                 self.control(f"skipped {item['provider']} — {item['reason']}")
+        from agents_router.role_run import rules_line  # role_run imports this module
+
+        line = rules_line(self.record)
+        if line:
+            self.control(f"role {self.role} · {line}")
         if any(item.get("quota") for item in skipped):
             self.control(f'hint: to move role {self.role} off a provider that keeps running out, ask your agent to '
                          '"rebalance my roles" (orchestrator-rebalance)')

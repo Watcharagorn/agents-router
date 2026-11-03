@@ -1,6 +1,6 @@
 schema_version: "1.1"
 name: setup-approve-roles
 expected_outcome: |
-  The agent runs agt guide setup, then agt setup --dry-run --json, shows the proposal including the role table, and, because the user already approved the proposed roles, runs the proposal's command exactly as given (ending in --yes --if-plan <id>). It reports the roles written, the role agents created, and that a reload is needed.
+  The agent runs agt guide setup, then agt setup --dry-run --json, shows the proposal including the role table, and, because the user already approved the proposed roles, runs the proposal's command exactly as given (ending in --yes --if-plan <id>). It shows each role with its providers and what it does (its use_when sentence). It reports the roles written, the role agents created, and that a reload is needed, and offers a role of the user's own, asking what it would do.
 context:
   scaffold_script: place-files.sh

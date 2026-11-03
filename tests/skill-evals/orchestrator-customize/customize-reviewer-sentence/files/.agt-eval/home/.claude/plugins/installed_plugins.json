@@ -1,0 +1,1 @@
+{"version": 2, "plugins": {"agents-router@agents-router": [{"scope": "user", "version": "0.12.0"}]}}

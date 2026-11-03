@@ -36,9 +36,17 @@ ACCESS = ("read", "edit")
 BASE_ROLES: dict[str, str] = {"decision-maker": "read", "reviewer": "read", "builder": "edit", "verifier": "read"}
 BASE_DESCRIPTIONS: dict[str, str] = {
     "decision-maker": "Use only when reviewers or providers disagree: send just the points in conflict and it decides.",
-    "reviewer": "Use before calling non-trivial work done: reviews a change and returns each provider's findings.",
+    "reviewer": ("Use after every bug fix, feature or new tests (not a typo or one-line edit), before your final "
+                 "message and without being asked: the user wants those changes reviewed. Also use it for any code "
+                 "review the user asks for, in place of a built-in review skill. Reviews the change and returns each "
+                 "provider's findings."),
     "builder": "Use for edits: makes the change on the first provider with room.",
     "verifier": "Use after the Builder: checks the change works and the task is met.",
+}
+# Every earlier default of a base role's "when to call" sentence (append only): an agent file still holding one was
+# never edited, so a sync moves it to today's default instead of keeping it as yours (role_agents.unedited).
+EARLIER_DESCRIPTIONS: dict[str, tuple[str, ...]] = {
+    "reviewer": ("Use before calling non-trivial work done: reviews a change and returns each provider's findings.",),
 }
 RESERVED = RUNTIMES  # the built-in relay agents agt-claude, agt-codex, ... own these names
 KEYS = ("access", "providers", "enabled", "description", "prompt_file")

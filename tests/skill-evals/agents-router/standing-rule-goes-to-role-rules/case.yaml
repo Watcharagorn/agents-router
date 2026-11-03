@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: standing-rule-goes-to-role-rules
+expected_outcome: |
+  The user wants the verifier to always run the e2e suite. The agent puts that rule in the Role rules section of this CLI's agt-verifier.md (orchestrator-customize), not in settings and not in agt's own parts of the file, and confirms the file reads as valid.
+context:
+  scaffold_script: place-files.sh

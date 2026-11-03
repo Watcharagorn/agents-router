@@ -8,7 +8,7 @@
    ```
 
    The only failure allowed is `test_help.test_other_commands_keep_argparse_help` on Python 3.15.
-3. **Pass the skill gate** when the change touches the Roles section of `skills/agents-router/SKILL.md`, the role step of `src/agents_router/guides/setup.md`, or `skills/orchestrator-rebalance/`. The graded cases in `tests/skill-evals/` (tag `release-gate`) must pass before release.
+3. **Pass the skill gate** when the change touches the Roles section of `skills/agents-router/SKILL.md`, the role step of `src/agents_router/guides/setup.md`, `skills/orchestrator-rebalance/` or `skills/orchestrator-customize/`. The graded cases in `tests/skill-evals/` (tag `release-gate`) must pass before release.
    - First check that every case loads. This runs no model and costs nothing:
 
      ```bash
@@ -19,11 +19,12 @@
    - Then the graded run. It uses real model runs on the person's quota (three runs per case, plus an LLM judge), so ask first and say so:
 
      ```bash
-     PATH="$PWD/tests/skill-evals/bin:$PATH" claude plugin eval . --eval-dir tests/skill-evals --tag release-gate \
+     PATH=".agt-eval/bin:$PATH" claude plugin eval . --eval-dir tests/skill-evals --tag release-gate \
        --scaffold --allow-tools Bash,Write,Edit,Agent --ablation none --no-publish --output-dir "$TMPDIR/agt-skill-evals"
      ```
 
-     `tests/skill-evals/bin` goes first on PATH so the runs' `agt` is the eval wrapper: each case's `place-files.sh` builds `.agt-eval/` in its own workspace (its own HOME, AGT_HOME, CLAUDE_CONFIG_DIR and CODEX_HOME, the fake CLIs, agt copied from this clone), and the wrapper refuses to run anywhere else. No run starts a real job or touches the real `~/.agt`.
+     `.agt-eval/bin` goes first on PATH so the runs' `agt` is the eval wrapper (`tests/skill-evals/bin/agt`, copied into each case's workspace, because a run can read only its workspace; the relative entry resolves there): each case's `place-files.sh` builds `.agt-eval/` in its own workspace (its own HOME, AGT_HOME, CLAUDE_CONFIG_DIR and CODEX_HOME, the fake CLIs, agt copied from this clone), and the wrapper refuses to run anywhere else. No run starts a real job or touches the real `~/.agt`.
+   - A case that needs a role agent under its bare name, as agt installs it (`agt-reviewer`), keeps the stand-in in `<case>/profile-agents/`, with the description agt writes for that role (only the description routes; the body reviews the change itself). Its `place-files.sh` runs `tests/skill-evals/install-profile-agents.sh`, which copies the stand-in into the run's own Claude Code config folder, `agents/`: where agt writes it for a real profile. A run loads no `.claude/` folder from its workspace, even one a scaffold wrote, and an agent shipped in a test plugin would be named `<plugin>:agt-reviewer`, so this is the only way to the bare name we found. It isn't a documented eval feature (the eval docs say a scaffold supplies files and git state only). It relies on the run layout of Claude Code 2.1.316: `<run>/home` (with the workspace in it), `<run>/tmp`, and `<run>/config`, which exists before the scaffold runs. If that layout changes, the script exits 1 and the case's runs fail with "scaffold failed" instead of quietly running without the agent. To check a run, look for `agt-reviewer` in the `agents` list of the init event in its trace (`tracePath` in the JSON result).
    - Any case below 1.0 blocks the release; fix the skill, not the grader, unless the grader is wrong.
    - Advice only, never a gate: the with/without benchmark (drop `--ablation none`) and trigger tuning with skill-creator against `tests/skill-evals/<skill>/triggers.json`. Both use quota and vary from run to run, so they also stay out of the unit tests.
 4. **Raise the version** in `.claude-plugin/plugin.json`, `pyproject.toml` and `src/agents_router/__init__.py` together:

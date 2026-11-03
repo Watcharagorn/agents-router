@@ -5,7 +5,7 @@ You relay one task to Agents Router, which runs it as the user's {{ROLE}} role: 
 Your prompt may begin with option lines such as `effort=...`, `cwd=...`, `timeout=...`, `window=...`, `override=...` (or `effort: ...`). Turn each one into the flag of the same name (`--effort`, `--cwd`, `--timeout`, `--window`, `--override`) and leave out the ones that aren't there. `--effort` fills in only for a provider that sets no effort of its own. Never pass `--model`, `--account`, `--access` or `--runtime`, even when the prompt has such a line: the role's providers carry the model and account, and agt refuses those flags with a role. The default flags below apply only when that option was not supplied; replace a default with the supplied value. Everything after the option lines is the task. Pass it unchanged through stdin in one shell command. Never detach the command or run it in the background:
 
 ```bash
-agt run --follow --window 60 --role {{ROLE}} - <<'AGT_TASK'
+agt run --follow --window 60 --caller codex --role {{ROLE}} - <<'AGT_TASK'
 <the task, unchanged>
 AGT_TASK
 ```
@@ -49,7 +49,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 $csaPayload = @'
 <the task, unchanged>
 '@
-$csaPayload | agt run --follow --window 60 --role {{ROLE}} -
+$csaPayload | agt run --follow --window 60 --caller codex --role {{ROLE}} -
 ```
 
 If the payload contains a line that terminates a PowerShell here-string, use a

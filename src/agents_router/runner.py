@@ -218,7 +218,7 @@ class Runner:
                 self.owner_home = str(lease.account.home)
             else:
                 session, owner = None, None
-                prompt = handoff_prompt(self.spec.prompt, last, lease.account.name)
+                prompt = self._with_rules(handoff_prompt(self.spec.prompt, last, lease.account.name))
             self.warnings.append(f"{lease.account.name} hit its usage limit; continuing on another account")
 
     def _attempt_with_capacity_retries(
@@ -348,6 +348,12 @@ class Runner:
             self.status(state="queued", message="waiting for a free account slot")
             time.sleep(3)
 
+    def _with_rules(self, prompt: str) -> str:
+        """A new session gets the role's rules first, as the job's first prompt did; a follow-up's text lacks them."""
+
+        rules = self.spec.rules
+        return f"{rules}\n\n{prompt}" if rules and rules not in prompt else prompt
+
     def _attempt(
         self,
         lease: accounts.Lease,
@@ -372,7 +378,7 @@ class Runner:
                 attempt["continued_from"] = owner
             else:
                 self.warnings.append(f"could not move the session from {owner}; starting a new one with a summary")
-                session, prompt = None, fallback_prompt or prompt
+                session, prompt = None, self._with_rules(fallback_prompt or prompt)
         spec = dataclasses.replace(self.spec, resume_session=session)
         limits = plans.account_limits(self.runtime_config, account)
         capped = plans.cap_effort(spec.effort, limits)

@@ -93,7 +93,7 @@ The sandbox uses only named profiles (`.claude-a`, `.claude-b`). Claude Code kee
 | `src/agents_router/mcp_server.py`, `tools.py`, `messages.py`, `hooks.py` | MCP server, tools, parent messages, Claude Code hooks |
 | `src/agents_router/runtimes/` | Claude Code, Codex, Antigravity and Kiro adapters (Kiro's is built from its docs and `tests/fake_kiro.py`; never run `kiro-cli login`, `logout` or `chat` in tests) |
 | `src/agents_router/agy_review/` | The review gate for Antigravity workers (PreToolUse hook, fixed rules, reviewer, policy). Self-contained: no imports from the rest of the package |
-| `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity (skills include orchestrator-setup and orchestrator-rebalance) |
+| `.claude-plugin/`, `plugin.json`, `mcp_config.json`, `hooks/`, `commands/`, `skills/` | Plugin files for Claude Code, Codex and Antigravity (skills include orchestrator-setup, orchestrator-rebalance and orchestrator-customize) |
 | `tests/skill-evals/` | skill-creator eval cases for the roles skills, run isolated in `.agt-eval/` sandboxes; the release gate is in `.claude/skills/agt-maintainer/references/release.md` |
 | `agents/` | Claude Code relay agents (`agents-router:agt-claude` and so on) that run `agt run --follow` |
 | `src/agents_router/follow.py` | `agt follow`: one readable line per worker event, with end markers for the relay agents |

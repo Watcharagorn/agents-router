@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: typo-fix-skips-reviewer
+expected_outcome: |
+  The profile's agt-reviewer carries agt's default description (the user-scope agent agt writes), which leaves out typos and one-line edits. The agent fixes the one-line typo and finishes without calling agt-reviewer: each review is a paid multi-provider job. Same prompt as edited-sentence-calls-reviewer, where an edited sentence asks for a review even then.
+context:
+  scaffold_script: place-files.sh

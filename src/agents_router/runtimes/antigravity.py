@@ -71,6 +71,14 @@ from agents_router.runtimes.base import (
 
 MAX_PROMPT_CHARS = 24_000  # the prompt travels as one command-line argument
 
+
+def prompt_size(prompt: str, parent: dict[str, Any] | None) -> int:
+    """The most characters `prompt` can reach agy with: every note launch may put before it, then the task.
+    `agt run --role` checks it before choosing Antigravity, so a long prompt goes to the next provider instead."""
+
+    notes = WORKER_NOTE.rstrip("]\n") + WORKER_TOOLS_NOTE + GATE_NOTE + SANDBOX_NOTE + "]\n\n"
+    return len(notes) + len(parent_note(parent, "antigravity")) + len(prompt)
+
 # agy rejects --effort for third-party models ("--effort is not supported for model ...", checked with
 # claude-sonnet-4-6 in agy 1.4.0), and ids like gemini-3.8-flash-high or gpt-oss-120b-medium carry their level.
 EFFORT_SUFFIX_RE = re.compile(r"-(minimal|low|medium|high|xhigh|max)$")
