@@ -113,7 +113,7 @@ Give them a numbered list built from `still_needed`:
   - `claude`, then `/login`, inside the profile;
   - `codex login`;
   - the first `agy` sign-in.
-- **This session:** type `/reload-plugins` in Claude Code; in Codex or Antigravity, start a new session. The same reload loads the `agt-<role>` agents.
+- **This session:** type `/reload-plugins` in Claude Code; in Codex or Antigravity, start a new session. Say that the same reload loads the `agt-<role>` agents.
 - **Every other Claude profile that got the plugin:** start a new session there.
 - **macOS:** if the Claude desktop app reports `agt: command not found` while a terminal finds it, the app doesn't see `~/.local/bin`. Run `uv tool update-shell`, then quit and reopen the app.
 
