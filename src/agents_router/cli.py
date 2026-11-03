@@ -472,7 +472,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     lines.append(["  ", "Sharing", " " * (width - 7), first.removeprefix("agt share: ").rstrip(".")])
     lines += [[" " * (width + 2), *ui.inline(line.strip())] for line in rest]
     if notes:
-        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline(ui.tilde(note))] for note in notes)]
+        lines += ["", ui.bold("Notes"), *(["  ", *ui.inline_tilde(note)] for note in notes)]
     if problems:
         lines += ["", ui.bold(f"{count} problem{'s' if count != 1 else ''}")]
         for what, fix in problems:

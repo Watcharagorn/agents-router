@@ -99,6 +99,16 @@ def tilde(text: str) -> str:
     return text.replace(home + os.sep, "~" + os.sep).replace(home + "/", "~/")
 
 
+def inline_tilde(text: str) -> list[Piece]:
+    """`inline(text)` with `tilde` applied only outside backtick spans, so a command or value a
+    person copies from a backtick span keeps its full path."""
+
+    parts = text.split("`")
+    if len(parts) % 2 == 0:  # an odd backtick: inline treats it as plain words, so tilde all of it
+        return inline(tilde(text))
+    return inline("`".join(tilde(part) if index % 2 == 0 else part for index, part in enumerate(parts)))
+
+
 def short_path(path: str | Path) -> str:
     path = Path(path)
     try:

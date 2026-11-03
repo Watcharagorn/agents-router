@@ -350,7 +350,7 @@ def notes_lines(plan: planner.Plan, needs: list[dict[str, Any]], fresh: list[pla
         notes.append(f"{names} {'was' if len(fresh) == 1 else 'were'} saved less than 3 s ago; the next sync copies "
                      f"{'it' if len(fresh) == 1 else 'them'}.")
     notes += list(extra)
-    return [ui.bold("Notes"), *(["  ", *ui.inline(ui.tilde(note))] for note in notes)] if notes else []
+    return [ui.bold("Notes"), *(["  ", *ui.inline_tilde(note)] for note in notes)] if notes else []
 
 
 # The screen ------------------------------------------------------------------------------------
