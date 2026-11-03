@@ -280,11 +280,25 @@ class UpdateTests(SetupBase):
         method, argv = info
         if method.startswith("pip") and argv is None:
             argv = [sys.executable, "-c", "print('reinstalled')"]
+        self.handed_over = []
         out = io.StringIO()
         with patch.object(setup, "_install_info", return_value=(method, argv)), \
-             patch.object(setup, "_replaces_running_program", return_value=False), redirect_stdout(out):
+             patch.object(setup, "_replaces_running_program", return_value=False), \
+             patch.object(setup.subprocess, "run", side_effect=self.new_agt(setup.subprocess.run)), redirect_stdout(out):
             code = cli.main(["update", *args])
         return code, out.getvalue()
+
+    def new_agt(self, real_run):
+        """The agt a reinstall hands over to, run here with the test's fakes: a real child would miss its patches."""
+
+        def run(argv, **kwargs):
+            if "agents_router" not in argv:
+                return real_run(argv, **kwargs)
+            self.assertEqual(argv[1:4], ["-P", "-m", "agents_router"])  # never a real agt from a test
+            self.handed_over.append((argv, kwargs["env"][setup.REINSTALLED_ENV]))
+            with patch.dict(os.environ, kwargs["env"]):
+                return setup.subprocess.CompletedProcess(argv, cli.main(argv[4:]))
+        return run
 
     def test_updates_the_package_and_every_host_that_has_the_plugin(self):
         self.run_cli("--host", "claude", "--host", "codex")
@@ -302,6 +316,57 @@ class UpdateTests(SetupBase):
         self.assertIn("Restart Claude Code", out)
         self.assertIn("Start a new Codex session", out)
         self.assertNotIn("Antigravity", out)
+        self.assertEqual(out.count("agt update  ✓ done"), 1, out)  # one report, the new agt's
+
+    def test_a_reinstall_hands_the_rest_to_the_new_agt(self):
+        # The old process has the old modules loaded; one it imports now is the new version's (0.11 to 0.12 crashed).
+        self.run_cli("--host", "claude", "--host", "codex")
+        with patch.object(setup, "update_plugin", side_effect=AssertionError("ran in the old agt")) as update_plugin, \
+             patch.object(setup, "sync_role_agents", side_effect=AssertionError("ran in the old agt")) as sync, \
+             patch.object(cli, "_refresh_share_launcher", side_effect=AssertionError("ran in the old agt")) as launcher, \
+             patch.object(setup, "finish_in_new_agt", return_value=3) as finish:
+            code, out = self.run_update("--host", "claude", "--host", "codex")
+        self.assertEqual(code, 3)  # the new agt's exit code
+        self.assertEqual(finish.call_args.args[0], ["claude", "codex"])
+        self.assertRegex(finish.call_args.args[1].reinstalled, r"^agt: reinstalled with `")
+        for step in (update_plugin, sync, launcher):
+            step.assert_not_called()
+        self.assertNotIn("✓", out)  # the new agt prints the report
+
+    def test_the_new_agt_runs_from_this_python_and_reports_the_reinstall(self):
+        self.run_cli("--host", "claude")
+        self.log.unlink()
+        code, out = self.run_update("--host", "claude")
+        self.assertEqual(code, 0, out)
+        [(argv, line)] = self.handed_over
+        self.assertEqual(argv, [sys.executable, "-P", "-m", "agents_router", "update", "--no-package", "--host", "claude"])
+        self.assertRegex(line, r"^agt: reinstalled with `.*print\('reinstalled'\)`$")
+        self.assertIn(line, out)
+        self.assertIn(["plugin", "update", "agents-router@agents-router"], [c["argv"] for c in self.calls()])
+
+    def test_the_old_agt_stops_when_the_new_one_cant_start(self):
+        self.run_cli("--host", "claude")
+        self.log.unlink()
+        with patch.object(setup, "update_plugin", side_effect=AssertionError("ran in the old agt")), \
+             patch.object(cli, "_refresh_share_launcher", side_effect=AssertionError("ran in the old agt")) as launcher, \
+             patch.object(setup, "finish_in_new_agt", return_value=None):
+            code, out = self.run_update("--host", "claude")
+        self.assertEqual(code, 1)
+        self.assertIn("agt: reinstalled with `", out)
+        self.assertIn("the new agt didn't start; run `agt update --no-package` to finish", out)
+        launcher.assert_not_called()  # it would record a Python the reinstall may have removed
+
+    def test_the_new_agt_gets_the_color_mode(self):
+        self.run_cli("--host", "claude")
+        code, out = self.run_update("--host", "claude", "--color", "never")
+        self.assertEqual(code, 0, out)
+        [(argv, _)] = self.handed_over
+        self.assertEqual(argv[-2:], ["--color", "never"])
+
+    def test_a_new_agt_killed_by_a_signal_exits_as_a_shell_would(self):
+        report = setup.Report(reinstalled="agt: reinstalled with `uv tool install --force x`")
+        with patch.object(setup.subprocess, "run", return_value=setup.subprocess.CompletedProcess([], -15)):
+            self.assertEqual(setup.finish_in_new_agt(["auto"], report), 143)
 
     def test_codex_from_a_local_clone_updates_without_a_fetch(self):
         # Codex refuses `marketplace upgrade` for a marketplace added from a folder; it reads that folder in place.
