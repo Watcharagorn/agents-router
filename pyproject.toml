@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agents-router"
-version = "0.12.3"
+version = "0.12.4"
 description = "Keep agents, skills, MCP servers and instruction files in sync between Claude Code, Codex CLI, Kiro CLI and Antigravity, and run subagents in those CLIs on your own accounts."
 readme = "README.md"
 requires-python = ">=3.11"

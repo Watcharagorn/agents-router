@@ -3,6 +3,7 @@ import json
 import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+import shlex
 import sys
 import tempfile
 import unittest
@@ -452,6 +453,65 @@ class UpdateTests(SetupBase):
         method, argv = setup.detect_install(str(pipx), "/x", None, None, "py")
         self.assertEqual((method, argv[1:]), ("pipx", ["install", "--force", url]))
 
+    def test_detect_install_in_global_pipx_home(self):
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True), \
+             patch.object(setup.shutil, "which", return_value=None):
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            url = setup.PACKAGE_SOURCE
+            self.assertEqual(setup.detect_install("/opt/pipx/venvs/agents-router", "/x", None, None, "py"),
+                             ("pipx-global", ["pipx", "install", "--global", "--force", url]))
+            home = self.root / "global-home"
+            venv = home / "venvs" / "agents-router"
+            venv.mkdir(parents=True)
+            (venv / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(setup.detect_install(str(venv), "/x", None, None, "py")[0], "pipx")
+            for folder in (str(home), "~/global-home"):
+                with self.subTest(folder=folder), patch.dict(os.environ, {"PIPX_GLOBAL_HOME": folder,
+                                                                         "HOME": str(self.root),
+                                                                         "USERPROFILE": str(self.root)}):
+                    self.assertEqual(setup.detect_install(str(venv), "/x", None, None, "py"),
+                                     ("pipx-global", ["pipx", "install", "--global", "--force", url]))
+
+    def test_detect_default_global_pipx_home_when_shell_sets_another(self):
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True):
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            os.environ["PIPX_GLOBAL_HOME"] = str(self.root / "other-global-home")
+            self.assertEqual(setup.detect_install("/opt/pipx/venvs/agents-router", "/x", None, None, "py")[0],
+                             "pipx-global")
+
+    def test_detect_install_in_symlinked_global_pipx_home(self):
+        home = self.root / "global-home"
+        venv = home / "venvs" / "agents-router"
+        venv.mkdir(parents=True)
+        (venv / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+        link = self.root / "global-link"
+        try:
+            link.symlink_to(home, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True):
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            os.environ["PIPX_GLOBAL_HOME"] = str(link)
+            self.assertEqual(setup.detect_install(str(venv), "/x", None, None, "py")[0], "pipx-global")
+            os.environ["PIPX_GLOBAL_HOME"] = str(home)
+            self.assertEqual(setup.detect_install(str(link / "venvs" / "agents-router"), "/x", None, None, "py")[0],
+                             "pipx-global")
+
+    def test_detect_global_pipx_home_keeps_literal_environment_variables(self):
+        home = self.root / "$AGT_PIPX_TEST_HOME"
+        expanded = self.root / "expanded-home"
+        for folder in (home, expanded):
+            venv = folder / "venvs" / "agents-router"
+            venv.mkdir(parents=True)
+            (venv / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True):
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            os.environ.update(PIPX_GLOBAL_HOME=str(home), AGT_PIPX_TEST_HOME="expanded-home")
+            self.assertEqual(setup.detect_install(str(home / "venvs" / "agents-router"), "/x", None, None, "py")[0],
+                             "pipx-global")
+            self.assertEqual(setup.detect_install(str(expanded / "venvs" / "agents-router"), "/x", None, None, "py")[0],
+                             "pipx")
+
     def tool_venvs(self):
         """A uv tool venv whose receipt links agt into root/bin, and a pipx venv, both outside the default folders."""
 
@@ -471,6 +531,8 @@ class UpdateTests(SetupBase):
         self.assertEqual(setup._reinstall_folders("uv", uv), {"UV_TOOL_DIR": str(self.root / "uv-tools"),
                                                               "UV_TOOL_BIN_DIR": str(self.root / "bin")})
         self.assertEqual(setup._reinstall_folders("pipx", pipx), {"PIPX_HOME": str(self.root / "tool-home")})
+        self.assertEqual(setup._reinstall_folders("pipx-global", pipx),
+                         {"PIPX_GLOBAL_HOME": str(self.root / "tool-home")})
         (pipx / "pipx_metadata.json").unlink()  # PIPX_HOME comes from the folder alone
         self.assertEqual(setup._reinstall_folders("pipx", pipx), {"PIPX_HOME": str(self.root / "tool-home")})
         self.assertEqual(setup._reinstall_folders("pip-user", uv), {})
@@ -484,17 +546,18 @@ class UpdateTests(SetupBase):
         # UV_TOOL_DIR or PIPX_HOME set when agt was installed, then unset or changed: the reinstall still replaces
         # this agt instead of putting a second copy in the default folder.
         uv, pipx = self.tool_venvs()
-        names = ["UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "PIPX_HOME"]
+        names = ["UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "PIPX_HOME", "PIPX_GLOBAL_HOME"]
         seen = self.root / "seen.json"
         record = [sys.executable, "-c", "import json, os, sys; json.dump({name: os.environ.get(name) for name in "
                   "sys.argv[2:]}, open(sys.argv[1], 'w'))", str(seen), *names]
         elsewhere = {name: str(self.root / "elsewhere" / name) for name in names}
         expected = {"uv": {"UV_TOOL_DIR": str(self.root / "uv-tools"), "UV_TOOL_BIN_DIR": str(self.root / "bin")},
-                    "pipx": {"PIPX_HOME": str(self.root / "tool-home")}}
+                    "pipx": {"PIPX_HOME": str(self.root / "tool-home")},
+                    "pipx-global": {"PIPX_GLOBAL_HOME": str(self.root / "tool-home")}}
         for shell in ({}, elsewhere):
-            for method, venv in (("uv", uv), ("pipx", pipx)):
+            for method, venv in (("uv", uv), ("pipx", pipx), ("pipx-global", pipx)):
                 with self.subTest(shell=bool(shell), method=method), patch.dict(os.environ, shell), \
-                        patch.object(sys, "prefix", str(venv)):
+                        patch.object(sys, "prefix", str(venv)), patch.object(os, "geteuid", return_value=0, create=True):
                     for name in names:
                         if name not in shell:
                             os.environ.pop(name, None)
@@ -502,6 +565,87 @@ class UpdateTests(SetupBase):
                     self.assertEqual(code, 0, out)
                     got = json.loads(seen.read_text(encoding="utf-8"))
                     self.assertEqual({name: got[name] for name in expected[method]}, expected[method])
+                    self.assertEqual(len(self.handed_over), 1)
+
+    def test_non_root_global_pipx_update_stays_in_this_agt(self):
+        self.run_cli("--host", "claude")
+        argv = ["pipx", "install", "--global", "--force", setup.PACKAGE_SOURCE]
+        for home in (Path("/opt/pipx"), self.root / "global home"):
+            command = "sudo " + (f"env PIPX_GLOBAL_HOME={shlex.quote(str(home))} " if home != Path("/opt/pipx") else "")
+            todo = f"Update the agt package now with `{command}{' '.join(argv)}` (a global pipx install needs root)."
+            with self.subTest(home=home), patch.dict(os.environ), \
+                 patch.object(os, "geteuid", return_value=1000, create=True), \
+                 patch.object(sys, "prefix", str(home / "venvs" / "agents-router")), \
+                 patch.object(setup, "_folders_to_set", side_effect=AssertionError("probed folders")) as folders:
+                os.environ.pop("PIPX_GLOBAL_HOME", None)
+                report = setup.Report()
+                with patch.object(setup, "_install_info", return_value=("pipx-global", argv)), \
+                     patch.object(setup, "run_command", side_effect=AssertionError("ran a command")) as run:
+                    self.assertFalse(setup.update_package(report))
+                self.assertEqual(report.todo, [todo])
+                run.assert_not_called()
+                self.log.unlink()
+                code, out = self.run_update("--host", "claude", info=("pipx-global", argv))
+                self.assertEqual(code, 0, out)
+                self.assertEqual(self.handed_over, [])
+                self.assertIn("a global pipx install needs root", out)
+                self.assertIn(["plugin", "update", "agents-router@agents-router"], [c["argv"] for c in self.calls()])
+                folders.assert_not_called()
+
+    def test_non_root_global_pipx_dry_run_prints_only_the_package_todo(self):
+        argv = ["pipx", "install", "--global", "--force", setup.PACKAGE_SOURCE]
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=1000, create=True), \
+             patch.object(setup, "_install_info", return_value=("pipx-global", argv)), \
+             patch.object(sys, "prefix", "/opt/pipx/venvs/agents-router"), \
+             patch.object(setup, "run_command", side_effect=AssertionError("ran a command")) as run, \
+             patch.object(setup, "_folders_to_set", side_effect=AssertionError("probed folders")) as folders:
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            report = setup.Report(dry_run=True)
+            self.assertFalse(setup.update_package(report))
+        self.assertEqual(report.todo, [f"Update the agt package now with `sudo {' '.join(argv)}` "
+                                       "(a global pipx install needs root)."])
+        self.assertEqual(report.done, [])
+        self.assertNotIn("would run", setup.format_report(report, "update"))
+        run.assert_not_called()
+        folders.assert_not_called()
+
+    def test_non_root_global_pipx_todo_quotes_a_source_with_spaces(self):
+        source = self.root / "Agent Sources" / "agents-router"
+        direct_url = json.dumps({"url": source.as_uri(), "dir_info": {}})
+        for home in (Path("/opt/pipx"), self.root / "global home"):
+            with self.subTest(home=home), patch.dict(os.environ), \
+                 patch.object(os, "geteuid", return_value=1000, create=True), \
+                 patch.object(sys, "prefix", str(home / "venvs" / "agents-router")), \
+                 patch.object(setup.shutil, "which", return_value=None), \
+                 patch.object(setup, "_install_info", side_effect=lambda:
+                              setup.detect_install(sys.prefix, "/x", direct_url, None, "py")), \
+                 patch.object(setup, "run_command", side_effect=AssertionError("ran a command")) as run:
+                os.environ.pop("PIPX_GLOBAL_HOME", None)
+                os.environ["PIPX_GLOBAL_HOME"] = str(home)
+                if home != Path("/opt/pipx"):
+                    venv = home / "venvs" / "agents-router"
+                    venv.mkdir(parents=True)
+                    (venv / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+                report = setup.Report()
+                self.assertFalse(setup.update_package(report))
+                env = "" if home == Path("/opt/pipx") else f"env PIPX_GLOBAL_HOME={shlex.quote(str(home))} "
+                self.assertEqual(report.todo, [f"Update the agt package now with `sudo {env}pipx install --global "
+                                               f"--force {shlex.quote(str(source))}` (a global pipx install needs root)."])
+                run.assert_not_called()
+
+    def test_root_global_pipx_dry_run_prints_the_reinstall_command(self):
+        argv = ["pipx", "install", "--global", "--force", setup.PACKAGE_SOURCE]
+        with patch.dict(os.environ), patch.object(os, "geteuid", return_value=0, create=True), \
+             patch.object(setup, "_install_info", side_effect=lambda:
+                          setup.detect_install("/opt/pipx/venvs/agents-router", "/x", None, None, "py")), \
+             patch.object(setup.shutil, "which", return_value=None), \
+             patch.object(setup, "run_command", side_effect=AssertionError("ran a command")) as run:
+            os.environ.pop("PIPX_GLOBAL_HOME", None)
+            report = setup.Report(dry_run=True)
+            self.assertFalse(setup.update_package(report))
+        self.assertEqual(report.done, [f"agt (pipx-global install): would run `{' '.join(argv)}`"])
+        self.assertEqual(report.todo, [])
+        run.assert_not_called()
 
     def test_a_reinstall_typed_by_hand_names_the_folders_the_shell_wouldnt_pick(self):
         # On Windows the person runs the reinstall; the to-do names each folder their uv or pipx wouldn't pick.

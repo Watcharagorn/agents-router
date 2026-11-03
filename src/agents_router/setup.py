@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1144,6 +1145,12 @@ def detect_install(prefix: str, location: str | None, direct_url: str | None, us
     source = recorded_source(direct_url) or PACKAGE_SOURCE
     tool = _tool_installer(Path(prefix))
     if tool == "pipx":
+        global_homes = [Path("/opt/pipx")]
+        if global_home := os.environ.get("PIPX_GLOBAL_HOME"):
+            global_homes.append(Path(global_home).expanduser())
+        home = Path(prefix).parent.parent.resolve()
+        if any(same_path(home, candidate.resolve()) for candidate in global_homes):
+            return "pipx-global", [shutil.which("pipx") or "pipx", "install", "--global", "--force", source]
         return "pipx", [shutil.which("pipx") or "pipx", "install", "--force", source]
     if tool == "uv":
         return "uv", [shutil.which("uv") or "uv", "tool", "install", "--force", "--compile-bytecode", source]
@@ -1175,12 +1182,14 @@ def _reinstall_folders(method: str, venv: Path) -> dict[str, str]:
     """The settings that make uv or pipx reinstall agt into `venv`, where it is now, whatever this shell has set.
 
     uv keeps a tool in UV_TOOL_DIR/<name> and links its commands into UV_TOOL_BIN_DIR, which its receipt records;
-    pipx keeps it in PIPX_HOME/venvs/<name>. Without them, each would install a second copy in its default folder
-    and leave the agt on PATH as it was. Empty for a pip install.
+    pipx keeps it in PIPX_HOME/venvs/<name>, or PIPX_GLOBAL_HOME/venvs/<name> for a global install. Without them,
+    each would install a second copy in its default folder and leave the agt on PATH as it was. Empty for a pip install.
     """
 
     if method == "pipx":
         return {"PIPX_HOME": str(venv.parent.parent)}
+    if method == "pipx-global":
+        return {"PIPX_GLOBAL_HOME": str(venv.parent.parent)}
     if method != "uv":
         return {}
     folders = {"UV_TOOL_DIR": str(venv.parent)}
@@ -1269,6 +1278,12 @@ def update_package(report: Report) -> bool:
         report.failed.append(f"agt: couldn't tell how the package was installed. Reinstall it with {MANUAL_PACKAGE}.")
         return False
     shown = " ".join([Path(argv[0]).stem, *argv[1:]])
+    if method == "pipx-global" and not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        home = Path(sys.prefix).parent.parent
+        env = "" if same_path(home, "/opt/pipx") else f"env PIPX_GLOBAL_HOME={shlex.quote(str(home))} "
+        command = shlex.join([Path(argv[0]).stem, *argv[1:]])
+        report.add_todo(f"Update the agt package now with `sudo {env}{command}` (a global pipx install needs root).")
+        return False
     if report.dry_run:
         report.done.append(f"agt ({method} install): would run `{shown}`")
         return False
