@@ -131,8 +131,8 @@ def probe(command: list[str], env: dict[str, str] | None = None, timeout: float 
     """`kiro-cli --version` and `kiro-cli chat --help`; neither makes a model request.
 
     A supplied version (including an empty string for an unknown version) skips `--version`.
-    Anything that goes wrong (a missing binary, a timeout, a non-zero exit) counts as "no flags", so agt
-    passes no engine flag and Kiro picks as it did before agt named the engine.
+    Anything that goes wrong (a missing binary, a timeout, a non-zero exit) leaves flags empty and
+    records the reason in `error`, so callers can distinguish it from a CLI confirmed to have no flags.
     """
 
     timeout = PROBE_TIMEOUT if timeout is None else timeout
@@ -221,8 +221,9 @@ class KiroParser:
     """Kiro's `--output-format stream-json` events, or its plain-text answer from a kiro-cli without them.
 
     `plain_text = "auto"`: the runner parses each line as JSON and passes any line that isn't a JSON object
-    as a `text` event. The first Kiro event (`runStarted`, `sessionUpdate`, `metadata`, `runFinished`) puts
-    the parser in stream mode, where stray text lines are no part of the answer.
+    with a string `type` and object `data` as a `text` event. Unrecognised JSON objects are also answer
+    text until the first Kiro event (`runStarted`, `sessionUpdate`, `metadata`, `runFinished`) puts
+    the parser in stream mode, where stray text lines and unknown events are no part of the answer.
     """
 
     plain_text = "auto"
@@ -240,6 +241,10 @@ class KiroParser:
 
     def feed(self, event: dict[str, Any]) -> dict[str, Any] | None:
         kind = event.get("type")
+        if not self.stream and kind not in STREAM_EVENTS and isinstance(event.get("data"), dict):
+            # A plain-text answer may itself be JSON; only Kiro's known events establish a stream.
+            event = {"type": "text", "text": json.dumps(event, ensure_ascii=False)}
+            kind = "text"
         if kind == "text":
             if not self.stream:
                 self.lines.append(str(event.get("text") or ""))
@@ -380,6 +385,9 @@ class KiroRuntime:
         resumed = session_engine(str(spec.resume_session)) if spec.resume_session else None
         if resumed:
             # A session stays on the engine it was made on (V2 can't open a V3 session), whatever [kiro] engine says.
+            if cli.error:
+                raise RuntimeError(f"couldn't read kiro-cli's flags: {cli.error}; "
+                                   f"session {spec.resume_session} needs --{resumed}")
             engine_flag = resumed if f"--{resumed}" in cli.flags else None
         else:
             if spec.resume_session:

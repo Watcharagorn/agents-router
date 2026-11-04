@@ -9,7 +9,7 @@
   whoami --format json       logged in while FAKE_KIRO_LOGGED_OUT isn't set
   --version                  prints `kiro-cli <FAKE_KIRO_VERSION>`
 
-  FAKE_KIRO_SCENARIO   success (default) | limit | auth | mcp | silent | help-fails | help-hangs; with
+  FAKE_KIRO_SCENARIO   success (default) | limit | auth | mcp | silent | json-answer | help-fails | help-hangs; with
                        stream-json also truncated (finalTextTruncated) | run-error (runFinished status
                        "error", exit 0) | no-finish (no runFinished, exit 1)
   FAKE_KIRO_DELAY      seconds a run waits before its answer (stream-json: before its runFinished): a slow job
@@ -101,6 +101,9 @@ def main():
     task = prompt.strip().splitlines()[-1] if prompt.strip() else ""
     if "--output-format" in argv and argv[argv.index("--output-format") + 1:][:1] == ["stream-json"]:
         return stream(argv, version, scenario, task)
+    if scenario == "json-answer":
+        print(json.dumps({"type": "record", "data": {"value": 7}}))
+        return 0
     print("Looked at it.", flush=True)
     time.sleep(float(os.environ.get("FAKE_KIRO_DELAY") or 0))
     print(f"Done: {task}")

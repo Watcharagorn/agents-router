@@ -214,9 +214,10 @@ class KiroUnitTests(unittest.TestCase):
                 self.assertIn("--v2", argv, (engine, preset))
                 self.assertNotIn("--v3", argv)
         # a forced v3 on a kiro-cli without the flags: a known session passes no engine flag and isn't refused
-        argv = self.resume_argv(v3, "v3").argv
-        self.assertFalse({"--v2", "--v3"} & set(argv), argv)
-        self.assertEqual(argv[argv.index("--resume-id") + 1], v3)
+        for session in (v3, v2):
+            argv = self.resume_argv(session, "v3").argv
+            self.assertFalse({"--v2", "--v3"} & set(argv), argv)
+            self.assertEqual(argv[argv.index("--resume-id") + 1], session)
         # an id of no known shape: the engine a new job would get, and a warning that says so
         odd = self.resume_argv("abc123", FAKE_KIRO_PRESET="kiro-3.0.0")
         self.assertIn("--v3", odd.argv)
@@ -224,6 +225,18 @@ class KiroUnitTests(unittest.TestCase):
         self.assertEqual(kiro.session_engine(v3), "v3")
         self.assertEqual(kiro.session_engine(v2), "v2")
         self.assertIsNone(kiro.session_engine("abc123"))
+
+    def test_a_resumed_session_requires_a_successful_engine_flag_probe(self):
+        sessions = (("sess_3e26aa00-0000-4000-8000-000000000001", "v3"),
+                    ("61d5aa00-0000-4000-8000-000000000002", "v2"))
+        for session, engine in sessions:
+            for scenario, reason in (("help-fails", "chat --help exited 1"),
+                                     ("help-hangs", "chat --help timed out after 1 s")):
+                with self.subTest(session=session, scenario=scenario), patch.object(kiro, "PROBE_TIMEOUT", 1):
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.resume_argv(session, FAKE_KIRO_PRESET="kiro-2.37.1", FAKE_KIRO_SCENARIO=scenario)
+                    self.assertEqual(str(caught.exception),
+                                     f"couldn't read kiro-cli's flags: {reason}; session {session} needs --{engine}")
 
     def test_auto_follows_chat_agent_engine(self):
         self.assertIn("--v2", self.launch_argv("read", configured="v2", FAKE_KIRO_PRESET="kiro-3.0.0"))
@@ -347,6 +360,22 @@ class KiroUnitTests(unittest.TestCase):
             runner_line(parser, line)
         result = parser.finish(0, "")
         self.assertEqual((result.outcome, result.text, result.session_id), (base.SUCCESS, "\n".join(lines), None))
+
+    def test_unrecognised_json_objects_are_answers_until_a_kiro_stream_starts(self):
+        for kind in ("record", "text", "unknownEvent"):
+            with self.subTest(kind=kind):
+                line = json.dumps({"type": kind, "data": {"value": 7}})
+                parser = self.runtime.new_parser()
+                runner_line(parser, line)
+                result = parser.finish(0, "")
+                self.assertEqual((result.outcome, result.text, result.session_id), (base.SUCCESS, line, None))
+                self.assertFalse(parser.stream)
+                for started in kiro.STREAM_EVENTS:
+                    stream = self.runtime.new_parser()
+                    runner_line(stream, json.dumps({"type": started, "data": {}}))
+                    runner_line(stream, line)
+                    self.assertTrue(stream.stream)
+                    self.assertEqual(stream.answer(), "")
 
     def test_the_runner_still_wraps_every_line_of_a_plain_text_parser(self):
         class Plain:
@@ -567,6 +596,13 @@ class KiroJobTests(TempHome):
         with self.assertRaises(ValueError) as caught:
             jobs.create_job(runtime="kiro", prompt="more", cwd=str(self.project), access="read", resume_job=status["job_id"])
         self.assertIn("has no session to continue", str(caught.exception))
+
+    def test_a_plain_text_json_object_answer_is_preserved(self):
+        os.environ["FAKE_KIRO_SCENARIO"] = "json-answer"
+        status = self.run_job()
+        self.assertEqual((status["outcome"], status.get("session_id")), ("success", None), status)
+        self.assertEqual(jobs.read_result(status["job_id"])["result"],
+                         json.dumps({"type": "record", "data": {"value": 7}}))
 
     def test_a_usage_limit_is_reported_as_one(self):
         os.environ["FAKE_KIRO_SCENARIO"] = "limit"
