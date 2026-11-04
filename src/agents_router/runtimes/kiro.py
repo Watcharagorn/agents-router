@@ -243,7 +243,8 @@ class KiroParser:
         kind = event.get("type")
         if not self.stream and kind not in STREAM_EVENTS and isinstance(event.get("data"), dict):
             # A plain-text answer may itself be JSON; only Kiro's known events establish a stream.
-            event = {"type": "text", "text": json.dumps(event, ensure_ascii=False)}
+            text = event.get("_raw")
+            event = {"type": "text", "text": text if isinstance(text, str) else json.dumps(event, ensure_ascii=False)}
             kind = "text"
         if kind == "text":
             if not self.stream:

@@ -377,6 +377,14 @@ class KiroUnitTests(unittest.TestCase):
                     self.assertTrue(stream.stream)
                     self.assertEqual(stream.answer(), "")
 
+    def test_unrecognised_json_answer_keeps_numeric_precision_verbatim(self):
+        line = '{"type":"x","data":{"v":0.1000000000000000055511151231257827,"big":1e400}}'
+        parser = self.runtime.new_parser()
+        runner_line(parser, line)
+        result = parser.finish(0, "")
+        self.assertEqual((result.outcome, result.text.encode("utf-8"), result.session_id),
+                         (base.SUCCESS, line.encode("utf-8"), None))
+
     def test_the_runner_still_wraps_every_line_of_a_plain_text_parser(self):
         class Plain:
             plain_text = True

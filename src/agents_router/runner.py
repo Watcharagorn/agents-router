@@ -608,6 +608,8 @@ class Runner:
                     event = None
                 if not (isinstance(event, dict) and isinstance(event.get("type"), str) and isinstance(event.get("data"), dict)):
                     event = {"type": "text", "text": text.rstrip("\r\n")}
+                else:
+                    event["_raw"] = text.rstrip("\r\n")
             else:
                 event = json.loads(text)
             if not isinstance(event, dict):
