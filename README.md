@@ -110,7 +110,7 @@ Per host details: [docs/hosts.md](docs/hosts.md).
 | **Main session (host)** | Plugin, relay agents in the agent list | Plugin, native relay agents | Plugin, native relay agents | — |
 | **Subagent** | ✓ `claude -p` | ✓ `codex exec` | ✓ `agy` | ✓ `kiro-cli chat --no-interactive` ([checked live](docs/kiro.md#checked-live)) |
 | **Progress notes and questions to the parent** | ✓ | ✓ | With an account cap of 1 (`max_jobs_per_account = 1` under `[antigravity]`) | — |
-| **Follow-ups to a job** | ✓ | ✓ | ✓ | — |
+| **Follow-ups to a job** | ✓ | ✓ | ✓ | ✓ (after the current turn) |
 | **Extra accounts** | ✓ | ✓ | At your own risk | One account |
 | **Switches account at a usage limit** | ✓ | ✓ | ✓ | — (one account) |
 | **Shares agents and skills** | ✓ | ✓ | ✓ | ✓ |
@@ -123,7 +123,7 @@ Per host details: [docs/hosts.md](docs/hosts.md).
 - **Kiro's gaps, and why:**
   - **Host:** agt has no Kiro plugin.
   - **Parent channel:** agt writes nothing into `~/.kiro`, so a Kiro worker has no tools to message its main session.
-  - **Follow-ups:** Kiro's plain-text output carries no session id, so a follow-up doesn't reach a running Kiro job, and a finished one can't be continued.
+  - **Follow-ups:** a message to a running Kiro job waits for its turn to end, then continues the same session; a kiro-cli without `--output-format stream-json` has no session, so its jobs can't take follow-ups.
   - **Accounts:** Kiro keeps one login per machine.
   - **Hooks:** agt doesn't read or write Kiro's hooks yet.
   - **Plugins:** Kiro installs none.
@@ -250,7 +250,7 @@ Your normal config folder (`~/.claude`, `~/.codex`) is the one pool. Each extra 
 <details>
 <summary><b>Can Claude Code run Codex as a subagent?</b></summary>
 
-Yes. Ask your session ("have Codex review this branch") or run `agt run --runtime codex --access read "<task>"`. The worker is the official `codex exec` with your login; its result comes back to your session. Gemini (through Antigravity CLI, `agy`) works the same way; Kiro CLI works too; it has had a first live run (see [Kiro](docs/kiro.md#checked-live)). See [Codex](docs/codex.md).
+Yes. Ask your session ("have Codex review this branch") or run `agt run --runtime codex --access read "<task>"`. The worker is the official `codex exec` with your login; its result comes back to your session. Gemini (through Antigravity CLI, `agy`) works the same way; Kiro CLI works too, on its V2 and V3 engines (see [Kiro](docs/kiro.md#checked-live)). See [Codex](docs/codex.md).
 
 </details>
 

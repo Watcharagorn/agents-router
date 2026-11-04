@@ -1249,6 +1249,109 @@ def ui_path(folder):
     return ui.tilde(str(folder))
 
 
+class KiroDoctorTests(SetupBase):
+    """`agt doctor --runtime kiro` names the engine a job will use, against tests/fake_kiro.py only."""
+
+    def setUp(self):
+        super().setUp()
+        self.argv_log = self.root / "kiro-argv.jsonl"
+        self.kiro_home = self.root / "kiro"  # Kiro's settings, empty unless a test writes cli.json
+        self.kiro_home.mkdir()
+        self._kiro = patch.dict(os.environ, {"AGT_KIRO_COMMAND": helpers.FAKE_KIRO, "FAKE_KIRO_ARGV_LOG": str(self.argv_log)})
+        self._kiro.start()
+        for key in ("FAKE_KIRO_PRESET", "FAKE_KIRO_FLAGS", "FAKE_KIRO_VERSION", "FAKE_KIRO_SCENARIO"):
+            os.environ.pop(key, None)
+        self._kiro_primary = patch("agents_router.config.default_primary", side_effect=lambda runtime:
+                                   self.kiro_home if runtime == "kiro" else default_primary(runtime))
+        self._kiro_primary.start()
+
+    def tearDown(self):
+        self._kiro_primary.stop()
+        self._kiro.stop()
+        super().tearDown()
+
+    def doctor(self, *extra, **fake):
+        out = io.StringIO()
+        with patch.dict(os.environ, fake), redirect_stdout(out):
+            code = cli.main(["doctor", "--runtime", "kiro", *extra])
+        return code, out.getvalue()
+
+    def set_engine(self, value):
+        (self.root / "agt").mkdir(exist_ok=True)
+        (self.root / "agt" / "settings.toml").write_text(f'[kiro]\nengine = "{value}"\n', encoding="utf-8")
+
+    def engine_line(self, out):
+        return next(line.strip() for line in out.splitlines() if line.strip().startswith("engine "))
+
+    def assert_no_model_request(self):
+        runs = [json.loads(line) for line in self.argv_log.read_text(encoding="utf-8").splitlines()]
+        self.assertIn(["chat", "--help"], runs)
+        self.assertEqual([argv for argv in runs if argv[:1] == ["chat"] and "--help" not in argv], [], runs)
+
+    def test_kiro_2_37_1_with_empty_settings_uses_v2_by_auto(self):
+        code, out = self.doctor(FAKE_KIRO_PRESET="kiro-2.37.1")
+        self.assertEqual(code, 0, out)
+        self.assertIn("(kiro-cli 2.37.1)", out)
+        self.assertEqual(self.engine_line(out), "engine v2 (auto: kiro-cli 2.37.1)")
+        self.assertIn("output stream-json", out)
+        self.assert_no_model_request()
+
+    def test_kiro_3_0_0_uses_v3(self):
+        code, out = self.doctor(FAKE_KIRO_PRESET="kiro-3.0.0")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.engine_line(out), "engine v3 (auto: kiro-cli 3.0.0)")
+        self.assert_no_model_request()
+
+    def test_the_engine_probe_reuses_the_reported_version(self):
+        code, out = self.doctor("--json", FAKE_KIRO_PRESET="kiro-3.0.0")
+        self.assertEqual(code, 0, out)
+        data = json.loads(out)
+        self.assertEqual(data["version"], "kiro-cli 3.0.0")
+        self.assertNotIn("kiro_cli_version", data["engine"])
+        runs = [json.loads(line) for line in self.argv_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(runs.count(["--version"]), 1, runs)
+        self.assert_no_model_request()
+
+    def test_the_reason_names_the_setting_that_chose_the_engine(self):
+        (self.kiro_home / "settings").mkdir()
+        (self.kiro_home / "settings" / "cli.json").write_text(json.dumps({"chat.agentEngine": "v3"}), encoding="utf-8")
+        self.assertEqual(self.engine_line(self.doctor(FAKE_KIRO_PRESET="kiro-2.37.1")[1]), "engine v3 (chat.agentEngine)")
+        self.set_engine("v2")
+        self.assertEqual(self.engine_line(self.doctor(FAKE_KIRO_PRESET="kiro-3.0.0")[1]), "engine v2 (set in [kiro] engine)")
+
+    def test_an_older_kiro_cli_gets_no_engine_flag(self):
+        code, out = self.doctor()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.engine_line(out), "engine none (kiro-cli 2.30.0 has no engine flags; Kiro's own default)")
+        self.assertIn("output plain text (no --output-format)", out)
+
+    def test_a_forced_v3_without_the_flag_is_a_problem(self):
+        self.set_engine("v3")
+        problem = 'kiro-cli 2.30.0 has no V3 engine; update Kiro or set [kiro] engine = "auto"'
+        code, out = self.doctor()
+        self.assertEqual(code, 1, out)
+        self.assertIn("engine ✗ v3 (set in [kiro] engine), so Kiro jobs fail (see below)", out)
+        self.assertIn(f"✗ Kiro jobs fail: {problem}.", out)
+        self.assertIn("agt config set kiro.engine auto", out)
+        self.assert_no_model_request()
+        code, out = self.doctor("--json")
+        self.assertEqual(code, 1, out)
+        data = json.loads(out)
+        self.assertEqual(data["engine"]["problem"], problem)
+        self.assertEqual(data["problems"], [{"problem": f"Kiro jobs fail: {problem}.", "fix": "agt config set kiro.engine auto"}])
+
+    def test_a_failed_probe_is_reported_as_unread_flags(self):
+        code, out = self.doctor(FAKE_KIRO_PRESET="kiro-3.0.0", FAKE_KIRO_SCENARIO="help-fails")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.engine_line(out),
+                         "engine none (couldn't read kiro-cli's flags: chat --help exited 1; Kiro's own default)")
+        self.assertIn("output unknown", out)
+        self.set_engine("v3")
+        code, out = self.doctor(FAKE_KIRO_PRESET="kiro-3.0.0", FAKE_KIRO_SCENARIO="help-fails")
+        self.assertEqual(code, 1, out)
+        self.assertIn("✗ Kiro jobs fail: couldn't read kiro-cli's flags: chat --help exited 1.", out)
+
+
 def ui_short(folder):
     from agents_router import ui
 

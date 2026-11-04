@@ -224,7 +224,23 @@ In a terminal, `apply` asks about each plugin, with the commands it would run an
 
 An agent's `name`, `description` and instructions are shared, and its tools where the other CLI has a counterpart. Its `model` never is, because model names differ between CLIs. A copy to another folder of the same CLI, such as `~/.claude` to `~/.claude-work`, is the file byte for byte, so it keeps its `model`.
 
-- **Tools.** Claude tool names are mapped to each CLI's own (`Read` is `fs_read` in Kiro, for example). A tool with no counterpart is left out and reported. A Kiro copy leaves out the tools of MCP servers that Kiro doesn't have.
+- **Tools.** Claude tool names are mapped to each CLI's own. A tool with no counterpart is left out and reported. A Kiro copy leaves out the tools of MCP servers that Kiro doesn't have.
+- **Kiro tools** are written as Kiro's universal tags, which both of its engines read and its V3 auto-upgrade leaves alone:
+
+  | Claude tools | Kiro tag |
+  |---|---|
+  | Read, Glob, Grep, LS | `read` |
+  | Write, Edit, MultiEdit, NotebookEdit | `write` |
+  | Bash | `shell` |
+  | WebFetch, WebSearch | `web` |
+  | Task | `subagent` |
+  | `mcp__x__y` | `@x/y` |
+
+  - **A tag is a group.** Read back, `read` is Read, Glob, Grep and LS, so an agent with `[Read, Grep]` gets more in Kiro, never less. The report says so: "reviewer in kiro: Kiro allows tools by group, so its copy can also use Glob, LS".
+  - **Kiro's own names read back too:** V2 and V3 tool names (`fs_read`, `execute_bash`, …) give their whole group, and `@builtin` gives every group.
+  - **Older copies move to tags once.** A Kiro copy agt made that still names V2 tools gets its `tools` rewritten, with a backup in agt's `state/share/backups/<run>/kiro/` (never in Kiro's agents folder, which would load it as a second agent). The report shows `~ agents/reviewer kiro (its tools moved from Kiro's old tool names to its universal tags)`. After `agt share undo`, the next sync moves it again.
+  - **A copy Kiro upgraded itself** (it has `kiroUpgrade`) keeps its `tools` and `permissions`; changes to its description still reach it.
+  - **Checked on kiro-cli 2.37.1:** `kiro-cli agent upgrade --dry-run` calls tag files "already universal", and V2 honours the tags. Not checked yet: whether V3 loads `~/.kiro/settings/mcp.json`, where MCP servers go.
 - **Skills** aren't copied: each CLI gets a link to the skill's one real folder, so an edit anywhere is an edit everywhere.
 - **Names.** An item is its file or folder name, compared without regard to case. A name only some CLIs accept goes only to those, and two names that differ only in case are refused. An agent named like one of Codex's built-in agents (`default`, `explorer`, `worker`, `awaiter`) isn't copied to Codex.
 

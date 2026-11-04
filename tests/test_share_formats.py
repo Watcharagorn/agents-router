@@ -198,13 +198,49 @@ class ToolMapTests(unittest.TestCase):
     def test_mapping_keeps_only_known_names(self):
         tools = ["Bash", "Read", "Grep", "Edit", "Write", "Task", "mcp__tracker__search", "mcp__brave-search"]
         kiro, lost = toolmap.to_kiro(tools)
-        self.assertEqual(kiro, ["execute_bash", "fs_read", "grep", "fs_write", "@tracker/search", "@brave-search"])
-        self.assertEqual(lost, ["Task"])
-        self.assertEqual(toolmap.to_kiro(["Bash"], engine="v3")[0], ["shell"])
+        self.assertEqual(kiro, ["shell", "read", "write", "subagent", "@tracker/search", "@brave-search"])
+        self.assertEqual(lost, [])
+        self.assertEqual(toolmap.to_kiro(["Bash", "Glob", "mcp__plugin_loom_loom__x"]), (["shell", "read"], ["mcp__plugin_loom_loom__x"]))
         agy, lost = toolmap.to_antigravity(tools)
         self.assertEqual(agy, ["run_command", "command_status", "view_file", "grep_search", "replace_file_content",
                                "write_to_file", "call_mcp_tool"])
         self.assertEqual(lost, ["Task"])
+
+    def test_kiro_copies_get_universal_tags(self):
+        tools = ["Read", "Grep", "Bash", "WebFetch", "mcp__srv__tool"]
+        self.assertEqual(toolmap.for_target("claude", "kiro", tools, {"srv"}), ["read", "shell", "web", "@srv/tool"])
+        self.assertEqual(toolmap.for_target("claude", "kiro", tools, set()), ["read", "shell", "web"])
+        self.assertEqual(toolmap.for_target("claude", "kiro", None, {"srv"}), None)
+        self.assertEqual(toolmap.KIRO_TAGS["NotebookEdit"], "write")
+        self.assertEqual(toolmap.KIRO_TAGS["LS"], "read")
+
+    def test_kiro_tags_and_old_names_read_back_as_whole_groups(self):
+        self.assertEqual(toolmap.to_claude("kiro", ["read", "web"]), ["Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch"])
+        self.assertEqual(toolmap.to_claude("kiro", ["fs_read", "execute_bash"]), ["Read", "Glob", "Grep", "LS", "Bash"])
+        self.assertEqual(toolmap.to_claude("kiro", ["write", "subagent", "@srv/tool", "@other"]),
+                         ["Write", "Edit", "MultiEdit", "NotebookEdit", "Task", "mcp__srv__tool", "mcp__other"])
+        # V3 names and the web tools: each its whole group, once.
+        self.assertEqual(toolmap.to_claude("kiro", ["grep_search", "list_directory", "run_command", "str_replace", "web_fetch"]),
+                         ["Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"])
+        self.assertEqual(toolmap.to_claude("kiro", ["web_search", "shell"]), ["WebFetch", "WebSearch", "Bash"])
+        # Names agt doesn't know are left out, as before; "*" is every tool.
+        self.assertEqual(toolmap.to_claude("kiro", ["read", "use_aws"]), ["Read", "Glob", "Grep", "LS"])
+        self.assertIsNone(toolmap.to_claude("kiro", ["*"]))
+        # @builtin is every built-in group, never an MCP server called "builtin".
+        everything = ["Read", "Glob", "Grep", "LS", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "WebFetch",
+                      "WebSearch", "Task"]
+        self.assertEqual(toolmap.to_claude("kiro", ["@builtin"]), everything)
+        self.assertEqual(toolmap.to_claude("kiro", ["@builtin", "@srv/tool"]), everything + ["mcp__srv__tool"])
+        self.assertEqual(toolmap.to_claude("kiro", ["@builtin"]), toolmap.to_claude("kiro", list(toolmap.KIRO_GROUPS)))
+        # Antigravity still reads back name by name.
+        self.assertEqual(toolmap.to_claude("antigravity", ["view_file", "run_command"]), ["Read", "Bash"])
+
+    def test_old_kiro_names_are_retagged_in_place(self):
+        self.assertEqual(toolmap.kiro_retagged(["execute_bash", "fs_read", "glob", "grep", "@tracker/search", "use_aws"]),
+                         ["shell", "read", "@tracker/search", "use_aws"])
+        self.assertEqual(toolmap.kiro_retagged(["fs_write", "web_fetch", "web_search", "*"]), ["write", "web", "*"])
+        for universal in (["read", "write", "shell", "web"], ["@builtin"], [], None, "fs_read"):
+            self.assertIsNone(toolmap.kiro_retagged(universal), universal)
 
     def test_codex_tool_widening(self):
         self.assertIsNone(toolmap.codex_problem(None, "skip"))

@@ -61,3 +61,32 @@ Expected: each session sees only its own results (`subagent_list`, and the pendi
 1. After a code change, run `scripts/sandbox.sh reinstall`. Then `agt-sandbox agt update --no-package` updates the plugin in both profiles.
 2. In `agt-sandbox` (the shell), follow section 10 of `agt guide setup`.
 3. `scripts/sandbox.sh check` shows no plugin left; then run `scripts/sandbox.sh destroy`, which also removes the launchers.
+
+## 7. Kiro: outside the sandbox, with a scratch agt home
+
+Kiro is the one runtime checked outside the sandbox:
+- `scripts/sandbox.sh` swaps `HOME`, which logs Kiro out.
+- A logged-out headless Kiro run once signed in on its own and spent credits.
+- Kiro keeps its login in a shared store that a `HOME` override doesn't isolate.
+
+So the check runs on the person's real Kiro login, with everything of agt's kept apart:
+- this branch's agt from the checkout, by absolute path, with the scratch folder as the job's folder: `PYTHONPATH=<checkout>/src python3 -m agents_router run --runtime kiro --access read --cwd <scratch> …` (its background runner starts the same way, so the installed `agt` never runs these jobs);
+- a scratch `AGT_HOME` and `AGT_CONFIG_DIR` (`mktemp -d`), with a hand-written minimal `settings.toml` holding only the `[kiro]` table each job needs;
+- a scratch work folder holding `hello.txt`, whose first line is `alpha-line-one`.
+
+Never run `agt setup`, `agt share`, `kiro-cli login` or `kiro-cli logout` there.
+
+Ask the person first, and say what it costs: about 1 Kiro credit for the 4 tiny jobs below. Then:
+
+1. Run `kiro-cli whoami --format json`. Stop if it shows no account.
+2. Note the modification time and file list of `~/.agents-router`.
+3. Run the jobs with `--runtime kiro --access read`:
+
+| Job | Settings | Task | Expected |
+|---|---|---|---|
+| a | `engine = "v3"` | "Reply with the first line of hello.txt" | done with `alpha-line-one`; `tool_uses` ≥ 1; a `sess_` session id; `--v3` in its argv |
+| b | `engine = "auto"` | the same | `--v2` on kiro-cli 2.x, `--v3` on 3.x |
+| c | — | `agt message <job a> "What was that line?"` | answers from the same session |
+| d | `engine = "v3"` | "Create made.txt" | `made.txt` absent: the `read` list refuses the write |
+
+4. Check that `~/.agents-router` has the same modification time and file list as before.

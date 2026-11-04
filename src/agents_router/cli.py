@@ -395,11 +395,37 @@ def _login_fix(runtime: str, account: str) -> ui.Line:
     return ui.cmd(f"agt accounts login {account}" + ("" if runtime == "claude" else f" --runtime {runtime}"))
 
 
+def _kiro_engine(config: Any, report: dict[str, Any], command: list[str]) -> tuple[str, ui.Piece] | None:
+    """The engine a Kiro job will name, and why, put in the doctor's report; a problem when jobs would fail.
+
+    `kiro-cli --version` and `kiro-cli chat --help` only (as each job launch runs them): no model request.
+    """
+
+    from agents_router.runtimes import kiro
+
+    runtime_config, runtime = config.runtime("kiro"), get_runtime("kiro")
+    account = runtime_config.primary_account()
+    cli = kiro.probe(command, runtime.account_env(runtime_config, account), version=report.get("version") or "")
+    problem = None
+    try:
+        flag, reason = kiro.resolve_engine(runtime_config.engine, kiro.engine(account.home), cli)
+    except RuntimeError as exc:
+        flag, reason, problem = None, f"{runtime_config.engine} (set in [kiro] engine)", str(exc)
+    report["engine"] = {"setting": runtime_config.engine, "engine": flag, "reason": reason,
+                        "stream_json": None if cli.error else "--output-format" in cli.flags}
+    if not problem:
+        return None
+    report["engine"]["problem"] = problem
+    return f"Kiro jobs fail: {problem}.", ui.cmd("agt config set kiro.engine auto")
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
     named = getattr(args, "runtime", None)
     names = [named] if named else _runtimes_set_up(config)
-    reports = {name: tools.account_report(name) for name in names}
+    kiro_command = get_runtime("kiro").find_binary(config.runtime("kiro")) if "kiro" in names else None
+    reports = {name: tools.account_report(name, command=kiro_command) if name == "kiro" else tools.account_report(name)
+               for name in names}
     problems: list[tuple[str, ui.Line]] = []  # what's wrong, and its fix
     for name, report in reports.items():
         label = HOST_LABELS.get(name, name)
@@ -418,6 +444,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if version and version != __version__:
                 problems.append((f"Claude Code profile {setup.profile_name(account)} ({ui.short_path(account.home)}) has "
                                  f"agents-router plugin {version}; agt is {__version__}.", ui.cmd("agt update")))
+    if kiro_command and reports.get("kiro", {}).get("binary"):
+        engine_problem = _kiro_engine(config, reports["kiro"], kiro_command)
+        if engine_problem:
+            problems.append(engine_problem)
     if getattr(args, "json", False):
         found = [{"problem": what, "fix": ui.plain(fix)} for what, fix in problems]
         _print({**reports[names[0]], "problems": found} if named else {"runtimes": list(reports.values()), "problems": found})
@@ -459,6 +489,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         binary = [report["binary"], " ", ui.muted(f"({report['version']})")] if report.get("binary") and report.get("version") \
             else [report["binary"]] if report.get("binary") else [ui.error("✗ not installed")]
         lines.append(["  ", label, " " * (width - len(label)), *binary])
+        engine = report.get("engine")
+        if engine:
+            shown = [ui.error(f"✗ {engine['reason']}"), ui.muted(", so Kiro jobs fail (see below)")] \
+                if engine.get("problem") else [engine["reason"]]
+            output = ["stream-json"] if engine["stream_json"] else [ui.muted("unknown")] if engine["stream_json"] is None \
+                else ["plain text ", ui.muted("(no --output-format)")]
+            lines += [[" " * (width + 2), ui.muted("engine "), *shown], [" " * (width + 2), ui.muted("output "), *output]]
         lines += [accounts_lines.pop(0) for _ in report.get("accounts", [])]
     texts = {name: _runtime_limits(config, name) for name in names}
     every = config.max_jobs and f"; at most {config.max_jobs} jobs across every runtime" or ""

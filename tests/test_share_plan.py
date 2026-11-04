@@ -128,6 +128,36 @@ class DryRunTests(MacCopy):
         self.assertIn("\n  dana, day-plan and explorer use servers no CLI here has (tracker, brave-search), so their Kiro copies "
                       "leave out those tools.\n", text)
 
+    def test_a_narrower_agent_is_widened_in_kiro_not_lost(self):
+        path = self.agent(self.claude, "narrow", tools="Read, Grep", body="Read only.")
+        set_times(path, time.time() - 60)
+        item = next(item for item in self.dry_run()["items"] if item["name"] == "narrow")
+        self.assertIn("narrow in kiro: Kiro allows tools by group, so its copy can also use Glob, LS", item["notes"])
+        self.assertFalse([note for note in item["notes"] if "no kiro tool" in note])
+        self.assertEqual(self.cells(self.dry_run(), "narrow")["kiro"], "copy")
+
+    def test_a_source_s_own_shell_tool_counts_as_bash_for_codex(self):
+        from types import SimpleNamespace
+
+        from agents_router.share import model, plan as planner
+
+        folder = self.root / "agy-agents"
+        folder.mkdir()
+        codex = SimpleNamespace(cli="codex", label="codex", writable=lambda kind: SimpleNamespace(path=self.user / ".codex"))
+        options = planner.Options(tool_widening="allow-if-shell")
+
+        def blocked(name, tools):
+            path = folder / f"{name}.md"
+            path.write_text(f"---\nname: {name}\ndescription: d\ntools:\n" + "".join(f"  - {t}\n" for t in tools)
+                            + "---\n\nBody.\n", encoding="utf-8")
+            agent = model.read_agent("antigravity", path)
+            source = planner.Physical(path, str(path), ["antigravity"], agent.digest, obj=agent)
+            return planner._blocked(planner.Item("agents", name), codex, options, source)
+
+        # Antigravity's run_command is Bash, so the agent has a shell and may go to Codex.
+        self.assertIsNone(blocked("runner", ["view_file", "run_command"]))
+        self.assertIn("no shell", blocked("reader", ["view_file", "grep_search"]))
+
     def test_a_server_one_folder_has_is_found_by_name_only(self):
         (self.user / ".claude.json").write_text(json.dumps({"mcpServers": {"tracker": {"command": "tracker", "env": {"TOKEN": "x"}}}}),
                                                 encoding="utf-8")

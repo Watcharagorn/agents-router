@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 FAKE_CLAUDE = Path(__file__).with_name("fake_claude.py")
+FAKE_KIRO = json.dumps([sys.executable, str(Path(__file__).with_name("fake_kiro.py"))])
 FAKE_LAUNCHD = Path(__file__).with_name("fake_launchd.py")
 
 

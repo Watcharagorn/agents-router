@@ -108,6 +108,12 @@ class Runner:
             self.attempts[-1]["account"] if self.attempts else self.spec.resume_account,
             home=self.attempts[-1].get("home") if self.attempts else self.spec.resume_home,
         )
+        try:
+            missed = len(messages.undelivered(self.job_id))  # the inbox is closed: nothing more can reach the worker
+        except OSError:
+            missed = 0
+        if missed:
+            self.warnings.append(messages.undelivered_note(missed))
         text = result.text if result else ""
         if text:
             write_text(self.folder / "result.md", text)
@@ -590,8 +596,20 @@ class Runner:
     def _handle_line(self, raw: bytes, parser: Any, account: Account) -> None:
         try:
             text = raw.decode("utf-8", errors="replace")
-            if getattr(parser, "plain_text", False):
-                event = {"type": "text", "text": text.rstrip("\r\n")}  # a CLI that answers in plain text (Kiro)
+            mode = getattr(parser, "plain_text", False)
+            if mode is True:
+                event = {"type": "text", "text": text.rstrip("\r\n")}  # a CLI that answers in plain text
+            elif mode == "auto":
+                # `{"type", "data"}` JSON Lines when the CLI has them (Kiro's stream-json), else its
+                # plain-text answer: any other line (`42`, `[1]`, `{"a": 1}`, prose) is a text line, as it was.
+                try:
+                    event = json.loads(text)
+                except ValueError:
+                    event = None
+                if not (isinstance(event, dict) and isinstance(event.get("type"), str) and isinstance(event.get("data"), dict)):
+                    event = {"type": "text", "text": text.rstrip("\r\n")}
+                else:
+                    event["_raw"] = text.rstrip("\r\n")
             else:
                 event = json.loads(text)
             if not isinstance(event, dict):

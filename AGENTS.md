@@ -50,7 +50,7 @@ The setup guide has one source, `src/agents_router/guides/setup.md`, which `agt 
 
 ### Live checks in the sandbox
 
-Live checks run real jobs, so they use quota and need the user's OK. Run them only in the sandbox, never against the real setup:
+Live checks run real jobs, so they use quota and need the user's OK. Run them only in the sandbox, never against the real setup. The one exception is Kiro: the sandbox's `HOME` swap logs Kiro out, so Kiro is checked on the real Kiro login with a scratch `AGT_HOME`, as `.claude/skills/agt-maintainer/references/live-check.md` §7 describes:
 
 ```bash
 scripts/sandbox.sh create      # ~/agt-sandbox: its own HOME, agt from this clone, the plugin from this clone

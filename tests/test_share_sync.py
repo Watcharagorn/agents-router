@@ -83,7 +83,7 @@ class SyncTests(MacCopy):
         # Another Claude folder gets the file as it is, model and all.
         self.assertEqual((self.lab / "agents" / "dana.md").read_bytes(), (self.claude / "agents" / "dana.md").read_bytes())
         # Kiro leaves out the tools of servers it doesn't have.
-        self.assertEqual(self.kiro("dana")["tools"], ["execute_bash", "fs_read", "fs_write"])
+        self.assertEqual(self.kiro("dana")["tools"], ["shell", "read", "write"])
         self.assertEqual(self.kiro("dana")["prompt"], "Dana's long instructions.")
         codex = tomllib.loads((self.user / ".codex" / "agents" / "dana.toml").read_text(encoding="utf-8"))
         self.assertEqual(set(codex), {"name", "description", "developer_instructions"})
