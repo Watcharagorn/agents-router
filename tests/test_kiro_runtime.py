@@ -4,20 +4,18 @@ import dataclasses
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from helpers import TempHome
+from helpers import FAKE_KIRO, TempHome
 
 from agents_router import config, jobs, messages
 from agents_router.runtimes import base, get_runtime, kiro
 
-FAKE = Path(__file__).with_name("fake_kiro.py")
-COMMAND = [sys.executable, str(FAKE)]
+COMMAND = json.loads(FAKE_KIRO)
 READ = "--trust-tools=fs_read,glob,grep,web_search,web_fetch"
 EDIT = "--trust-tools=fs_read,glob,grep,web_search,web_fetch,fs_write"
 NO_FLAGS = kiro.KiroCli("2.30.0", (2, 30, 0))
@@ -61,7 +59,7 @@ class KiroUnitTests(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory()
         self.home = Path(self._temp.name)
         self.argv_log = self.home / "kiro-argv.jsonl"
-        self._env = patch.dict(os.environ, {"AGT_KIRO_COMMAND": json.dumps(COMMAND), "FAKE_KIRO_ARGV_LOG": str(self.argv_log)})
+        self._env = patch.dict(os.environ, {"AGT_KIRO_COMMAND": FAKE_KIRO, "FAKE_KIRO_ARGV_LOG": str(self.argv_log)})
         self._env.start()
         for key in ("FAKE_KIRO_PRESET", "FAKE_KIRO_VERSION", "FAKE_KIRO_FLAGS", "FAKE_KIRO_SCENARIO"):
             os.environ.pop(key, None)
@@ -105,7 +103,7 @@ class KiroUnitTests(unittest.TestCase):
             ("auto", None, kiro.KiroCli(None, None, frozenset(kiro.PROBE_FLAGS)), "v2"),  # flags but no version
         ]
         for setting, configured, cli, flag in rows:
-            self.assertEqual(kiro.resolve_engine(setting, configured, cli), flag, (setting, configured, cli))
+            self.assertEqual(kiro.resolve_engine(setting, configured, cli)[0], flag, (setting, configured, cli))
 
     def test_a_forced_v3_without_the_flag_fails_clearly(self):
         for cli, version in ((NO_FLAGS, "2.30.0"), (kiro.KiroCli(), "(unknown version)")):
@@ -114,22 +112,21 @@ class KiroUnitTests(unittest.TestCase):
             self.assertEqual(str(caught.exception),
                              f'kiro-cli {version} has no V3 engine; update Kiro or set [kiro] engine = "auto"')
 
-    def test_the_doctors_explanation_names_the_engine_resolve_engine_picks(self):
+    def test_resolve_engine_explains_its_choice(self):
         failed = kiro.KiroCli("3.0.0", (3, 0, 0), error="chat --help exited 1")
         unknown = kiro.KiroCli(None, None, frozenset(kiro.PROBE_FLAGS))
         for setting in ("auto", "v2", "v3"):
             for configured in (None, "v2", "v3", "v1"):
                 for cli in (NO_FLAGS, KIRO_2, KIRO_3, failed, unknown):
-                    flag, reason, problem = kiro.explain_engine(setting, configured, cli)
-                    try:
-                        expected, error = kiro.resolve_engine(setting, configured, cli), None
-                    except RuntimeError as exc:
-                        expected, error = None, str(exc)
-                    self.assertEqual((flag, problem), (expected, error), (setting, configured, cli))
-                    self.assertIn(flag or "none", reason if flag or problem is None else "none")
-        self.assertEqual(kiro.explain_engine("auto", None, KIRO_2)[1], "v2 (auto: kiro-cli 2.37.1)")
-        self.assertEqual(kiro.explain_engine("auto", "v1", KIRO_3)[1], "none (chat.agentEngine is v1; Kiro's own setting)")
-        self.assertEqual(kiro.explain_engine("v2", None, NO_FLAGS)[1], "none (kiro-cli 2.30.0 has no --v2; Kiro's own default)")
+                    if setting == "v3" and "--v3" not in cli.flags:
+                        with self.assertRaises(RuntimeError):
+                            kiro.resolve_engine(setting, configured, cli)
+                        continue
+                    flag, reason = kiro.resolve_engine(setting, configured, cli)
+                    self.assertTrue(reason.startswith(flag or "none"), (setting, configured, cli, reason))
+        self.assertEqual(kiro.resolve_engine("auto", None, KIRO_2)[1], "v2 (auto: kiro-cli 2.37.1)")
+        self.assertEqual(kiro.resolve_engine("auto", "v1", KIRO_3)[1], "none (chat.agentEngine is v1; Kiro's own setting)")
+        self.assertEqual(kiro.resolve_engine("v2", None, NO_FLAGS)[1], "none (kiro-cli 2.30.0 has no --v2; Kiro's own default)")
 
     def test_probe_reads_the_version_and_the_flags_without_asking_a_model(self):
         self.assertEqual(kiro.probe(COMMAND), NO_FLAGS)
@@ -279,7 +276,6 @@ class KiroUnitTests(unittest.TestCase):
                                              "last_text": "Looking at it.Done: 12 files."})
         result = parser.finish(0, "2026-11-04T10:00:00Z [INFO] kiro_agent::engine: starting\n[DEBUG] x\n")
         self.assertEqual((result.outcome, result.text, result.session_id), (base.SUCCESS, "Done: 12 files.", "sess_aaaa-1"))
-        self.assertEqual(parser.engine, "v3")
 
     def test_a_v2_stream_with_metadata_events(self):
         session = "61d5aa00-0000-4000-8000-000000000002"
@@ -293,6 +289,17 @@ class KiroUnitTests(unittest.TestCase):
         events[-1]["data"].update(finalText="Done: the wh", finalTextTruncated=True)
         result = self.stream_parser(*events).finish(0, "")
         self.assertEqual((result.outcome, result.text), (base.SUCCESS, "Done: the whole answer."))
+
+    def test_stream_progress_keeps_a_tail_without_truncating_the_answer(self):
+        answer = "The whole answer." * 400
+        events = v3_events("sess_long", answer)
+        events[-1]["data"].update(finalText=answer[:10], finalTextTruncated=True)
+        events.insert(-1, {"type": "sessionUpdate", "data": {"update": {
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done."}}}})
+        parser = self.stream_parser(*events, lines=("Text before the stream.",))
+        self.assertEqual(parser.last_text, (answer + "Done.")[-4000:])
+        self.assertEqual(parser.progress()["last_text"], (answer + "Done.")[-600:])
+        self.assertEqual(parser.finish(0, "").text, answer + "Done.")
 
     def test_a_run_that_did_not_succeed_is_an_error(self):
         events = v3_events("sess_c", "half")
@@ -373,7 +380,7 @@ class KiroUnitTests(unittest.TestCase):
 class KiroJobTests(TempHome):
     def setUp(self):
         super().setUp()
-        os.environ["AGT_KIRO_COMMAND"] = json.dumps([sys.executable, str(FAKE)])
+        os.environ["AGT_KIRO_COMMAND"] = FAKE_KIRO
 
     def tearDown(self):
         for key in ("AGT_KIRO_COMMAND", "FAKE_KIRO_SCENARIO", "FAKE_KIRO_PRESET", "FAKE_KIRO_DELAY"):

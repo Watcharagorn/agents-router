@@ -27,13 +27,13 @@ KIRO_GROUPS = {
 }
 KIRO_TAGS = {claude: tag for tag, group in KIRO_GROUPS.items() for claude in group}
 # Kiro's V2 and V3 tool names, read back as the tag of their whole group.
-KIRO_ALIASES = {
-    **{name: "read" for name in ("fs_read", "glob", "grep", "read_file", "grep_search", "list_directory", "file_search")},
-    "fs_write": "write", "str_replace": "write", "execute_bash": "shell", "run_command": "shell",
-    "web_fetch": "web", "web_search": "web",
-}
+KIRO_ALIASES = {name: KIRO_TAGS[claude] for claude, names in KIRO_V2.items() for name in names}
 # The V2 names share wrote into Kiro copies before the tags; `kiro_retagged` moves a copy off them.
-KIRO_V2_NAMES = {name for names in KIRO_V2.values() for name in names}
+KIRO_V2_NAMES = set(KIRO_ALIASES)
+KIRO_ALIASES.update({
+    **{name: "read" for name in ("read_file", "grep_search", "list_directory", "file_search")},
+    "str_replace": "write", "run_command": "shell",
+})
 # agy 1.3.6, as it sends them to PreToolUse hooks (agy_review/rules.py).
 ANTIGRAVITY = {
     "Bash": ["run_command", "command_status"], "Read": ["view_file"], "LS": ["list_dir"], "Write": ["write_to_file"],
@@ -101,14 +101,18 @@ def kiro_retagged(tools: object) -> list | None:
     Every other entry (tags, `@server` names, `*`, names agt doesn't know) stays as it is, in its place.
     """
 
-    if not isinstance(tools, list) or not any(isinstance(tool, str) and tool in KIRO_V2_NAMES for tool in tools):
+    if not isinstance(tools, list):
         return None
     found: list = []
+    changed = False
     for tool in tools:
-        name = KIRO_ALIASES[tool] if isinstance(tool, str) and tool in KIRO_V2_NAMES else tool
+        name = tool
+        if isinstance(tool, str) and tool in KIRO_V2_NAMES:
+            name = KIRO_ALIASES[tool]
+            changed = True
         if name not in found:
             found.append(name)
-    return found
+    return found if changed else None
 
 
 def to_antigravity(tools: list[str]) -> tuple[list[str], list[str]]:

@@ -1257,8 +1257,7 @@ class KiroDoctorTests(SetupBase):
         self.argv_log = self.root / "kiro-argv.jsonl"
         self.kiro_home = self.root / "kiro"  # Kiro's settings, empty unless a test writes cli.json
         self.kiro_home.mkdir()
-        fake = json.dumps([sys.executable, str(Path(__file__).with_name("fake_kiro.py"))])
-        self._kiro = patch.dict(os.environ, {"AGT_KIRO_COMMAND": fake, "FAKE_KIRO_ARGV_LOG": str(self.argv_log)})
+        self._kiro = patch.dict(os.environ, {"AGT_KIRO_COMMAND": helpers.FAKE_KIRO, "FAKE_KIRO_ARGV_LOG": str(self.argv_log)})
         self._kiro.start()
         for key in ("FAKE_KIRO_PRESET", "FAKE_KIRO_FLAGS", "FAKE_KIRO_VERSION", "FAKE_KIRO_SCENARIO"):
             os.environ.pop(key, None)
@@ -1301,6 +1300,16 @@ class KiroDoctorTests(SetupBase):
         code, out = self.doctor(FAKE_KIRO_PRESET="kiro-3.0.0")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.engine_line(out), "engine v3 (auto: kiro-cli 3.0.0)")
+        self.assert_no_model_request()
+
+    def test_the_engine_probe_reuses_the_reported_version(self):
+        code, out = self.doctor("--json", FAKE_KIRO_PRESET="kiro-3.0.0")
+        self.assertEqual(code, 0, out)
+        data = json.loads(out)
+        self.assertEqual(data["version"], "kiro-cli 3.0.0")
+        self.assertNotIn("kiro_cli_version", data["engine"])
+        runs = [json.loads(line) for line in self.argv_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(runs.count(["--version"]), 1, runs)
         self.assert_no_model_request()
 
     def test_the_reason_names_the_setting_that_chose_the_engine(self):

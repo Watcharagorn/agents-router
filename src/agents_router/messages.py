@@ -102,8 +102,11 @@ def undelivered(job_id: str) -> list[dict[str, Any]]:
     """Inbox entries the worker never got: not read, not shown by its hook, not taken as a follow-up turn."""
 
     folder = job_dir(job_id)
+    inbox = _read(folder / "inbox.jsonl")
+    if not inbox:
+        return []
     seen = set(read_json(folder / "inbox-read.json", []) or []) | set(read_json(folder / "inbox-hooked.json", []) or [])
-    return [item for item in _read(folder / "inbox.jsonl") if item.get("id") not in seen]
+    return [item for item in inbox if item.get("id") not in seen]
 
 
 def undelivered_note(count: int) -> str:

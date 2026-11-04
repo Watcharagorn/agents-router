@@ -118,9 +118,19 @@ def _parse_flags(help_text: str) -> frozenset[str]:
     return frozenset(flag for flag in PROBE_FLAGS if re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", help_text))
 
 
-def probe(command: list[str], env: dict[str, str] | None = None, timeout: float | None = None) -> KiroCli:
+def _run_quiet(command: list[str], args: list[str], *, timeout: float = 60,
+               env: dict[str, str] | None = None) -> tuple[int, str]:
+    completed = subprocess.run([*command, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, env=env if env is not None else clean_environment(),
+                               stdin=subprocess.DEVNULL, **no_window_kwargs())
+    return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
+
+
+def probe(command: list[str], env: dict[str, str] | None = None, timeout: float | None = None,
+          *, version: str | None = None) -> KiroCli:
     """`kiro-cli --version` and `kiro-cli chat --help`; neither makes a model request.
 
+    A supplied version (including an empty string for an unknown version) skips `--version`.
     Anything that goes wrong (a missing binary, a timeout, a non-zero exit) counts as "no flags", so agt
     passes no engine flag and Kiro picks as it did before agt named the engine.
     """
@@ -131,75 +141,50 @@ def probe(command: list[str], env: dict[str, str] | None = None, timeout: float 
         """(output, None), or (None, the short reason it failed)."""
 
         try:
-            completed = subprocess.run([*command, *args], capture_output=True, text=True, encoding="utf-8",
-                                       errors="replace", timeout=timeout, env=env if env is not None else clean_environment(),
-                                       stdin=subprocess.DEVNULL, **no_window_kwargs())
+            code, output = _run_quiet(command, args, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
             return None, f"{' '.join(args)} timed out after {timeout:g} s"
         except OSError as exc:
             return None, f"couldn't run it ({exc.strerror or type(exc).__name__})"
         except (subprocess.SubprocessError, ValueError) as exc:
             return None, f"{' '.join(args)} failed ({type(exc).__name__})"
-        if completed.returncode != 0:
-            return None, f"{' '.join(args)} exited {completed.returncode}"
-        return (completed.stdout or "") + (completed.stderr or ""), None
+        if code != 0:
+            return None, f"{' '.join(args)} exited {code}"
+        return output, None
 
-    version, numbers = _parse_version(run(["--version"])[0] or "")
+    version, numbers = _parse_version(version if version is not None else run(["--version"])[0] or "")
     help_text, error = run(["chat", "--help"])
     return KiroCli(version=version, version_tuple=numbers, flags=_parse_flags(help_text) if help_text else frozenset(),
                    error=error)
 
 
-def resolve_engine(setting: str, configured: str | None, cli: KiroCli) -> str | None:
-    """The engine flag a job passes ("v2", "v3") or None for none, per `[kiro] engine` (docs/kiro.md).
+def resolve_engine(setting: str, configured: str | None, cli: KiroCli) -> tuple[str | None, str]:
+    """The engine flag a job passes ("v2", "v3") or None, and why, per `[kiro] engine` (docs/kiro.md).
 
     Raises RuntimeError when `[kiro] engine = "v3"` meets a kiro-cli whose flags couldn't be read, or
     that has no `--v3`.
     """
 
+    version = f"kiro-cli {cli.version}" if cli.version else "kiro-cli (unknown version)"
+    kiro_default = "Kiro's own default"
+    unread = f"none (couldn't read kiro-cli's flags: {cli.error}; {kiro_default})" if cli.error else None
     if setting in ("v2", "v3"):
         if f"--{setting}" in cli.flags:
-            return setting
+            return setting, f"{setting} (set in [kiro] engine)"
         if setting == "v3" and cli.error:
             raise RuntimeError(f"couldn't read kiro-cli's flags: {cli.error}")
         if setting == "v3":
             raise RuntimeError(f"kiro-cli {cli.version or '(unknown version)'} has no V3 engine; "
                                'update Kiro or set [kiro] engine = "auto"')
-        return None  # a forced v2 on a CLI without --v2: that CLI has no other engine to fall into
+        return None, unread or f"none ({version} has no --{setting}; {kiro_default})"
     if not {"--v2", "--v3"} <= cli.flags:
-        return None  # an older kiro-cli: no engine flags, Kiro picks as it always did
+        return None, unread or f"none ({version} has no engine flags; {kiro_default})"
     if configured in ("v2", "v3"):
-        return configured
+        return configured, f"{configured} (chat.agentEngine)"
     if configured:
-        return None  # an engine agt doesn't name ("v1", say): Kiro's own setting wins
-    return "v3" if cli.version_tuple and cli.version_tuple[0] >= 3 else "v2"
-
-
-def explain_engine(setting: str, configured: str | None, cli: KiroCli) -> tuple[str | None, str, str | None]:
-    """For `agt doctor`: (the engine flag `resolve_engine` picks, why, the error a job would fail with or None).
-
-    The flag always comes from `resolve_engine`; this only words the branch it took.
-    """
-
-    try:
-        flag = resolve_engine(setting, configured, cli)
-    except RuntimeError as exc:
-        return None, f"{setting} (set in [kiro] engine)", str(exc)
-    version = f"kiro-cli {cli.version}" if cli.version else "kiro-cli (unknown version)"
-    kiro_default = "Kiro's own default"
-    if flag is None and cli.error:  # a failed probe proves no flag missing (decision 21)
-        return None, f"none (couldn't read kiro-cli's flags: {cli.error}; {kiro_default})", None
-    if setting in ("v2", "v3"):
-        if flag:
-            return flag, f"{flag} (set in [kiro] engine)", None
-        return None, f"none ({version} has no --{setting}; {kiro_default})", None
-    if flag is None:
-        if not {"--v2", "--v3"} <= cli.flags:
-            return None, f"none ({version} has no engine flags; {kiro_default})", None
-        return None, f"none (chat.agentEngine is {configured}; Kiro's own setting)", None
-    if configured in ("v2", "v3"):
-        return flag, f"{flag} (chat.agentEngine)", None
-    return flag, f"{flag} (auto: {version})", None
+        return None, unread or f"none (chat.agentEngine is {configured}; Kiro's own setting)"
+    flag = "v3" if cli.version_tuple and cli.version_tuple[0] >= 3 else "v2"
+    return flag, f"{flag} (auto: {version})"
 
 
 def quiet_stderr(text: str) -> str:
@@ -244,10 +229,8 @@ class KiroParser:
 
     def __init__(self) -> None:
         self.session_id: str | None = None
-        self.engine: str | None = None  # `runStarted.data.engine`
         self.stream = False
         self.lines: list[str] = []  # plain-text answer lines
-        self.chunks: list[str] = []  # every agent_message_chunk text
         self.since_tool: list[str] = []  # the chunks after the last tool call
         self.tool_uses = 0
         self.last_tool: str | None = None
@@ -268,9 +251,7 @@ class KiroParser:
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         if isinstance(data.get("sessionId"), str) and data["sessionId"].strip():
             self.session_id = data["sessionId"].strip()
-        if kind == "runStarted":
-            self.engine = str(data.get("engine") or "") or None
-        elif kind == "runFinished":
+        if kind == "runFinished":
             self.finished = data
         elif kind == "sessionUpdate":
             update = data.get("update") if isinstance(data.get("update"), dict) else {}
@@ -282,9 +263,11 @@ class KiroParser:
             elif what == "agent_message_chunk":
                 content = update.get("content") if isinstance(update.get("content"), dict) else {}
                 if content.get("type", "text") == "text" and isinstance(content.get("text"), str):
-                    self.chunks.append(content["text"])
+                    if self.lines:  # plain text before the stream isn't part of its message chunks
+                        self.lines.clear()
+                        self.last_text = ""
                     self.since_tool.append(content["text"])
-                    self.last_text = "".join(self.chunks)[-4000:]
+                    self.last_text = (self.last_text + content["text"])[-4000:]
         for key in ("error", "message", "errorMessage"):  # wording a failure may carry (never seen live)
             value = data.get(key)
             if isinstance(value, dict):
@@ -356,11 +339,9 @@ class KiroRuntime:
         if not command:
             return 127, "kiro-cli not found"
         try:
-            completed = subprocess.run([*command, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                       timeout=60, env=clean_environment(), stdin=subprocess.DEVNULL, **no_window_kwargs())
+            return _run_quiet(command, args)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return 1, f"{type(exc).__name__}: {exc}"
-        return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
     def version(self, config: RuntimeConfig) -> str | None:
         code, output = self._run_quiet(config, ["--version"])
@@ -404,7 +385,7 @@ class KiroRuntime:
             if spec.resume_session:
                 warnings.append(f"couldn't tell Kiro session {spec.resume_session}'s engine from its id; "
                                 "using the engine a new job would")
-            engine_flag = resolve_engine(config.engine, engine(account.home), cli)
+            engine_flag, _ = resolve_engine(config.engine, engine(account.home), cli)
         argv = [*command, "chat", "--no-interactive", "--wrap", "never", *([f"--{engine_flag}"] if engine_flag else []),
                 *(["--output-format", "stream-json"] if "--output-format" in cli.flags else []),
                 *access_args(spec.access)]

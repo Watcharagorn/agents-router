@@ -448,13 +448,13 @@ def runtime_limits(config: Any) -> dict[str, Any]:
     return data
 
 
-def account_report(runtime_name: str, host: str | None = None) -> dict[str, Any]:
+def account_report(runtime_name: str, host: str | None = None, *, command: list[str] | None = None) -> dict[str, Any]:
     loaded = load_config()
     if host is not None:
         set_session(loaded, session_folder(host))
     config = loaded.runtime(runtime_name)
     runtime = get_runtime(runtime_name)
-    binary = runtime.find_binary(config)
+    binary = command if command is not None else runtime.find_binary(config)
     report: dict[str, Any] = {
         "runtime": runtime_name,
         "binary": binary[-1] if binary else None,

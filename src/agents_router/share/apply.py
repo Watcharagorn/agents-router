@@ -220,7 +220,6 @@ def _write_agent(change: planner.Change, item: planner.Item, decision: engine.De
         raise _Skip(f"the source can't be read now ({exc})") from None
     if fresh.digest != decision.version:
         raise _Skip(f"{fresh.path} changed while agt was working")
-    backup = None
     if change.action == "copy":
         if os.path.lexists(change.path):
             raise _Skip(f"{change.path} appeared while agt was working")
@@ -241,7 +240,19 @@ def _write_agent(change: planner.Change, item: planner.Item, decision: engine.De
         text = change.path.read_text(encoding="utf-8")
         data = model.update_agent(target, text, current, fresh.core).encode("utf-8")
         old = fingerprint(change.path, "agents")
+    return _store_agent(change, item, target, data, old, run, lambda written: written.digest == decision.version)
+
+
+def _store_agent(change: planner.Change, item: planner.Item, target: str, data: bytes, old: str | None,
+                 run: str, verify: Callable[[model.Agent], bool]) -> Outcome:
+    """Back up, journal, write and verify an agent, restoring the old copy on a mismatch."""
+
+    migrated = change.action == "migrate"
+    backup = None
+    if change.action != "copy":
         backup = _backup_folder(run, change.labels[0]) / change.path.name
+        if migrated and os.path.lexists(backup):
+            raise _Skip(f"{backup} is already there")
         shutil.copy2(os.path.realpath(change.path), backup)
     _journal({"run": run, "step": "write", "key": item.key, "kind": "agents", "labels": change.labels,
               "action": change.action, "path": str(change.path), "old": old,
@@ -250,19 +261,23 @@ def _write_agent(change: planner.Change, item: planner.Item, decision: engine.De
     try:
         fsutil.write_preserving(change.path, data, new=change.action == "copy")
     except FileExistsError:
+        if migrated:
+            raise
         raise _Skip(f"{change.path} appeared while agt was working") from None
     try:
-        written = model.read_agent(target, change.path).digest
+        ok = verify(model.read_agent(target, change.path))
     except model.ItemError:
-        written = None
-    if written != decision.version:
+        ok = False
+    if not ok:
         if backup:
             fsutil.write_preserving(change.path, backup.read_bytes())
         else:
             change.path.unlink()
+        message = "the migrated copy didn't read back as expected" if migrated else "the written copy didn't read back the same"
         return Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
-                       "the written copy didn't read back the same, so agt put back what was there")
-    return Outcome(item.kind, item.name, change.labels, change.action, change.path, True, backup=backup)
+                       f"{message}, so agt put back what was there")
+    return Outcome(item.kind, item.name, change.labels, change.action, change.path, True,
+                   planner.MIGRATED if migrated else "", backup=backup)
 
 
 def _migrate_agent(change: planner.Change, item: planner.Item, run: str) -> Outcome:
@@ -273,9 +288,12 @@ def _migrate_agent(change: planner.Change, item: planner.Item, run: str) -> Outc
 
     path = change.path
     try:
-        current = model.read_agent("kiro", path)
-        text = path.read_text(encoding="utf-8")
-    except (model.ItemError, OSError) as exc:
+        original = path.read_bytes()
+        text = original.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")  # as read_text's universal newlines
+        current = model.parse_agent("kiro", path, text)
+    except (model.ItemError, OSError, UnicodeDecodeError) as exc:
+        if not isinstance(exc, model.ItemError):
+            exc = model.ItemError(path, f"can't be read ({exc})")
         raise _Skip(f"{path} can't be read now ({exc})") from None
     if current.digest != change.version:
         raise _Skip(f"{path} changed while agt was working")
@@ -285,25 +303,9 @@ def _migrate_agent(change: planner.Change, item: planner.Item, run: str) -> Outc
     if tools is None:
         raise _Skip(f"{path} names no old Kiro tools any more")
     data = kiro_json.update(text, {"tools": tools}).encode("utf-8")
-    old = fingerprint(path, "agents")
-    backup = _backup_folder(run, change.labels[0]) / path.name
-    if os.path.lexists(backup):
-        raise _Skip(f"{backup} is already there")
-    shutil.copy2(os.path.realpath(path), backup)
-    _journal({"run": run, "step": "write", "key": item.key, "kind": "agents", "labels": change.labels,
-              "action": change.action, "path": str(path), "old": old,
-              "new": "sha256:" + hashlib.sha256(data).hexdigest(), "backup": str(backup)})
-    fsutil.write_preserving(path, data)
-    try:
-        written = model.read_agent("kiro", path)
-        ok = written.digest == change.version and written.data.get("tools") == tools
-    except model.ItemError:
-        ok = False
-    if not ok:
-        fsutil.write_preserving(path, backup.read_bytes())
-        return Outcome(item.kind, item.name, change.labels, change.action, path, False,
-                       "the migrated copy didn't read back as expected, so agt put back what was there")
-    return Outcome(item.kind, item.name, change.labels, change.action, path, True, planner.MIGRATED, backup=backup)
+    old = "sha256:" + hashlib.sha256(original).hexdigest()
+    return _store_agent(change, item, "kiro", data, old, run,
+                        lambda written: written.digest == change.version and written.data.get("tools") == tools)
 
 
 def _write_skill(change: planner.Change, item: planner.Item, decision: engine.Decision,
