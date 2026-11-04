@@ -83,6 +83,17 @@ class ShowTests(ConfigBase):
         self.assertTrue(rows["codex.max_jobs_per_account"]["needs_user_words"])
         self.assertEqual(rows["share.kinds"]["changed_by"], "agt share kinds add|remove <kind>")
 
+    def test_show_lists_the_kiro_engine_and_set_checks_it(self):
+        code, shown = self.json("config", "show")
+        rows = {row["key"]: row for row in shown["settings"]}
+        self.assertEqual((code, rows["kiro.engine"]["value"], rows["kiro.engine"]["source"]), (0, "auto", "default"))
+        self.assertNotIn("codex.engine", rows)
+        code, _, err = self.agt("config", "set", "kiro.engine", "v4", "--user")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(self.user_file.exists() and "engine" in self.text(self.user_file))
+        self.assertEqual(self.agt("config", "set", "kiro.engine", "v3", "--user")[0], 0)
+        self.assertEqual(load_config().runtime("kiro").engine, "v3")
+
     def test_show_in_text_lists_no_cap_and_the_parent_channel_hint(self):
         code, out, _ = self.agt("config", "show", "--all")
         self.assertEqual(code, 0)

@@ -151,7 +151,14 @@ sandbox = true              # run edit jobs with agy --sandbox
 
 With `reviewer = "off"` only the fixed rules decide, and everything they would hand to the reviewer is denied. See [Safety](gemini.md#safety) for what the gate does.
 
-`[kiro]` takes `binary` (default `kiro-cli`), `default_model` and the limit keys. `agt accounts add --runtime kiro` is refused: Kiro keeps one login on a machine, so its jobs run on that login. See [Kiro](kiro.md).
+`[kiro]` takes `binary` (default `kiro-cli`), `default_model`, `engine` and the limit keys. `agt accounts add --runtime kiro` is refused: Kiro keeps one login on a machine, so its jobs run on that login. See [Kiro](kiro.md).
+
+```toml
+[kiro]
+engine = "auto"             # the agent engine jobs name: "auto", "v2" or "v3"
+```
+
+`engine` only applies to Kiro. Every job names its engine with `--v2` or `--v3` when kiro-cli has those flags. `"auto"`, the default, follows `chat.agentEngine` in `~/.kiro/settings/cli.json`; unset, it is `--v3` on kiro-cli 3.0 or later and `--v2` on 2.x. A `chat.agentEngine` of `v1` or an unknown value gets no flag, so Kiro's own setting wins. `"v3"` on a kiro-cli without `--v3` fails the job, and `agt doctor` reports it. A resumed job keeps its session's engine. See [Which engine](kiro.md#which-engine).
 
 Extra Antigravity accounts are at your own risk (Google's FAQ says consumer plans don't support automated account switching; see [Gemini](gemini.md#more-than-one-google-account)). As for the other runtimes, `failover` is `"on-limit"` by default: jobs rotate through the primary and the enabled extra accounts (`include_primary` is `true` by default here). Set `failover = "off"` under `[antigravity]` to keep jobs without `account` on the primary account; an extra account is then used only when a job pins it. An Antigravity account folder stands in for a home folder: it gets its own `.gemini`.
 

@@ -64,6 +64,7 @@ agt-sandbox <command>          # one command inside the sandbox; alone, a sandbo
 - The launchers work from any terminal and change nothing in it: the person's own `claude` and `agt` stay their real ones.
 - The person logs in to `claude-agt-a` and `claude-agt-b` themselves. Their logins go to the sandbox's own keychain; the sandbox's `claude` runs only on its named profiles.
 - Work through the scenarios in [references/live-check.md](references/live-check.md).
+- Kiro is the exception: the sandbox logs it out, so it's checked with a scratch `AGT_HOME` on the real Kiro login ([references/live-check.md §7](references/live-check.md#7-kiro-outside-the-sandbox-with-a-scratch-agt-home)).
 - Finish with `scripts/sandbox.sh destroy` when the person agrees.
 
 ## 6. Review
@@ -91,6 +92,6 @@ Commit or push only when the person asks.
 |---|---|
 | Read, copy or print credential files, or values from `.claude.json` | Hashes and `claude auth status` only |
 | Touch the real `~/.claude*`, `~/.codex` or `~/.agents-router` from a test | The fakes and `tests/helpers.py` |
-| Run `agt doctor --live` or a real job outside the sandbox, or without an OK | The sandbox, after asking |
+| Run `agt doctor --live` or a real job outside the sandbox, or without an OK | The sandbox, after asking (Kiro: a scratch `AGT_HOME`, [live-check §7](references/live-check.md#7-kiro-outside-the-sandbox-with-a-scratch-agt-home)) |
 | Edit `~/.agents-router/homes/` | agt rebuilds those folders |
 | Reach a Claude profile with `env -u CLAUDE_CONFIG_DIR` or `agt run` in the shell | `agents-router:agt-claude` with `account=<profile>` |

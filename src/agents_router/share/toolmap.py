@@ -3,19 +3,37 @@
 Only names that are known to exist are written: an unknown tool name can make
 an Antigravity agent hang. A Claude tool with no counterpart is reported as
 lost. Codex agents can't limit tools at all, which `tool_widening` decides.
+
+Kiro copies get the universal tags (`read`, `write`, `shell`, `web`,
+`subagent`), which both of Kiro's engines read and its V3 auto-upgrade leaves
+alone. A tag is a group: read back, `read` is Read, Glob, Grep and LS, so a
+narrower Claude agent is widened in Kiro, never cut down.
 """
 
 from __future__ import annotations
 
 import re
 
-# Kiro CLI 2.x (V2 engine): the names its own agent files use.
+# Kiro CLI 2.x (V2 engine): the names its own agent files use. The Kiro runtime trusts these; share writes tags.
 KIRO_V2 = {
     "Bash": ["execute_bash"], "Read": ["fs_read"], "LS": ["fs_read"], "Write": ["fs_write"], "Edit": ["fs_write"],
     "MultiEdit": ["fs_write"], "NotebookEdit": ["fs_write"], "Glob": ["glob"], "Grep": ["grep"],
     "WebFetch": ["web_fetch"], "WebSearch": ["web_search"],
 }
-KIRO_V3_RENAMES = {"execute_bash": "shell"}
+# Kiro's universal agent format (2.37.1 and later, both engines): one tag per group of tools.
+KIRO_GROUPS = {
+    "read": ["Read", "Glob", "Grep", "LS"], "write": ["Write", "Edit", "MultiEdit", "NotebookEdit"], "shell": ["Bash"],
+    "web": ["WebFetch", "WebSearch"], "subagent": ["Task"],
+}
+KIRO_TAGS = {claude: tag for tag, group in KIRO_GROUPS.items() for claude in group}
+# Kiro's V2 and V3 tool names, read back as the tag of their whole group.
+KIRO_ALIASES = {
+    **{name: "read" for name in ("fs_read", "glob", "grep", "read_file", "grep_search", "list_directory", "file_search")},
+    "fs_write": "write", "str_replace": "write", "execute_bash": "shell", "run_command": "shell",
+    "web_fetch": "web", "web_search": "web",
+}
+# The V2 names share wrote into Kiro copies before the tags; `kiro_retagged` moves a copy off them.
+KIRO_V2_NAMES = {name for names in KIRO_V2.values() for name in names}
 # agy 1.3.6, as it sends them to PreToolUse hooks (agy_review/rules.py).
 ANTIGRAVITY = {
     "Bash": ["run_command", "command_status"], "Read": ["view_file"], "LS": ["list_dir"], "Write": ["write_to_file"],
@@ -60,22 +78,37 @@ def servers_named(tools: list[str] | None) -> list[str]:
     return found
 
 
-def to_kiro(tools: list[str], engine: str = "v2") -> tuple[list[str], list[str]]:
+def to_kiro(tools: list[str]) -> tuple[list[str], list[str]]:
+    """Claude tools as Kiro tags (and `@server/tool` names), and the tools Kiro has no tag for."""
+
     mapped, lost = [], []
     for tool in tools:
         reference = mcp_reference(tool)
         if reference and reference[2] is None:
-            names = [f"@{reference[0]}/{reference[1]}" if reference[1] else f"@{reference[0]}"]
+            name = f"@{reference[0]}/{reference[1]}" if reference[1] else f"@{reference[0]}"
         else:
-            names = KIRO_V2.get(tool)
-        if not names:
+            name = KIRO_TAGS.get(tool)
+        if not name:
             lost.append(tool)
-            continue
-        for name in names:
-            name = KIRO_V3_RENAMES.get(name, name) if engine == "v3" else name
-            if name not in mapped:
-                mapped.append(name)
+        elif name not in mapped:
+            mapped.append(name)
     return mapped, lost
+
+
+def kiro_retagged(tools: object) -> list | None:
+    """A Kiro copy's `tools` with the V2 names share used to write turned into tags; None when it has none of them.
+
+    Every other entry (tags, `@server` names, `*`, names agt doesn't know) stays as it is, in its place.
+    """
+
+    if not isinstance(tools, list) or not any(isinstance(tool, str) and tool in KIRO_V2_NAMES for tool in tools):
+        return None
+    found: list = []
+    for tool in tools:
+        name = KIRO_ALIASES[tool] if isinstance(tool, str) and tool in KIRO_V2_NAMES else tool
+        if name not in found:
+            found.append(name)
+    return found
 
 
 def to_antigravity(tools: list[str]) -> tuple[list[str], list[str]]:
@@ -97,7 +130,6 @@ def _reverse(table: dict[str, list[str]]) -> dict[str, str]:
     return back
 
 
-FROM_KIRO = {**_reverse(KIRO_V2), "shell": "Bash"}
 FROM_ANTIGRAVITY = _reverse(ANTIGRAVITY)
 
 
@@ -112,17 +144,20 @@ def to_claude(cli: str, tools: list[str] | None) -> list[str] | None:
         return None
     found: list[str] = []
     for tool in tools:
-        if cli == "kiro" and tool.startswith("@"):
+        if cli == "kiro" and tool == "@builtin":  # every built-in tool: all the groups together
+            names = [name for group in KIRO_GROUPS.values() for name in group]
+        elif cli == "kiro" and tool.startswith("@"):
             server, _, name = tool[1:].partition("/")
-            name = f"mcp__{server}__{name}" if name else f"mcp__{server}"
+            names = [f"mcp__{server}__{name}" if name else f"mcp__{server}"]
+        elif cli == "kiro":
+            names = KIRO_GROUPS.get(KIRO_ALIASES.get(tool, tool), [])  # a tag or an alias: its whole group
         else:
-            name = (FROM_KIRO if cli == "kiro" else FROM_ANTIGRAVITY).get(tool)
-        if name and name not in found:
-            found.append(name)
+            names = [FROM_ANTIGRAVITY[tool]] if tool in FROM_ANTIGRAVITY else []
+        found += [name for name in names if name not in found]
     return found
 
 
-def for_target(source: str, target: str, tools: list[str] | None, servers: set[str], engine: str = "v2") -> list[str] | None:
+def for_target(source: str, target: str, tools: list[str] | None, servers: set[str]) -> list[str] | None:
     """The tools a new copy in `target` gets. None leaves the field out, which means every tool.
 
     A Kiro copy leaves out the tools of MCP servers that Kiro doesn't have,
@@ -136,7 +171,7 @@ def for_target(source: str, target: str, tools: list[str] | None, servers: set[s
         return claude
     if target == "antigravity":
         return to_antigravity(claude)[0]
-    mapped = to_kiro(claude, engine)[0]
+    mapped = to_kiro(claude)[0]
     return [tool for tool in mapped if not tool.startswith("@") or tool[1:].partition("/")[0] in servers]
 
 

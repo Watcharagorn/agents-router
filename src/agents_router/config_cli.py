@@ -117,6 +117,9 @@ def _runtime_keys(runtime: str) -> list[Key]:
                 loose=("off",)),
             Key(r + "reasoning_summary", "choice", "The reasoning summary jobs ask for.", config.REASONING_SUMMARY_MODES),
         ]
+    if runtime == "kiro":
+        keys.append(Key(r + "engine", "choice", "The Kiro agent engine jobs name (auto: chat.agentEngine, else V3 on "
+                        "kiro-cli 3.0 or later, else V2).", config.KIRO_ENGINES))
     if runtime == "antigravity":
         keys += [
             Key(r + "reviewer", "choice", "Who reviews read and edit jobs' tool calls.", config.REVIEWERS, guard="loosen",

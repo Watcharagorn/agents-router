@@ -23,6 +23,7 @@ REVIEWERS = ("agy", "claude", "off")
 WEB_SEARCH_MODES = ("disabled", "cached", "indexed", "live")
 WINDOWS_SANDBOX_MODES = ("unelevated", "elevated", "off")
 REASONING_SUMMARY_MODES = ("detailed", "concise", "auto", "none", "off")
+KIRO_ENGINES = ("auto", "v2", "v3")  # [kiro] engine: auto = chat.agentEngine, else V3 on kiro-cli 3.0+, else V2
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -140,6 +141,7 @@ class RuntimeConfig:
     capacity_retry_seconds: int = 30  # initial delay; doubles for each retry
     windows_sandbox: str = "unelevated"  # [codex] only
     reasoning_summary: str = "detailed"  # [codex] only; off leaves the CLI default alone
+    engine: str = "auto"  # [kiro] only: the agent engine jobs name (KIRO_ENGINES)
     share_parent_mcp: bool = True  # [codex] and [antigravity]: give workers started from Claude Code its MCP servers
     # [antigravity] only: the review gate for read and edit jobs (see docs/gemini.md#safety)
     reviewer: str = "agy"  # "agy", "claude" or "off" (fixed rules only; the rest is denied)
@@ -509,6 +511,9 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
     reasoning_summary = data.get("reasoning_summary", "detailed")
     if reasoning_summary not in REASONING_SUMMARY_MODES or ("reasoning_summary" in data and name != "codex"):
         raise ValueError(f"[{name}] reasoning_summary must be under [codex] and one of {REASONING_SUMMARY_MODES}")
+    kiro_engine = data.get("engine", "auto")
+    if kiro_engine not in KIRO_ENGINES or ("engine" in data and name != "kiro"):
+        raise ValueError(f"[{name}] engine must be under [kiro] and one of {KIRO_ENGINES}")
     when_full = str(data.get("when_full", "refuse"))
     if when_full not in WHEN_FULL_MODES:
         raise ValueError(f"[{name}] when_full must be one of {WHEN_FULL_MODES}")
@@ -550,6 +555,7 @@ def _runtime_from(name: str, data: dict[str, Any]) -> RuntimeConfig:
         capacity_retry_seconds=capacity_retry_seconds,
         windows_sandbox=windows_sandbox,
         reasoning_summary=reasoning_summary,
+        engine=kiro_engine,
         share_parent_mcp=bool(data.get("share_parent_mcp", True)),
         reviewer=reviewer,
         reviewer_model=str(data.get("reviewer_model") or "").strip() or None,
@@ -767,6 +773,8 @@ def dump_config(config: Config) -> str:
             lines.append(f"default_model = {_toml_value(runtime.default_model)}")
         if name == "codex" and runtime.windows_sandbox != "unelevated":
             lines.append(f"windows_sandbox = {_toml_value(runtime.windows_sandbox)}")
+        if name == "kiro" and runtime.engine != "auto":
+            lines.append(f"engine = {_toml_value(runtime.engine)}")
         if name == "codex" and runtime.reasoning_summary != "detailed":
             lines.append(f"reasoning_summary = {_toml_value(runtime.reasoning_summary)}")
         if name in ("codex", "antigravity") and not runtime.share_parent_mcp:

@@ -98,6 +98,19 @@ def close_or_continue(job_id: str, session_id: str | None, account: str | None,
     return []
 
 
+def undelivered(job_id: str) -> list[dict[str, Any]]:
+    """Inbox entries the worker never got: not read, not shown by its hook, not taken as a follow-up turn."""
+
+    folder = job_dir(job_id)
+    seen = set(read_json(folder / "inbox-read.json", []) or []) | set(read_json(folder / "inbox-hooked.json", []) or [])
+    return [item for item in _read(folder / "inbox.jsonl") if item.get("id") not in seen]
+
+
+def undelivered_note(count: int) -> str:
+    return (f"{count} message{'s' if count != 1 else ''} {'wasn' if count == 1 else 'weren'}'t delivered: "
+            "this job can't take follow-ups")
+
+
 def queue_for_worker(job_id: str, text: str, reply_to: str | None = None) -> dict[str, Any] | None:
     """Accept a message only while the runner can still drain its inbox."""
 

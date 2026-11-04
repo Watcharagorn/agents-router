@@ -41,7 +41,7 @@ import time
 from typing import Callable, Iterator
 
 from agents_router import fsutil, synclog
-from agents_router.share import engine, frontmatter, gitexclude, model, names, normalize, toolmap
+from agents_router.share import engine, frontmatter, gitexclude, kiro_json, model, names, normalize, toolmap
 from agents_router.share import plan as planner
 from agents_router.share.state import State, save as save_state, share_dir
 
@@ -263,6 +263,47 @@ def _write_agent(change: planner.Change, item: planner.Item, decision: engine.De
         return Outcome(item.kind, item.name, change.labels, change.action, change.path, False,
                        "the written copy didn't read back the same, so agt put back what was there")
     return Outcome(item.kind, item.name, change.labels, change.action, change.path, True, backup=backup)
+
+
+def _migrate_agent(change: planner.Change, item: planner.Item, run: str) -> Outcome:
+    """A Kiro copy agt made: only its `tools` change, from V2 names to tags. Its other fields stay as they are.
+
+    The backup goes to this run's backups, never next to the copy: Kiro loads every `.json` in its agents folder.
+    """
+
+    path = change.path
+    try:
+        current = model.read_agent("kiro", path)
+        text = path.read_text(encoding="utf-8")
+    except (model.ItemError, OSError) as exc:
+        raise _Skip(f"{path} can't be read now ({exc})") from None
+    if current.digest != change.version:
+        raise _Skip(f"{path} changed while agt was working")
+    if "kiroUpgrade" in current.data:
+        raise _Skip(f"Kiro upgraded {path} itself meanwhile")
+    tools = toolmap.kiro_retagged(current.data.get("tools"))
+    if tools is None:
+        raise _Skip(f"{path} names no old Kiro tools any more")
+    data = kiro_json.update(text, {"tools": tools}).encode("utf-8")
+    old = fingerprint(path, "agents")
+    backup = _backup_folder(run, change.labels[0]) / path.name
+    if os.path.lexists(backup):
+        raise _Skip(f"{backup} is already there")
+    shutil.copy2(os.path.realpath(path), backup)
+    _journal({"run": run, "step": "write", "key": item.key, "kind": "agents", "labels": change.labels,
+              "action": change.action, "path": str(path), "old": old,
+              "new": "sha256:" + hashlib.sha256(data).hexdigest(), "backup": str(backup)})
+    fsutil.write_preserving(path, data)
+    try:
+        written = model.read_agent("kiro", path)
+        ok = written.digest == change.version and written.data.get("tools") == tools
+    except model.ItemError:
+        ok = False
+    if not ok:
+        fsutil.write_preserving(path, backup.read_bytes())
+        return Outcome(item.kind, item.name, change.labels, change.action, path, False,
+                       "the migrated copy didn't read back as expected, so agt put back what was there")
+    return Outcome(item.kind, item.name, change.labels, change.action, path, True, planner.MIGRATED, backup=backup)
 
 
 def _write_skill(change: planner.Change, item: planner.Item, decision: engine.Decision,
@@ -557,7 +598,8 @@ def _record(current: State, item: planner.Item, decision: engine.Decision, outco
     # Only copies the engine weighed are recorded at their version now; a frozen folder keeps its old entry.
     skip = gone | set(record.get("released") or []) | item.ignored
     kept = {label: version for label, version in (record.get("copies") or {}).items() if label in item.ignored - gone}
-    writes = [outcome for outcome in outcomes if outcome.action != "remove"]
+    # A migration changes only a Kiro copy's tools, which no version holds: it never moves the record.
+    writes = [outcome for outcome in outcomes if outcome.action not in ("remove", "migrate")]
     if decision.action == engine.WRITE:
         written = {label for outcome in writes if outcome.ok for label in outcome.labels}
         record["made"] = sorted(set(record.get("made") or []) | (set(decision.fills) & written))
@@ -647,6 +689,8 @@ def apply(plan: planner.Plan, current: State, *, home: Path | None = None, op: s
             try:
                 if change.action == "remove":
                     outcome = _remove(change, item, target, holders, result.run, op)
+                elif change.action == "migrate":
+                    outcome = _migrate_agent(change, item, result.run)
                 elif item.kind == "agents":
                     if target == "kiro" and change.labels[0] not in servers:
                         servers[change.labels[0]] = planner.mcp_server_names(by_label[change.labels[0]], home)

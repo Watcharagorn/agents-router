@@ -113,7 +113,8 @@ class Change:
     kind: str
     name: str
     labels: list[str]
-    action: str  # "copy", "update", "link", "relink", "remove", or a rename: "rename", "rename-folder", "rename-link"
+    action: str  # "copy", "update", "link", "relink", "remove", "migrate" (a Kiro copy's tools become tags),
+    # or a rename: "rename", "rename-folder", "rename-link"
     path: Path
     source: Path
     version: str
@@ -328,9 +329,10 @@ def _blocked(item: Item, provider: Provider, options: Options, source: Physical 
     if item.kind == "agents" and provider.cli == "codex":
         if item.name in CODEX_BUILTIN_AGENTS:
             return f"Codex has a built-in agent named {item.name}"
-        tools = getattr(source.obj, "tools", None) if source else None
-        if source and getattr(source.obj, "cli", "codex") != "codex":
-            problem = toolmap.codex_problem(tools, options.tool_widening)
+        cli = getattr(source.obj, "cli", "codex") if source else "codex"
+        if cli != "codex":
+            # As Claude names: a Kiro source's `shell` (or `execute_bash`) is Bash.
+            problem = toolmap.codex_problem(toolmap.to_claude(cli, getattr(source.obj, "tools", None)), options.tool_widening)
             if problem:
                 return problem
     return None
@@ -600,6 +602,42 @@ def changes_for(item: Item, included: list[Provider]) -> list[Change]:
     order = {id(change): (change.action == "relink" and not os.path.islink(change.path)) for change in relinks}
     changes = sorted(planned.values(), key=lambda change: order.get(id(change), False))
     return changes + list(removals.values())
+
+
+MIGRATED = "its tools moved from Kiro's old tool names to its universal tags"
+
+
+def migrations(item: Item, state: State, own: frozenset[str] = frozenset()) -> list[Change]:
+    """Kiro copies agt made that still name V2 tools (`fs_read`, `execute_bash`...): their `tools` become tags, once.
+
+    Only a copy that's in sync and isn't written otherwise this run: tools aren't part of a copy's version, so this
+    is a format change on its own, never an edit, a conflict or a wait. A copy Kiro upgraded itself (`kiroUpgrade`)
+    is Kiro's: its tools stay as they are. A copy this command just put back (`own`, an undo) waits for the next run.
+    """
+
+    decision = item.decision
+    if item.kind != "agents" or decision is None or not decision.version:
+        return []
+    if decision.action not in (engine.NOTHING, engine.WRITE):
+        return []
+    last = state.last(item.kind, names.identity(item.name))
+    if last is None:
+        return []
+    busy = set(decision.updates) | set(decision.fills) | set(item.drops) | item.ignored | last.released
+    found = []
+    for copy in item.copies:
+        agent = copy.obj
+        if not isinstance(agent, model.Agent) or agent.cli != "kiro" or copy.problem or copy.fresh or copy.real in own:
+            continue
+        labels = [label for label in copy.labels if label in last.made and last.copies.get(label) == copy.version
+                  and label not in busy]
+        if not labels or len(labels) != len(copy.labels) or "kiroUpgrade" in agent.data:
+            continue
+        if toolmap.kiro_retagged(agent.data.get("tools")) is None:
+            continue
+        found.append(Change(item.kind, item.name, labels, "migrate", copy.path, copy.path, copy.version))
+        item.notes.append(f"{item.name} in {', '.join(labels)}: {MIGRATED}, with a backup")
+    return found
 
 
 def newest(item: Item) -> Physical:
@@ -917,6 +955,13 @@ def add_notes(items: list[Item], included: list[Provider], home: Path) -> None:
                 lost = [tool for tool in lost if not toolmap.mcp_reference(tool)]
                 if lost:
                     item.notes.append(f"{item.name} in {label}: no {cli} tool for {', '.join(lost)}")
+                if cli == "kiro":
+                    # A Kiro tag is a whole group: `read` also allows Glob, Grep and LS. Widened, never lost.
+                    tags = [tag for tag in toolmap.to_kiro(tools)[0] if not tag.startswith("@")]
+                    widened = [tool for tool in toolmap.to_claude("kiro", tags) or [] if tool not in tools]
+                    if widened:
+                        item.notes.append(f"{item.name} in {label}: Kiro allows tools by group, so its copy can also use "
+                                          f"{', '.join(widened)}")
 
 
 # The whole plan --------------------------------------------------------------
@@ -938,6 +983,7 @@ def build(config: Any, rows: list[providers.Candidate], included: list[Provider]
     excluded = [entry for entry in excluded if entry.item is None or entry.item.key not in involved]
     decide_items(items, included, options, state, found)
     changes += [change for item in items for change in changes_for(item, included)]
+    changes += [change for item in items for change in migrations(item, state, own)]
     add_notes(items, included, home)
     items = sorted(items + renamed, key=lambda item: (KINDS.index(item.kind), item.name))
     return Plan(included=included, rows=rows, items=items, changes=changes, excluded=excluded, options=options,

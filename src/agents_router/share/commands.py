@@ -498,8 +498,8 @@ def _needs_choice(plan: planner.Plan, command: str, as_json: bool) -> int:
     return 3
 
 
-MARKS = {"copy": "+", "link": "+", "update": "~", "relink": "~", "remove": "-", "rename": ">", "rename-folder": ">",
-         "rename-link": ">"}
+MARKS = {"copy": "+", "link": "+", "update": "~", "relink": "~", "migrate": "~", "remove": "-", "rename": ">",
+         "rename-folder": ">", "rename-link": ">"}
 MARK_STYLES = {"+": "ok", "~": "warn", "-": "muted", ">": "warn"}
 _verbose = False  # -v: each item line is followed by the file of each copy written
 
