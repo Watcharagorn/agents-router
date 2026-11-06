@@ -52,6 +52,13 @@ class CatalogBase(TempHome):
         return roles_first.catalog({} if hook_input is None else hook_input,
                                    self.env if env is None else env, cwd or self.project)
 
+    def long_roles(self):
+        names = [f"role-{number:02}" for number in range(40)]
+        self.settings("".join(f'[roles.{name}]\naccess = "read"\nproviders = ["codex"]\n' for name in names))
+        for name in names:
+            self.agent(name, "Use when " + "a long role sentence " * 20)
+        return names
+
 
 class SilenceTests(CatalogBase):
     def test_S8_agt_job_id_silences_the_catalog(self):
@@ -306,10 +313,7 @@ class TextTests(CatalogBase):
         self.assertIn("Installed candidates:", reason)
 
     def test_caps_40_long_roles_keep_fixed_text_whole_rows_and_an_overflow_count(self):
-        names = [f"role-{number:02}" for number in range(40)]
-        self.settings("".join(f'[roles.{name}]\naccess = "read"\nproviders = ["codex"]\n' for name in names))
-        for name in names:
-            self.agent(name, "Use when " + "a long role sentence " * 20)
+        self.long_roles()
         candidates = self.catalog()
         self.assertEqual(len(candidates), 40)
         for builder, cap, row_format in ((roles_first.session_note, 4_000, "- {}: {}"),
@@ -393,10 +397,7 @@ class RolesHookTests(CatalogBase):
                 self.assertIn("- agt-reviewer: Use for reviews", note)
 
     def test_S1_bounded_note_and_gate_include_each_candidate_or_an_overflow_count(self):
-        names = [f"role-{number:02}" for number in range(40)]
-        self.settings("".join(f'[roles.{name}]\naccess = "read"\nproviders = ["codex"]\n' for name in names))
-        for name in names:
-            self.agent(name, "Use when " + "a long role sentence " * 20)
+        names = self.long_roles()
         note = self.assert_note(self.run_hook("roles-context"))
         reason = self.assert_deny(self.run_hook("roles-first", self.payload("roles-first", tool_input={
             "subagent_type": "general-purpose", "description": "Make edits"})))

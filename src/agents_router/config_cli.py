@@ -176,10 +176,8 @@ def _auto_copy(kinds: tuple[str, ...]) -> Any:
 def _value(key: Key, loaded: config.Config, share: share_settings.Settings) -> Any:
     if key.table == "share":
         return _auto_copy(share.auto_copy) if key.field == "auto_copy" else getattr(share, key.field)
-    if key.table == "subagents":
-        return getattr(loaded.subagents, key.field)
-    if key.table is None:
-        return getattr(loaded, key.field)
+    if key.table not in config.RUNTIMES:
+        return getattr(getattr(loaded, key.table) if key.table else loaded, key.field)
     runtime = loaded.runtime(key.table)
     value = runtime.picked if key.field == "accounts" else getattr(runtime, key.field)
     return str(value) if isinstance(value, Path) else list(value) if isinstance(value, tuple) else value

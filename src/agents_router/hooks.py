@@ -28,10 +28,6 @@ import sys
 import time
 from typing import Any, TextIO
 
-from agents_router import jobs, messages
-from agents_router.config import jobs_dir
-from agents_router.fsutil import try_lock, unlock
-
 POLL_SECONDS = 2.0
 # hooks/hooks.json gives the hook 7200 s; wake the session a little before that.
 AWAIT_DEADLINE_SECONDS = 7080
@@ -94,6 +90,8 @@ def find_job_id(value: Any, depth: int = 0) -> str | None:
 
 
 def _finished_summary(job_id: str, status: dict[str, Any]) -> str:
+    from agents_router import jobs
+
     result = jobs.read_result(job_id, RESULT_PREVIEW_CHARS)
     lines = [f"Agents Router job {job_id} finished: {status.get('outcome')}."]
     if status.get("message"):
@@ -130,6 +128,9 @@ def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_
     job_id = find_job_id(payload.get("tool_response"))
     if not job_id:
         return 0, ""
+    from agents_router import jobs
+    from agents_router.fsutil import try_lock, unlock
+
     try:
         jobs.read_status(job_id)
     except ValueError:
@@ -144,6 +145,8 @@ def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_
 
 
 def _watch(job_id: str, deadline_seconds: float) -> tuple[int, str]:
+    from agents_router import jobs, messages
+
     deadline = time.monotonic() + deadline_seconds
     while True:
         try:
@@ -185,6 +188,9 @@ def pending_jobs(cwd: str, limit: int = MAX_PENDING_JOBS, session: Path | None =
     With `session` (a Claude folder), only jobs started from that folder: two sessions open in
     one project with different profiles each hear about their own jobs.
     """
+
+    from agents_router import jobs
+    from agents_router.config import jobs_dir
 
     folder = jobs_dir()
     if not folder.is_dir():
@@ -263,6 +269,8 @@ def roles_first_gate(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def inbox_context(job_id: str) -> dict[str, Any] | None:
+    from agents_router import messages
+
     # Shown once, but not marked read: the runner re-delivers anything the worker
     # didn't read explicitly, because hook context is only a hint to the model.
     new = messages.take_for_hook(job_id)

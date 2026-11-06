@@ -13,6 +13,7 @@ from typing import Any
 
 from agents_router import __version__, accounts, config_cli, roles_cli, helptext, jobs, levels, plans, rules, setup, sync, synclog, tools, ui
 from agents_router.config import NAME_RE, Account, homes_dir, load_config, save_accounts, user_settings_path
+from agents_router.entry import HOOK_ACTIONS
 from agents_router.hosts import HOST_LABELS
 from agents_router.fsutil import make_private_dir
 from agents_router.runtimes import AVAILABLE as RUNTIMES, get_runtime
@@ -975,7 +976,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     hook = sub.add_parser("hook", help="Claude Code hook commands (see hooks/hooks.json).")
     hook.add_argument(
-        "action", choices=("await", "pending", "inbox", "roles-context", "roles-first"),
+        "action", choices=HOOK_ACTIONS,
         help="await: wake the main session when a job finishes or asks something. "
         "pending: list uncollected results at session start. inbox: a worker's follow-ups. "
         "roles-context: list installed role agents at session start. roles-first: prefer roles over built-in subagents.",

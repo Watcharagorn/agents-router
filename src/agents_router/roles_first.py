@@ -10,8 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents_router import config, levels, role_agents, roles
-from agents_router.share import frontmatter
+from agents_router import config, levels, roles
 
 SENTENCE_LIMIT = 160
 NOTE_LIMIT = 4_000
@@ -32,12 +31,16 @@ _DENY_END = ("If none fits, a listed role is unavailable, or the user or a skill
 
 
 def _sentence(description: str, name: str) -> str:
+    from agents_router import role_agents
+
     cut = description.rfind(role_agents.anchor(name))
     sentence = description[:cut] if cut >= 0 else description
     return " ".join(sentence.split())[:SENTENCE_LIMIT].rstrip()
 
 
 def _shadowed(workspace: levels.Workspace | None) -> set[str]:
+    from agents_router.share import frontmatter
+
     if workspace is None:
         return set()
     found = set()
@@ -60,14 +63,22 @@ def catalog(hook_input: dict[str, Any], env: dict[str, str], cwd: Path | str | N
         if not config.subagents_from_layers(found).prefer_roles:
             return []
         enabled = {name for name, role in roles.from_layers(found).items() if role.enabled}
-        profile = Path(env.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+        if not enabled:
+            return []
+        from agents_router import role_agents
+        from agents_router.share import frontmatter
+
+        profile = config.session_folder("claude", env)
         folder = role_agents.Folder("claude", "Claude Code", profile / "agents")
+        installed = [path for path in role_agents.own_files(folder) if path.stem.removeprefix("agt-") in enabled]
+        if not installed:
+            return []
         shadowed = _shadowed(workspace)
         candidates = []
-        for path in role_agents.own_files(folder):
+        for path in installed:
             agent_name = path.stem
             name = agent_name.removeprefix("agt-")
-            if name not in enabled or agent_name in shadowed:
+            if agent_name in shadowed:
                 continue
             fields = frontmatter.parse(path.read_text(encoding="utf-8")).fields
             if fields.get("name") != agent_name:
