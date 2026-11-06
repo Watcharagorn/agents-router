@@ -97,7 +97,7 @@ To use a built-in on purpose, start the call's `description` with `agt-fallback:
 | A listed role is unavailable | `agt-fallback: listed role unavailable` |
 | The user or a skill asked for that built-in by name | `agt-fallback: user asked for Explore` |
 
-Specialists such as `claude-code-guide`, `web-fetch` and `statusline-setup`, `fork`, provider relays, other plugins' agents and your own agents are never gated. Agent teams, teammates and messages to running agents are unchanged. Your own agents are called as usual when no role covers their job. When responsibilities overlap, the role comes first. That overlap rule is advisory; the gate never blocks your own agent types.
+Specialists such as `claude-code-guide`, `web-fetch` and `statusline-setup`, `fork`, provider relays, other plugins' agents and your own agents are never gated. Agent teams, teammate spawns with a non-empty `name` or `team_name`, and messages to running agents are unchanged. Your own agents are called as usual when no role covers their job. When responsibilities overlap, the role comes first. That overlap rule is advisory; the gate never blocks your own agent types.
 
 Planning stays in the main session, which gathers data and drafts plans itself. It never starts a subagent in plan mode (`mode: "plan"`) or a `Plan` agent to plan for it. This rule is advisory: the gate prints nothing in plan mode, so nothing is blocked. The session note still carries the rule.
 

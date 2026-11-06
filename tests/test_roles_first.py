@@ -491,6 +491,25 @@ raise SystemExit(code)
                     self.assert_silent("roles-first", self.payload("roles-first", tool_input={"subagent_type": kind}))
             catalog.assert_not_called()
 
+    def test_S7_teammate_spawn_is_never_gated(self):
+        with patch.object(roles_first, "catalog", side_effect=AssertionError("teammate must skip catalog")) as catalog:
+            for tool in ("Agent", "Task"):
+                for field in ("name", "team_name"):
+                    for kind in ("Explore", "Plan", "general-purpose", None, ""):
+                        tool_input = {field: "reviewer"}
+                        if kind is not None:
+                            tool_input["subagent_type"] = kind
+                        with self.subTest(tool=tool, field=field, kind=kind):
+                            self.assert_silent("roles-first", self.payload("roles-first", tool_name=tool,
+                                                                         tool_input=tool_input))
+            catalog.assert_not_called()
+
+    def test_S7_general_purpose_without_teammate_fields_is_still_denied(self):
+        for extra in ({}, {"name": ""}, {"team_name": ""}, {"name": None, "team_name": None}):
+            with self.subTest(extra=extra):
+                self.assert_deny(self.run_hook("roles-first", self.payload("roles-first", tool_input={
+                    "subagent_type": "general-purpose", **extra})))
+
     def test_S8_worker_environment_silences_both_hooks(self):
         for extra in ({"AGT_JOB_ID": "job-123"}, {"AGT_JOB_ID": ""}, {"AGT_DEPTH": "1"}):
             for action in ("roles-context", "roles-first"):

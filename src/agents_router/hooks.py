@@ -251,6 +251,8 @@ def roles_first_gate(payload: dict[str, Any]) -> dict[str, Any] | None:
     if "agent_id" in payload or payload.get("permission_mode") == "plan":
         return None
     tool_input = payload.get("tool_input") or {}
+    if tool_input.get("name") or tool_input.get("team_name"):
+        return None
     agent_type = tool_input.get("subagent_type")
     if agent_type not in ("Explore", "Plan", "general-purpose", None, ""):
         return None
