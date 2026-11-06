@@ -1,5 +1,5 @@
 {
-  "description": "Agents Router: wake the main session when a subagent finishes or asks something (watched again after each subagent_message), and name uncollected results after resume or compaction.",
+  "description": "Agents Router: wake the main session when a subagent finishes or asks something (watched again after each subagent_message), name uncollected results after resume or compaction, and prefer installed role agents for subagent work.",
   "hooks": {
     "PostToolUse": [
       {
@@ -27,6 +27,19 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agt hook roles-first",
+            "timeout": 10,
+            "onFailure": "continue"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "resume|compact",
@@ -35,6 +48,17 @@
             "type": "command",
             "command": "agt hook pending",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agt hook roles-context",
+            "timeout": 10,
+            "onFailure": "continue"
           }
         ]
       }

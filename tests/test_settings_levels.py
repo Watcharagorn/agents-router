@@ -84,6 +84,45 @@ class PrecedenceTests(LevelsBase):
         self.assertIsNone(load_config(cwd=self.root).runtime("claude").default_model)
 
 
+class SubagentsTests(LevelsBase):
+    def test_prefer_roles_defaults_to_true_and_user_false_wins(self):
+        self.assertTrue(config.defaults().subagents.prefer_roles)
+        self.assertTrue(load_config(cwd=self.project).subagents.prefer_roles)
+        self.user("[subagents]\nprefer_roles = false\n")
+        self.assertFalse(load_config(cwd=self.project).subagents.prefer_roles)
+
+    def test_prefer_roles_workspace_and_local_override_user(self):
+        self.user("[subagents]\nprefer_roles = false\n")
+        self.workspace(self.project, "[subagents]\nprefer_roles = true\n")
+        self.assertTrue(load_config(cwd=self.project).subagents.prefer_roles)
+        self.workspace(self.project, "[subagents]\nprefer_roles = true\n",
+                       local="[subagents]\nprefer_roles = false\n")
+        self.assertFalse(load_config(cwd=self.project).subagents.prefer_roles)
+
+    def test_prefer_roles_local_overrides_user_without_a_workspace_value(self):
+        self.user("[subagents]\nprefer_roles = true\n")
+        self.workspace(self.project, local="[subagents]\nprefer_roles = false\n")
+        self.assertFalse(load_config(cwd=self.project).subagents.prefer_roles)
+
+    def test_prefer_roles_refuses_non_booleans_with_the_file_and_line(self):
+        for value in ('"no"', "0", "[]", "{}"):
+            with self.subTest(value=value):
+                self.user(f"[subagents]\nprefer_roles = {value}\n")
+                with self.assertRaisesRegex(levels.SettingsError, r"settings.toml:2: .*prefer_roles must be true or false"):
+                    load_config(cwd=self.project)
+
+    def test_subagents_must_be_a_table(self):
+        self.user('subagents = "no"\n')
+        with self.assertRaisesRegex(levels.SettingsError, r"settings.toml:1: subagents must be a \[subagents\] table"):
+            load_config(cwd=self.project)
+
+    def test_saving_config_keeps_prefer_roles_false(self):
+        self.user("[subagents]\nprefer_roles = false\n")
+        loaded = load_config(cwd=self.project)
+        config.save_config(loaded)
+        self.assertFalse(load_config(cwd=self.project).subagents.prefer_roles)
+
+
 class WorkspaceTests(LevelsBase):
     def test_a_subfolder_finds_the_checkout_and_a_nearer_agt_folder_wins(self):
         (self.project / ".git").mkdir()

@@ -7,6 +7,9 @@
   session with a question is watched again once it is answered.
 * `pending` (SessionStart on resume and compact): names finished jobs whose
   result nobody collected yet.
+* `roles-context` (SessionStart): lists installed role agents and the planning rule.
+* `roles-first` (PreToolUse on Agent and Task): turns back general-purpose
+  built-ins when role agents are installed, unless the call states a fallback.
 * `inbox` (PostToolUse inside a Claude worker): hands the worker follow-ups the
   main session sent, as additional context next to the tool result.
 
@@ -24,10 +27,6 @@ import re
 import sys
 import time
 from typing import Any, TextIO
-
-from agents_router import jobs, messages
-from agents_router.config import jobs_dir
-from agents_router.fsutil import try_lock, unlock
 
 POLL_SECONDS = 2.0
 # hooks/hooks.json gives the hook 7200 s; wake the session a little before that.
@@ -91,6 +90,8 @@ def find_job_id(value: Any, depth: int = 0) -> str | None:
 
 
 def _finished_summary(job_id: str, status: dict[str, Any]) -> str:
+    from agents_router import jobs
+
     result = jobs.read_result(job_id, RESULT_PREVIEW_CHARS)
     lines = [f"Agents Router job {job_id} finished: {status.get('outcome')}."]
     if status.get("message"):
@@ -127,6 +128,9 @@ def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_
     job_id = find_job_id(payload.get("tool_response"))
     if not job_id:
         return 0, ""
+    from agents_router import jobs
+    from agents_router.fsutil import try_lock, unlock
+
     try:
         jobs.read_status(job_id)
     except ValueError:
@@ -141,6 +145,8 @@ def await_job(payload: dict[str, Any], deadline_seconds: float = AWAIT_DEADLINE_
 
 
 def _watch(job_id: str, deadline_seconds: float) -> tuple[int, str]:
+    from agents_router import jobs, messages
+
     deadline = time.monotonic() + deadline_seconds
     while True:
         try:
@@ -183,6 +189,9 @@ def pending_jobs(cwd: str, limit: int = MAX_PENDING_JOBS, session: Path | None =
     one project with different profiles each hear about their own jobs.
     """
 
+    from agents_router import jobs
+    from agents_router.config import jobs_dir
+
     folder = jobs_dir()
     if not folder.is_dir():
         return []
@@ -221,10 +230,49 @@ def pending_context(payload: dict[str, Any]) -> dict[str, Any] | None:
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
 
 
+# roles-first ---------------------------------------------------------------
+
+
+def roles_context(payload: dict[str, Any]) -> dict[str, Any] | None:
+    from agents_router import roles_first
+
+    if not payload:  # read_input returns an empty object for malformed stdin.
+        return None
+    candidates = roles_first.catalog(payload, os.environ, payload.get("cwd") or os.getcwd())
+    if not candidates:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                   "additionalContext": roles_first.session_note(candidates)}}
+
+
+def roles_first_gate(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if payload.get("tool_name") not in ("Agent", "Task"):
+        return None
+    if "agent_id" in payload or payload.get("permission_mode") == "plan":
+        return None
+    tool_input = payload.get("tool_input") or {}
+    if tool_input.get("name") or tool_input.get("team_name"):
+        return None
+    agent_type = tool_input.get("subagent_type")
+    if agent_type not in ("Explore", "Plan", "general-purpose", None, ""):
+        return None
+    if (tool_input.get("description") or "").lstrip().startswith("agt-fallback:"):
+        return None
+    from agents_router import roles_first
+
+    candidates = roles_first.catalog(payload, os.environ, payload.get("cwd") or os.getcwd())
+    if not candidates:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": roles_first.deny_reason(candidates, agent_type or "general-purpose")}}
+
+
 # inbox (worker side) ---------------------------------------------------------
 
 
 def inbox_context(job_id: str) -> dict[str, Any] | None:
+    from agents_router import messages
+
     # Shown once, but not marked read: the runner re-delivers anything the worker
     # didn't read explicitly, because hook context is only a hint to the model.
     new = messages.take_for_hook(job_id)
@@ -251,6 +299,10 @@ def main(action: str, job_id: str | None = None) -> int:
             return code
         if action == "pending":
             output = pending_context(read_input())
+        elif action == "roles-context":
+            output = roles_context(read_input())
+        elif action == "roles-first":
+            output = roles_first_gate(read_input())
         elif action == "inbox":
             try:
                 sys.stdin.read()  # the hook payload isn't needed; drain it so the host's write never blocks

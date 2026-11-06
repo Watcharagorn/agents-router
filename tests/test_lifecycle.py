@@ -16,7 +16,7 @@ from unittest.mock import patch
 from claim_racer import race
 from helpers import TempHome
 
-from agents_router import accounts, cli, hooks, jobs, messages, sync, tools
+from agents_router import accounts, cli, entry, hooks, jobs, messages, sync, tools
 from agents_router.config import load_config
 from agents_router.fsutil import write_json
 from agents_router.runtimes.base import JobSpec
@@ -237,6 +237,23 @@ class AwaitHookTests(LifecycleBase):
         self.assertGreater(handler["timeout"], hooks.AWAIT_DEADLINE_SECONDS)
         start = data["hooks"]["SessionStart"][0]
         self.assertEqual((start["matcher"], start["hooks"][0]["command"]), ("resume|compact", "agt hook pending"))
+        for event, matcher, command in (("SessionStart", "startup|resume|clear|compact", "agt hook roles-context"),
+                                        ("PreToolUse", "Agent|Task", "agt hook roles-first")):
+            with self.subTest(event=event):
+                matching = [item for item in data["hooks"][event] if item["matcher"] == matcher]
+                self.assertEqual(len(matching), 1)
+                self.assertEqual(matching[0]["hooks"], [{"type": "command", "command": command,
+                                                       "timeout": 10, "onFailure": "continue"}])
+
+    def test_roles_hooks_use_the_fast_route_and_are_accepted_by_the_full_cli(self):
+        for action in ("roles-first", "roles-context"):
+            with self.subTest(action=action):
+                self.assertEqual(entry.quick(["hook", action]), (None, "hook", [action]))
+                self.assertEqual(entry.quick(["--home", str(self.home), "hook", action]),
+                                 (str(self.home), "hook", [action]))
+                with patch.object(hooks, "main", return_value=0) as run_hook:
+                    self.assertEqual(cli.main(["hook", action]), 0)
+                    run_hook.assert_called_once_with(action, None)
 
 
 class PendingHookTests(LifecycleBase):

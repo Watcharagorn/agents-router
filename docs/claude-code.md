@@ -131,10 +131,14 @@ Workers get three extra tools from a small built-in MCP server: `message_parent`
 
 Follow-ups reach a Claude worker in two ways. A `PostToolUse` hook that Agents Router adds to the worker shows new follow-ups after its next tool call. Because hook text is only a hint to the model, anything the worker hasn't read with `check_parent_messages` is sent again by the runner as a follow-up turn once the worker finishes (up to five times).
 
-The plugin also ships two hooks for the main session (`hooks/hooks.json`):
+The plugin also ships four hooks for the main session (`hooks/hooks.json`):
 
 - After `subagent_start`, an async `PostToolUse` hook (`agt hook await`) waits for the job. When it finishes or the worker asks a question or sends a note, the hook wakes an idle Claude Code session with a summary. The same hook runs after `subagent_message`, so once you answer a question it waits for the job again, or for the new job when you continued a finished one.
 - On resume or compact, a `SessionStart` hook (`agt hook pending`) lists finished jobs in the current project whose result nobody collected.
+- On startup, resume, clear or compact, `agt hook roles-context` adds a note listing installed role agents and when to call each one, the fallback prefix and the planning rule.
+- Before `Agent` or `Task`, `agt hook roles-first` turns back new `Explore`, `Plan`, `general-purpose` and missing-type calls with a reason listing installed role candidates. Start the description with `agt-fallback: <reason>` when no role fits, a listed role is unavailable, or the user or a skill asked for that built-in by name.
+
+Both role hooks are silent inside agt workers, for subagent callers, when no eligible role agents are installed, or when `[subagents] prefer_roles = false`. They fail open on errors. The gate is also silent in plan mode; the session note still states that the main session gathers data and drafts plans itself. See [roles first](roles.md#roles-first-in-claude-code) for the rules and the off switch.
 
 The first retrieval through `subagent_wait`, `subagent_result`, `agt follow` or the hook claims the finished result and suppresses later automatic notifications. Explicit retrieval with `subagent_result` or `agt follow` can return it again.
 

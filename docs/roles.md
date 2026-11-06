@@ -78,6 +78,41 @@ When agt skips a provider for quota, it suggests a rebalance: ask your agent to 
 
 agt writes one relay agent per enabled role, named `agt-<role>`, only for the CLI you set roles up in: Claude Code (every profile with the plugin), Codex and Antigravity. Kiro has no relay agents. The files come from your user settings alone: a project's settings never add, change or remove one, so `agt roles config --disable builder --local` turns the builder off in that project and leaves `agt-builder` for the others. A role set only in a project's file gets no agent; `agt roles show` says so. Each file says `Managed by agt roles`; agt never overwrites or deletes a same-named file without that line, so you can turn a role off and write your own `agt-<role>`. `agt share` doesn't copy these files to other CLIs. `agt setup` proposes the role table in its one question, with what each role does and when your agent calls it, and asks whether you want a role of your own (added after setup, with its description). `agt update` brings the files in line.
 
+### Roles first in Claude Code
+
+With the plugin enabled, installed agt role agents come first for subagent work. This applies only to Claude Code. Codex, Antigravity and Kiro hosts are unchanged.
+
+| Hook | Runs on | Does |
+|---|---|---|
+| `agt hook roles-context` | `SessionStart`: startup, resume, clear and compact | Adds a note listing installed role agents and each one's "when to call" sentence, the fallback prefix and the planning rule |
+| `agt hook roles-first` | `PreToolUse`: `Agent` or `Task` | Turns back new `Explore`, `Plan`, `general-purpose` and missing-type calls, with a reason listing installed role candidates |
+
+The list includes only enabled, managed role agents in this profile. A user-owned file without the management line is left out. A role shadowed by a workspace agent with the same frontmatter `name:` under `.claude/agents/` is left out too.
+
+To use a built-in on purpose, start the call's `description` with `agt-fallback: <reason>`. Use it when:
+
+| Reason | Example description |
+|---|---|
+| No installed role fits | `agt-fallback: no read-only role installed` |
+| A listed role is unavailable | `agt-fallback: listed role unavailable` |
+| The user or a skill asked for that built-in by name | `agt-fallback: user asked for Explore` |
+
+Specialists such as `claude-code-guide`, `web-fetch` and `statusline-setup`, `fork`, provider relays, other plugins' agents and your own agents are never gated. Agent teams, teammate spawns with a non-empty `name` or `team_name`, and messages to running agents are unchanged. Your own agents are called as usual when no role covers their job. When responsibilities overlap, the role comes first. That overlap rule is advisory; the gate never blocks your own agent types.
+
+Planning stays in the main session, which gathers data and drafts plans itself. It never starts a subagent in plan mode (`mode: "plan"`) or a `Plan` agent to plan for it. This rule is advisory: the gate prints nothing in plan mode, so nothing is blocked. The session note still carries the rule.
+
+Both hooks print nothing inside agt workers (`AGT_JOB_ID` or `AGT_DEPTH > 0`), for subagent callers (`agent_id`), outside Claude Code, or when no eligible role agents are installed. They fail open: malformed input, settings errors or unreadable agent files produce no output and let the call through.
+
+`[subagents] prefer_roles` is a boolean, default `true`. Set it to `false` to silence both hooks:
+
+```bash
+agt config set subagents.prefer_roles false
+```
+
+The setting applies at user (`~/.agt/settings.toml`), workspace (`.agt/settings.toml`) and local (`.agt/settings.local.toml`) levels; local wins over workspace, which wins over user. The command above writes to the workspace level when run in a workspace. Use `--user`, `--workspace` or `--local` to pick one. See [configuration](configuration.md#subagent-choice).
+
+A hand-written "prefer roles" block in your `CLAUDE.md` is no longer needed for that part; the plugin covers it.
+
 ### Your two parts of a role agent
 
 Two parts of each `agt-<role>` file are yours. agt keeps them through every rewrite (`agt setup`, `agt update`, `agt roles config`) and owns the rest.

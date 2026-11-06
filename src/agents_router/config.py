@@ -34,14 +34,15 @@ def home() -> Path:
     return Path(override).expanduser() if override else Path.home() / ".agents-router"
 
 
-def user_settings_path() -> Path:
+def user_settings_path(env: dict[str, str] | None = None) -> Path:
     """`$AGT_CONFIG_DIR/settings.toml`; with only `AGT_HOME` set, `<AGT_HOME>/settings.toml`; else `~/.agt/settings.toml`."""
 
-    configured = os.environ.get("AGT_CONFIG_DIR")
+    env = os.environ if env is None else env
+    configured = env.get("AGT_CONFIG_DIR")
     if configured:
         return Path(configured).expanduser() / "settings.toml"
-    if os.environ.get("AGT_HOME"):
-        return home() / "settings.toml"
+    if env.get("AGT_HOME"):
+        return Path(env["AGT_HOME"]).expanduser() / "settings.toml"
     return Path.home() / ".agt" / "settings.toml"
 
 
@@ -379,6 +380,11 @@ class RuntimeConfig:
 
 
 @dataclass
+class SubagentsConfig:
+    prefer_roles: bool = True
+
+
+@dataclass
 class Config:
     runtimes: dict[str, RuntimeConfig]
     job_retention_days: int = 7
@@ -386,6 +392,7 @@ class Config:
     max_jobs: int | None = None  # cap on running jobs across all runtimes
     notes: list[str] = field(default_factory=list)  # settings agt ignored, each with its file and line
     roles: dict[str, Any] = field(default_factory=dict)  # name -> roles.Role, merged over every level
+    subagents: SubagentsConfig = field(default_factory=SubagentsConfig)
 
     def runtime(self, name: str) -> RuntimeConfig:
         if name not in self.runtimes:
@@ -680,6 +687,23 @@ def defaults() -> Config:
     return Config(runtimes={name: _runtime_from(name, {}) for name in RUNTIMES}, **_top_from({}))
 
 
+def subagents_from_layers(found: list[levels.Layer]) -> SubagentsConfig:
+    """The subagent settings alone, without loading runtimes or discovering accounts."""
+
+    settings = SubagentsConfig()
+    for layer in found:
+        table = layer.data.get("subagents", {})
+        if not isinstance(table, dict):
+            raise levels.SettingsError(f"{levels.where(layer, None, 'subagents')}: subagents must be a [subagents] table")
+        if "prefer_roles" in table:
+            value = table["prefer_roles"]
+            if not isinstance(value, bool):
+                raise levels.SettingsError(f"{levels.where(layer, 'subagents', 'prefer_roles')}: "
+                                           "[subagents] prefer_roles must be true or false")
+            settings.prefer_roles = value
+    return settings
+
+
 def from_layers(found: list[levels.Layer], notes: list[str] | None = None) -> Config:
     """The settings these files give, lowest level first (see load_config)."""
 
@@ -713,7 +737,8 @@ def from_layers(found: list[levels.Layer], notes: list[str] | None = None) -> Co
             notes.append(f"{levels.where(layer, name, 'accounts')}: [{name}] accounts names '{unknown}', "
                          f"which isn't one of your {name} accounts; ignored")
         runtimes[name].picked = [item for item in chosen if item in known] or None
-    return Config(runtimes=runtimes, notes=notes, roles=roles.from_layers(found), **_top_from(top))
+    return Config(runtimes=runtimes, notes=notes, roles=roles.from_layers(found),
+                  subagents=subagents_from_layers(found), **_top_from(top))
 
 
 def _account_lines(runtime: str, account: Account) -> list[str]:
@@ -753,6 +778,8 @@ def dump_config(config: Config) -> str:
     ]
     if config.max_jobs:
         lines.append(f"max_jobs = {config.max_jobs}")
+    if not config.subagents.prefer_roles:
+        lines += ["", "[subagents]", "prefer_roles = false"]
     for name in RUNTIMES:
         runtime = config.runtimes[name]
         lines += [

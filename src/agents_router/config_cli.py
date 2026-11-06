@@ -135,6 +135,8 @@ KEYS: dict[str, Key] = {key.name: key for key in [
     Key("max_jobs", "int", "Jobs at a time across every CLI.", minimum=1, cap=True, guard="raise"),
     Key("max_depth", "int", "How deep workers may start workers of their own.", minimum=0, guard="raise"),
     Key("job_retention_days", "int", "Days agt keeps finished jobs' records.", minimum=1),
+    Key("subagents.prefer_roles", "bool", "Prefer installed agt role agents for subagent work in Claude Code.",
+        applies="the next subagent call or session start"),
     *(key for runtime in config.RUNTIMES for key in _runtime_keys(runtime)),
     Key("share.enabled", "fixed", "Whether agt shares agents and skills between your CLIs.",
         changed_by="agt share enable / agt share disable", applies=SYNC),
@@ -174,8 +176,8 @@ def _auto_copy(kinds: tuple[str, ...]) -> Any:
 def _value(key: Key, loaded: config.Config, share: share_settings.Settings) -> Any:
     if key.table == "share":
         return _auto_copy(share.auto_copy) if key.field == "auto_copy" else getattr(share, key.field)
-    if key.table is None:
-        return getattr(loaded, key.field)
+    if key.table not in config.RUNTIMES:
+        return getattr(getattr(loaded, key.table) if key.table else loaded, key.field)
     runtime = loaded.runtime(key.table)
     value = runtime.picked if key.field == "accounts" else getattr(runtime, key.field)
     return str(value) if isinstance(value, Path) else list(value) if isinstance(value, tuple) else value

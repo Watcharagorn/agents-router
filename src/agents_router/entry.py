@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
-HOOK_ACTIONS = ("await", "pending", "inbox")
+HOOK_ACTIONS = ("await", "pending", "inbox", "roles-context", "roles-first")
 
 
 def quick(argv: list[str]) -> tuple[str | None, str, list[str]] | None:
