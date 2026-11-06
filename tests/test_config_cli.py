@@ -13,7 +13,7 @@ from unittest.mock import patch
 from helpers import TempHome
 
 from agents_router import cli, jobs, synclog, ui
-from agents_router.config import load_config
+from agents_router.config import Config, load_config
 
 AGENT = {"CLAUDECODE": "1"}
 
@@ -113,6 +113,49 @@ class ShowTests(ConfigBase):
         code, out, _ = self.agt("config", "show")
         self.assertEqual(out.splitlines()[:4], ["agt config  settings in effect, outside any workspace", "", "Settings files",
                                                 f"  user   {ui.short_path(self.user_file)}   not there yet"])
+
+
+class SubagentsTests(ConfigBase):
+    def test_show_set_and_unset_never_look_up_a_subagents_runtime(self):
+        runtime = Config.runtime
+
+        def checked(loaded, name):
+            self.assertNotEqual(name, "subagents")
+            return runtime(loaded, name)
+
+        with patch.object(Config, "runtime", autospec=True, side_effect=checked):
+            code, shown = self.json("config", "show")
+            row = next(row for row in shown["settings"] if row["key"] == "subagents.prefer_roles")
+            self.assertEqual((code, row["value"], row["source"]), (0, True, "default"))
+            code, report = self.json("config", "set", "subagents.prefer_roles", "false")
+            self.assertEqual((code, report["old"], report["new"], report["level"]), (0, True, False, "workspace"))
+            self.assertEqual(self.text(self.team_file), "[subagents]\nprefer_roles = false\n")
+            code, out, _ = self.agt("config", "show")
+            self.assertEqual(code, 0)
+            self.assertIn("subagents.prefer_roles", out)
+            code, report = self.json("config", "unset", "subagents.prefer_roles")
+            self.assertEqual((code, report["old"], report["new"]), (0, False, True))
+
+    def test_prefer_roles_reports_user_workspace_and_local_sources(self):
+        for flag, source, value in (("--user", "user", "false"), ("--workspace", "workspace", "true"),
+                                    ("--local", "local", "false")):
+            with self.subTest(level=source):
+                self.assertEqual(self.agt("config", "set", "subagents.prefer_roles", value, flag)[0], 0)
+                code, shown = self.json("config", "show")
+                row = next(row for row in shown["settings"] if row["key"] == "subagents.prefer_roles")
+                self.assertEqual((code, row["value"], row["source"]), (0, value == "true", source))
+        code, report = self.json("config", "unset", "subagents.prefer_roles")
+        self.assertEqual((code, report["level"], report["new"]), (0, "local", True))
+
+    def test_prefer_roles_rejects_a_string_value(self):
+        code, _, err = self.agt("config", "set", "subagents.prefer_roles", '"no"')
+        self.assertEqual(code, 2)
+        self.assertIn("takes true or false", err)
+        self.assertFalse(self.team_file.exists())
+        self.team_file.write_text('[subagents]\nprefer_roles = "no"\n', encoding="utf-8")
+        code, shown = self.json("config", "show")
+        self.assertEqual(code, 2)
+        self.assertIn("prefer_roles must be true or false", shown["error"])
 
 
 class SetTests(ConfigBase):

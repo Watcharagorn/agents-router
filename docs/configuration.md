@@ -10,7 +10,7 @@ Agents Router keeps its jobs, state and account folders under `~/.agents-router/
 | Workspace | `<workspace>/.agt/settings.toml` | yes, shared with your team | the team's settings for this repo |
 | Local | `<workspace>/.agt/settings.local.toml` | never: agt keeps it out of git | your own settings for this repo |
 
-Each file holds the same keys: the top-level ones, `[claude]`, `[codex]`, `[antigravity]`, `[kiro]` and `[share]`. Later levels win, key by key: a job started in a repo uses its local file, then the repo's file, then yours, then agt's defaults. `$AGT_CONFIG_DIR` moves the user file; with only `AGT_HOME` set, it's `<AGT_HOME>/settings.toml`, so `agt --home` keeps settings apart too.
+Each file holds the same keys: the top-level ones, `[claude]`, `[codex]`, `[antigravity]`, `[kiro]`, `[subagents]` and `[share]`. Later levels win, key by key: a job started in a repo uses its local file, then the repo's file, then yours, then agt's defaults. `$AGT_CONFIG_DIR` moves the user file; with only `AGT_HOME` set, it's `<AGT_HOME>/settings.toml`, so `agt --home` keeps settings apart too.
 
 Which workspace you're in:
 
@@ -111,6 +111,9 @@ job_retention_days = 7       # finished job records older than this are deleted
 max_depth = 1                # 1 = workers can't start their own subagents
 # max_jobs = 8               # most subagents running at once on this machine, all runtimes (default: no cap)
 
+[subagents]
+prefer_roles = true         # prefer installed agt role agents in Claude Code
+
 [claude]
 primary = "~/.claude"        # the shared setup (default: CLAUDE_CONFIG_DIR or ~/.claude)
 include_primary = false      # also run workers on the primary account
@@ -174,6 +177,21 @@ home = "~/.agents-router/homes/antigravity/google-2"
 When no extra accounts are configured, workers run on the primary account. That is still useful from another host (for example Codex delegating to Claude Code), and with `include_primary = true` the primary account joins the pool.
 
 `max_jobs_per_account` is unset by default, so there's no cap on jobs per account (see Limits for per-account caps). Several Claude Code processes writing one account's `.claude.json` at once have corrupted it in the past; the reported issues are closed, but the fixes aren't verified. Set `max_jobs_per_account = 1` under `[claude]` to run one worker per account folder again. Under `[antigravity]`, 1 also gives workers the parent channel ([Antigravity](gemini.md)).
+
+## Subagent choice
+
+| Key | Type, default | Levels | Applies |
+|---|---|---|---|
+| `[subagents] prefer_roles` | boolean, `true` | user `~/.agt/settings.toml`, workspace `.agt/settings.toml`, local `.agt/settings.local.toml` | next subagent call or session start |
+
+In Claude Code, this turns on the plugin's role note at session start and the gate before general-purpose built-in subagent calls. Set it to `false` to silence both hooks. Local overrides workspace, which overrides user. Codex, Antigravity and Kiro hosts are unchanged. See [roles first](roles.md#roles-first-in-claude-code) for the fallback prefix, planning rule and silence conditions.
+
+```bash
+agt config set subagents.prefer_roles false          # this workspace
+agt config set subagents.prefer_roles false --user   # your user level
+agt config set subagents.prefer_roles false --local  # your own setting for this workspace
+agt config unset subagents.prefer_roles             # back to the next level, or true
+```
 
 ## Claude profiles
 

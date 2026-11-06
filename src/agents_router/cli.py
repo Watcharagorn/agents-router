@@ -975,9 +975,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     hook = sub.add_parser("hook", help="Claude Code hook commands (see hooks/hooks.json).")
     hook.add_argument(
-        "action", choices=("await", "pending", "inbox"),
+        "action", choices=("await", "pending", "inbox", "roles-context", "roles-first"),
         help="await: wake the main session when a job finishes or asks something. "
-        "pending: list uncollected results at session start. inbox: a worker's follow-ups.",
+        "pending: list uncollected results at session start. inbox: a worker's follow-ups. "
+        "roles-context: list installed role agents at session start. roles-first: prefer roles over built-in subagents.",
     )
     hook.add_argument("job_id", nargs="?", help="The worker's job (inbox only).")
 
