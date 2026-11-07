@@ -12,7 +12,7 @@ from unittest.mock import patch
 from helpers import FAKE_HOST, TempHome  # noqa: F401 - sets up the throwaway process first
 from test_config_cli import AGENT, ConfigBase
 
-from agents_router import role_agents, roles_cli, roles_grid, synclog
+from agents_router import role_agents, roles, roles_cli, roles_grid, synclog
 
 REAL_SYNC = role_agents.sync  # RolesBase patches it; a test that needs the real sync puts this back
 
@@ -66,6 +66,22 @@ class RolesBase(ConfigBase):
 
 
 class ShowTests(RolesBase):
+    def test_show_reference_table_has_role_rows_account_columns_and_effort_note(self):
+        from test_roles_grid import reference_roles
+
+        found = reference_roles()
+        self.user_file.write_text(self.accounts + roles.render_tables({item.name: item.as_table() for item in found}),
+                                  encoding="utf-8")
+        with patch.object(roles_cli, "show_problem", return_value=None), \
+                patch.object(roles_cli, "_agent_notes", return_value=[]), \
+                patch.object(roles_cli, "_parts_notes", return_value=[]):
+            code, out, err = self.agt("roles", "show", env=AGENT)
+        self.assertEqual(code, 0, err)
+        self.assertEqual([line.rstrip() for line in out.splitlines()], [roles_cli.ui.plain(line).rstrip()
+                                                                      for line in roles_grid.RoleGrid(found).table()])
+        self.assertNotIn("\x1b", out)
+        self.assertEqual(out.splitlines()[0].split(), ["Role", "codex", "kiro", "claude:claude-ntb"])
+
     def test_show_is_the_default_and_marks_off_roles_and_unusable_providers(self):
         self.user_file.write_text(self.accounts + ROLES.replace(
             '[roles.verifier]\n', '[roles.verifier]\nenabled = false\n') + '\n[roles.security-reviewer]\naccess = "read"\n'
@@ -73,19 +89,29 @@ class ShowTests(RolesBase):
         code, out, _ = self.agt("roles")
         self.assertEqual(code, 0, out)
         lines = out.splitlines()
-        self.assertRegex(lines[0], r"decision-maker|reviewer\s+builder\s+verifier\s+security-reviewer")
-        self.assertRegex(lines[1], r"role on/off\s+on\s+on\s+off\s+on")
-        self.assertRegex(out, r"codex:work\s+gpt-6.1-sol\s+high\s+✓\s+·")
-        self.assertRegex(out, r"claude:claude-work\s+opus\s+—\s+·\s+1")
+        self.assertEqual(lines[0].split(), ["Role", "codex:work", "antigravity:primary", "claude:claude-work",
+                                           "claude:personal", "kiro:primary", "codex:gone"])
+        self.assertRegex(lines[1], r"reviewer\s+read·on\s+gpt-6.1-sol/high:✓\s+✓")
+        self.assertRegex(lines[2], r"builder\s+edit·on\s+gpt-6.1-sol/2\s+·\s+opus/1")
+        self.assertRegex(lines[3], r"verifier\s+read·off\s+·\s+·\s+·\s+sonnet/✓\s+✓")
+        self.assertIn("Effort is the runtime's default", lines[5])
         self.assertIn("! security-reviewer: codex:gone: codex has no account gone", out)
+        self.assertLess(out.index("Effort is"), out.index("! security-reviewer:"))
 
     def test_show_json(self):
-        code, shown = self.json("roles", "show")
+        with patch.object(roles_grid, "RoleGrid", side_effect=AssertionError("JSON does not use the grid")):
+            code, shown = self.json("roles", "show")
         self.assertEqual(code, 0)
+        self.assertEqual(set(shown), {"roles", "files"})
         builder = next(row for row in shown["roles"] if row["name"] == "builder")
+        self.assertEqual(set(builder), {"name", "access", "enabled", "base", "use_when", "level", "providers",
+                                        "when_to_call", "rules_chars", "rules_state", "agent_files", "archived"})
         self.assertEqual((builder["access"], builder["enabled"], builder["level"]), ("edit", True, "user"))
-        self.assertEqual([p["provider"] for p in builder["providers"]], ["claude:claude-work/opus", "codex:work/gpt-6.1-sol"])
-        self.assertTrue(all(p["usable"] for p in builder["providers"]))
+        self.assertEqual(builder["providers"], [
+            {"provider": "claude:claude-work/opus", "entry": "claude:claude-work", "model": "opus", "effort": None,
+             "usable": True, "reason": None},
+            {"provider": "codex:work/gpt-6.1-sol", "entry": "codex:work", "model": "gpt-6.1-sol", "effort": None,
+             "usable": True, "reason": None}])
 
     def test_S7c_bad_hand_edit_named(self):
         self.user_file.write_text(self.accounts + ROLES.replace(
@@ -820,28 +846,61 @@ class GridTests(RolesBase):
             code, out, err = self.agt("roles", "config", *argv, terminal=True)
         return code, out, err, seen
 
+    def test_read_retick_reports_nothing_changed_and_keeps_file_bytes(self):
+        self.user_file.write_text(self.accounts + ROLES.replace(
+            'providers = ["codex:work/gpt-6.1-sol:high", "antigravity:primary"]',
+            'providers = ["codex", "kiro"]'), encoding="utf-8")
+        before = self.user_file.read_bytes()
+        code, out, err, seen = self.run_grid(["space", "space", "enter"])
+        self.assertEqual((code, out), (0, "Nothing was changed.\n"), err)
+        self.assertEqual(seen["changes"], [])
+        self.same_bytes(self.user_file, before)
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(self.synced, [])
+
+    def test_split_cell_saves_model_and_effort_only_in_its_role(self):
+        code, out, err, seen = self.run_grid(["s", "e", "enter"])
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(seen["changes"], ["reviewer: codex:work joins"])
+        from agents_router.config import load_config
+
+        loaded = load_config()
+        self.assertEqual([str(provider) for provider in loaded.roles["reviewer"].providers], [
+            "codex:work/gpt-6.1-sol:high", "codex:work/gpt-6.1-sol:xhigh", "antigravity:primary"])
+        self.assertEqual([str(provider) for provider in loaded.roles["builder"].providers], [
+            "claude:claude-work/opus", "codex:work/gpt-6.1-sol"])
+
+    def test_split_copy_blocks_enter_until_effort_changes(self):
+        code, out, err, _ = self.run_grid(["s", "enter", "e", "enter"])
+        self.assertEqual(code, 0, out + err)
+        from agents_router.config import load_config
+
+        loaded = load_config()
+        self.assertEqual([str(provider) for provider in loaded.roles["reviewer"].providers], [
+            "codex:work/gpt-6.1-sol:high", "codex:work/gpt-6.1-sol:xhigh", "antigravity:primary"])
+
     def test_S6_grid_three_changes_named_before_save(self):
-        # rows: codex:work/gpt-6.1-sol:high, antigravity:primary, claude:claude-work/opus, codex:work/gpt-6.1-sol,
-        # claude:personal/sonnet, kiro:primary; columns: reviewer, builder, verifier
-        keys = ["down", "down", "right", "-",  # claude:claude-work moves to 2nd in builder
-                "down", "left", "space",  # codex:work/gpt-6.1-sol joins reviewer
-                "right", "right", "o",  # verifier off
+        # rows: reviewer, builder, verifier; accounts: codex:work, antigravity:primary,
+        # claude:claude-work, claude:personal, kiro:primary
+        keys = ["down", "+",  # codex:work moves to 1st in builder
+                "up", "right", "right", "space",  # claude:claude-work joins reviewer
+                "down", "down", "o",  # verifier off
                 "enter"]
         code, out, err, seen = self.run_grid(keys)
         self.assertEqual(code, 0, err)
-        self.assertEqual(seen["changes"], ["reviewer: codex:work joins",
+        self.assertEqual(seen["changes"], ["reviewer: claude:claude-work joins",
                                            "builder: codex:work moves to 1st, claude:claude-work to 2nd",
                                            "verifier: off"])
         self.assertTrue(any("3 changes" in line for line in seen["lines"]))
         text = self.text(self.user_file)
         self.assertIn('[roles.builder]\nproviders = ["codex:work/gpt-6.1-sol", "claude:claude-work/opus"]', text)
         self.assertIn('[roles.reviewer]\nproviders = ["codex:work/gpt-6.1-sol:high", "antigravity:primary", '
-                      '"codex:work/gpt-6.1-sol"]', text)
+                      '"claude:claude-work/opus"]', text)
         self.assertIn('[roles.verifier]\nproviders = ["claude:personal/sonnet", "kiro:primary"]\nenabled = false', text)
         self.assertTrue(out.splitlines()[-1].startswith("Undo: "))
 
     def test_S6_grid_o_toggles_enabled(self):
-        code, out, err, _ = self.run_grid(["right", "o", "enter"], "--local")
+        code, out, err, _ = self.run_grid(["down", "o", "enter"], "--local")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.text(self.local_file).split("\n\n", 1)[1], "[roles.builder]\nenabled = false\n")
         self.assertNotIn("builder", self.synced[-1])
@@ -849,12 +908,12 @@ class GridTests(RolesBase):
         self.local_file.unlink()
         self.user_file.write_text(self.text(self.user_file).replace(
             '[roles.builder]\n', '[roles.builder]\nenabled = false\n'), encoding="utf-8")
-        code, out, err, _ = self.run_grid(["right", "o", "enter"], "--local")
+        code, out, err, _ = self.run_grid(["down", "o", "enter"], "--local")
         self.assertEqual(code, 0, err)
         self.assertIn("[roles.builder]\nenabled = true\n", self.text(self.local_file))
         self.assertIn("builder", self.synced[-1])
         # at the user level, turning it on again removes the switch
-        code, out, err, _ = self.run_grid(["right", "o", "o", "enter"], "--user")
+        code, out, err, _ = self.run_grid(["down", "o", "o", "enter"], "--user")
         self.assertIn("Nothing was changed.", out)
 
     def test_grid_refuses_to_save_an_enabled_role_with_no_providers(self):
@@ -876,7 +935,7 @@ class GridTests(RolesBase):
             code, out, _ = self.agt("roles", "config", env=AGENT, terminal=True)
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        self.assertRegex(lines[1], r"role on/off\s+on\s+on\s+on")
+        self.assertRegex(lines[1], r"reviewer\s+read·on\s+gpt-6.1-sol/high:✓")
         self.assertEqual(lines[-1], roles_grid.HINT)
         self.same_bytes(self.user_file, before)
         code, shown = self.json("roles", "config", env=AGENT)

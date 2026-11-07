@@ -89,7 +89,8 @@ def _keys(pairs: list[tuple[str, str]], width: int, one: bool = False) -> list[u
     spare left out (n, a, the arrows, space)."""
 
     if one:
-        order = [key for key in ("n", "a") if any(pair[0] == key for pair in pairs)] + [pairs[0][0], "space"]
+        order = [key for key in ("n", "a", pairs[0][0], "space") if any(pair[0] == key for pair in pairs)]
+        order += [key for key, _ in pairs if key not in (*order, "enter", "esc", "q")]
         while len(pairs) > 2 and ui.cell_len("  " + "  ".join(f"{key} {action}" for key, action in pairs)) > width:
             pairs = [pair for pair in pairs if pair[0] != order[0]]
             order = order[1:]

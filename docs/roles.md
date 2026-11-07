@@ -60,13 +60,21 @@ Change roles with `agt roles config`, never by hand-editing, so every change is 
 | Command | Does |
 |---|---|
 | `agt roles` / `agt roles show [--json]` | the table, with roles that are off and providers that can't run |
-| `agt roles config` (at a terminal) | the grid: providers as rows, roles as columns. Space ticks, `a`/`n` whole column, `m`/`e` model and effort, `+`/`-` order, `d` duplicate row, `o` turns the role under the cursor on or off. Enter saves |
+| `agt roles config` (at a terminal) | the grid: roles as rows, accounts as columns. Space ticks, `a`/`n` whole row, `m`/`e` cell model and effort, `+`/`-` account order, `s` splits a cell, `o` turns the role under the cursor on or off. Enter saves |
 | `agt roles config <role> --only/--add/--remove <providers>` | a role's providers (a role keeps at least one) |
 | `agt roles config <role> --order <providers>` | an edit or full role's priority |
 | `agt roles config --set-model/--set-effort <provider>=<value>` | one provider in every role that uses it |
 | `agt roles config --enable/--disable <roles>` | turn roles on or off, base roles included |
 | `agt roles config <new-role> --access read --only <providers> --description "<what it does>"` | a custom role (`--access read`, `edit` or `full`; `--prompt`, `--delete`); the description is required |
 | `agt roles propose [--rebalance] [--json]` · `agt roles config --from FILE` | a proposed table, then writing it |
+
+Both table views keep one column per account, even when its models or efforts differ between roles. Each row shows
+the role's access and on/off switch. Cells show `[model/][effort:]✓` for read access or the provider's try-order number
+for edit/full access. The footnote gives the shared effort; `def` means the runtime's default, and `·` means unused.
+Multiple entries for one account share a cell, separated by commas. `m`/`e` change its last entry; `s` appends a copy
+to the role so you can choose another model or effort. `+`/`-` move the account's entries as a block. Ticking an empty
+cell uses that account's most common model and effort in the other roles. Arrow keys (or `h`/`j`/`k`/`l`) scroll the
+accounts and roles while keeping the selected cell visible. Esc or `q` leaves without saving.
 
 Add `--dry-run` to see a change without writing it. Name `--user`, `--workspace` or `--local` to pick the file; with none, a change goes where the role is set now, else your user file, never the committed workspace file. A refused command writes nothing. After a write agt prints the file, the level, any override from another level, the backup and one undo command.
 

@@ -1,8 +1,9 @@
 """`agt roles show|propose|config`: see and change which providers each role uses.
 
-`agt roles` (or `show`) prints the roles table: provider entries as rows,
-roles as columns, a tick for a read role and the place in the order for an
-edit or full role, with roles that are off and providers agt can't use marked.
+`agt roles` (or `show`) prints the roles table: roles as rows, accounts as
+columns, with model and effort in each cell, a tick for a read role and the
+place in the order for an edit or full role. Off roles and unusable providers
+are marked.
 `propose` prints a role table from your CLIs, accounts and quota (`--json`
 gives the file `config --from` reads). `config` changes roles: with no flags a
 person at a terminal gets the grid, anyone else the same table read-only.
