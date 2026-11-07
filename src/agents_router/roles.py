@@ -78,7 +78,7 @@ class Provider:
         return text
 
     def entry(self) -> str:
-        """The provider without model and effort: what a grid row and `--set-model` name."""
+        """The provider without model and effort: what a grid column and `--set-model` name."""
 
         return f"{self.runtime}:{self.account}" if self.account else self.runtime
 
