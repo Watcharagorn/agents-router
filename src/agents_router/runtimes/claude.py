@@ -296,6 +296,9 @@ def _first_line(text: str) -> str:
 class ClaudeRuntime:
     name = "claude"
 
+    def discover_models(self, config: RuntimeConfig, account: Account, *, io=None) -> tuple[str, ...]:
+        return ("opus", "sonnet", "haiku", "fable")
+
     # Binary --------------------------------------------------------------
 
     def find_binary(self, config: RuntimeConfig) -> list[str] | None:

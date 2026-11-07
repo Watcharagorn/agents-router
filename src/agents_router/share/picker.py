@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from typing import Callable, Iterator
 
 from agents_router import ui
@@ -193,11 +194,22 @@ class ListState:
     `leave` say what Enter and q do on this screen."""
 
     def __init__(self, title: ui.Line, choices: list[Choice], *, verbs: tuple[str, str] = ("on", "off"),
-                 enter: str = "done", leave: str = "back"):
+                 enter: str = "done", leave: str = "back", single: bool = False):
+        self.single = single
         self.title, self.choices, self.verbs, self.enter, self.leave = title, choices, verbs, enter, leave
         self.first = {choice.key: choice.checked for choice in choices}
         usable = self._usable()
-        self.cursor = usable[0] if usable else 0
+        self.cursor = next((index for index in usable if single and choices[index].checked), usable[0] if usable else 0)
+
+    def replace_choices(self, choices: list[Choice]) -> None:
+        """Refresh a single-select list in place, preserving the cursor's model when it remains usable."""
+
+        key = self.choices[self.cursor].key if self.choices else None
+        self.choices = choices
+        self.first = {choice.key: choice.checked for choice in choices}
+        usable = self._usable()
+        self.cursor = next((index for index in usable if choices[index].key == key),
+                           next((index for index in usable if choices[index].checked), usable[0] if usable else 0))
 
     def _usable(self) -> list[int]:
         return [index for index, choice in enumerate(self.choices) if not choice.locked]
@@ -206,6 +218,12 @@ class ListState:
         usable = self._usable()
         if key in ("q", "esc"):
             return QUIT
+        if self.single and key in ("space", "enter"):
+            if self.cursor not in usable:
+                return None
+            for index, choice in enumerate(self.choices):
+                choice.checked = index == self.cursor
+            return DONE
         if key == "enter":
             return DONE
         if not usable:
@@ -216,7 +234,7 @@ class ListState:
             self.cursor = usable[max(0, min(len(usable) - 1, position + step))]
         elif key == "space" and self.cursor in usable:
             self.choices[self.cursor].checked = not self.choices[self.cursor].checked
-        elif key in ("a", "n"):
+        elif key in ("a", "n") and not self.single:
             for index in usable:
                 self.choices[index].checked = key == "a"
         return None
@@ -228,6 +246,8 @@ class ListState:
         return [choice for choice in self.choices if not choice.locked and choice.checked != self.first[choice.key]]
 
     def _mark(self, choice: Choice) -> str:
+        if self.single and choice.checked:
+            return "[x]"
         return "[-]" if choice.reason else "[x]" if choice.checked or choice.fixed else "[ ]"
 
     def frame(self, width: int = 100, height: int = 40) -> list[ui.Line]:
@@ -252,6 +272,10 @@ class ListState:
                 body.append((line + (["  ", ui.muted(note)] if note else []), True))
         phrases = [f"{choice.name or choice.text} {self.verbs[0] if choice.checked else self.verbs[1]}" for choice in changed]
         keys = [("↑↓", "move"), ("space", "tick"), ("a", "all"), ("n", "none"), ("enter", self.enter), ("q", self.leave)]
+        if self.single:
+            keys = [("↑↓", "move"), ("space", "pick"), ("enter", "pick"), ("esc", "cancel")]
+            return _frame([("title", _title(self.title, width)), ("blank", "")], body, at,
+                          [("blank", "")], keys, width, height)
         return _frame([("title", _title(self.title, width)), ("blank", "")], body, at,
                       [("blank", ""), ("", _count(phrases, len(changed), width, ", "))], keys, width, height)
 
@@ -267,10 +291,21 @@ class ListState:
                 note = choice.reason or choice.fixed
                 write(f"  {number:>2}. {self._mark(choice)} {choice.text}" + (f"  {note}" if note else ""))
             try:
-                answer = read(f"Numbers to tick or untick (1 3) · a all · n none · Enter {self.enter} · q {self.leave}: ")
+                answer = read("Number to pick · Enter current · q cancel: " if self.single else
+                              f"Numbers to tick or untick (1 3) · a all · n none · Enter {self.enter} · q {self.leave}: ")
             except EOFError:
                 return QUIT
             answer = answer.strip().lower()
+            if self.single:
+                if answer in ("q", "esc"):
+                    return QUIT
+                if answer.isdigit() and 1 <= int(answer) <= len(self.choices):
+                    self.cursor = int(answer) - 1
+                elif answer:
+                    continue
+                if self.press("enter") == DONE:
+                    return DONE
+                continue
             if not answer:
                 return DONE
             if answer == "q":
@@ -621,12 +656,19 @@ class Terminal:
             import msvcrt
 
             while True:
+                if getattr(self, "pending", lambda: False)() and not msvcrt.kbhit():
+                    time.sleep(0.1)
+                    yield ""
+                    continue
                 yield parse_windows(msvcrt.getwch)
         import select
 
         read = lambda: os.read(self.fd, 1).decode("utf-8", "replace")
         more = lambda: bool(select.select([self.fd], [], [], 0.05)[0])  # an arrow's next byte comes at once
         while True:
+            if getattr(self, "pending", lambda: False)() and not select.select([self.fd], [], [], 0.1)[0]:
+                yield ""
+                continue
             yield parse_posix(read, more)
 
     def draw(self, lines: list[str]) -> None:
@@ -649,8 +691,12 @@ def choose(state: ListState | GridState, *, read: Callable[[str], str] | None = 
             return state.fallback(read or input, write or print)
         style = ui.mode(sys.stdout)
         with Terminal() as terminal:
+            terminal.pending = lambda: bool(getattr(state, "pending", False))
             keys = terminal.keys()
             while True:
+                poll = getattr(state, "poll", None)
+                if poll is not None:
+                    poll()
                 size = shutil.get_terminal_size()
                 terminal.draw(state.lines(size.columns - 1, size.lines, style="bare" if style == "plain" else style))
                 outcome = state.press(next(keys))

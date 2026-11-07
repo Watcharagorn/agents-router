@@ -291,14 +291,14 @@ class GridState(unittest.TestCase):
 
     def test_m_and_e_change_only_the_selected_cell(self):
         choices = lambda entry: ([None, "gpt-6.1-sol", "gpt-6.1-mini"], [None, "low", "high"])
-        state = press(grid(choices=choices), "m", "e")
+        state = press(grid(choices=choices), "m", "down", "enter", "e")
         self.assertEqual(state.tables(), {
             "reviewer": {"providers": ["codex:work/gpt-6.1-mini", "antigravity:primary"]}})
         self.assertEqual(state.changes(), ["codex:work model gpt-6.1-sol → gpt-6.1-mini", "codex:work effort high → default"])
 
     def test_s_splits_a_cell_then_m_e_change_only_its_last_entry(self):
         choices = lambda entry: ([None, "gpt-6.1-sol", "gpt-6.1-mini"], [None, "high"])
-        state = press(grid(choices=choices), "s", "m", "e")
+        state = press(grid(choices=choices), "s", "m", "down", "enter", "e")
         self.assertEqual(state.tables(), {"reviewer": {"providers": [
             "codex:work/gpt-6.1-sol:high", "codex:work/gpt-6.1-mini", "antigravity:primary"]}})
         self.assertEqual(state.changes(), ["reviewer: codex:work joins"])
@@ -360,6 +360,8 @@ class GridState(unittest.TestCase):
                         self.assertIn("m/e", state.problem)
                         self.assertIn("untick", state.problem)
                         press(state, repair)
+                        if repair == "m":
+                            press(state, "down", "enter")
                         self.assertEqual(state.press("enter"), roles_grid.DONE)
                         self.assertEqual(state.tables(), {"ops": {"providers": expected}})
 

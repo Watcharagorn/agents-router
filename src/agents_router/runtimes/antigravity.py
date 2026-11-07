@@ -399,6 +399,9 @@ class AntigravityRuntime:
     name = "antigravity"
     add_note = ADD_NOTE
 
+    def discover_models(self, config: RuntimeConfig, account: Account, *, io=None) -> None:
+        return None
+
     def __init__(self) -> None:
         self._review_log: Path | None = None
 

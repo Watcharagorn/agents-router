@@ -6,7 +6,7 @@
                              below 3.0: plain-uuid sessions and `metadata` events). `--resume-id ID` keeps
                              ID in every event, and an engine refuses the other engine's session ids
   chat --help                lists chat's flags, FAKE_KIRO_FLAGS among them
-  whoami --format json       logged in while FAKE_KIRO_LOGGED_OUT isn't set
+  whoami --format json       logged-in JSON then Profile text; {"account":null}, exit 1 while FAKE_KIRO_LOGGED_OUT is set
   --version                  prints `kiro-cli <FAKE_KIRO_VERSION>`
 
   FAKE_KIRO_SCENARIO   success (default) | limit | auth | mcp | silent | json-answer | help-fails | help-hangs; with
@@ -60,6 +60,8 @@ def main():
         print("      --trust-all-tools       Allows the model to use any tool without confirmation")
         print("      --trust-tools <TOOLS>   Trust only this set of tools")
         print("      --agent-engine <ENGINE> The agent engine (v1, v2 or v3)")
+        print("      --list-models           List available models and exit")
+        print("      --format <FORMAT>       List output: plain, json or json-pretty")
         texts = {"--v2": "Launch the pre-3.0 default agent", "--v3": "Launch the next generation Kiro agent",
                  "--output-format <FORMAT>": "text or stream-json"}
         for flag in flags:
@@ -68,13 +70,24 @@ def main():
         return 0
     if argv[:1] == ["whoami"]:
         if os.environ.get("FAKE_KIRO_LOGGED_OUT"):
-            print("Not logged in. Run kiro-cli login to sign in.", file=sys.stderr)
+            print(json.dumps({"account": None}))
             return 1
-        print(json.dumps({"accountType": "BuilderId", "email": "dev@example.com"}))
+        print(json.dumps({"accountType": "IamIdentityCenter", "email": "user@example.com", "region": "ap-southeast-1",
+                          "startUrl": "https://d-fake.awsapps.com/start/"}))
+        print("\nProfile:\nKiroProfile-us-east-1\narn:aws:codewhisperer:us-east-1:000000000000:profile/FAKE")
         return 0
     if argv[:1] in (["login"], ["logout"]):
         print("fake kiro-cli: tests must never log in or out", file=sys.stderr)
         return 99
+    if argv[:1] == ["chat"] and "--list-models" in argv:
+        if argv != ["chat", "--list-models", "--no-interactive", "--format", "json"]:
+            return 2
+        if os.environ.get("FAKE_KIRO_MODELS_FAIL"):
+            return 1
+        print(os.environ.get("FAKE_KIRO_MODELS_JSON", json.dumps({"models": [
+            {"model_id": "auto", "model_name": "auto", "rate_multiplier": 1.0},
+            {"model_id": "claude-sonnet-4.5", "model_name": "Claude Sonnet", "rate_multiplier": 1.3}]})))
+        return 0
     if argv[:1] != ["chat"] or "--no-interactive" not in argv:
         print(f"fake kiro-cli: unsupported {argv}", file=sys.stderr)
         return 2

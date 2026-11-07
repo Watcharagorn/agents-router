@@ -533,23 +533,38 @@ def _described(table: dict[str, Any]) -> bool:
     return isinstance(description, str) and bool(description.strip())
 
 
+def _model_accounts(runtime: config.RuntimeConfig, provider: roles.Provider | roles_grid.Entry) -> list[config.Account]:
+    """Pinned account, or the enabled structural worker pool, independent of busy/cooldown state."""
+
+    if provider.account:
+        account = runtime.find(provider.account)
+        return [account] if account is not None else []
+    return [account for account in runtime.worker_accounts() if account.enabled]
+
+
+def _model_allowed(runtime: config.RuntimeConfig, accounts: list[config.Account], model: str | None) -> bool:
+    return any(plans.model_allowed(runtime, plans.account_limits(runtime, account), model) for account in accounts)
+
+
 def account_problem(loaded: config.Config, provider: roles.Provider) -> str | None:
     """Why agt can't use this provider's account or model, or None."""
 
     runtime = loaded.runtime(provider.runtime)
-    account = None
+    accounts = _model_accounts(runtime, provider) if provider.account or provider.model else []
     if provider.account:
-        account = runtime.find(provider.account)
-        if account is None:
+        if not accounts:
             return f"{provider}: {provider.runtime} has no account {provider.account} (agt accounts lists them)"
+        account = accounts[0]
         if not account.enabled:
             return f"{provider}: the {provider.runtime} account {provider.account} is turned off"
-    if provider.model:
-        account = account or runtime.primary_account()
+    if provider.model and not _model_allowed(runtime, accounts, provider.model):
+        if not provider.account:
+            if not accounts:
+                return f"{provider}: {provider.runtime} has no enabled worker accounts"
+            return f"{provider}: no enabled {provider.runtime} worker account allows the model {provider.model}"
         limits = plans.account_limits(runtime, account)
-        if not plans.model_allowed(runtime, limits, provider.model):
-            return (f"{provider}: {account.name} doesn't allow the model {provider.model} "
-                    f"(allowed: {', '.join(limits.models)})")
+        return (f"{provider}: {account.name} doesn't allow the model {provider.model} "
+                f"(allowed: {', '.join(limits.models)})")
     return None
 
 
@@ -904,7 +919,14 @@ def _loaded() -> config.Config:
     return config.load_config()
 
 
-def _choices(loaded: config.Config):
+def _model_snapshot(catalog, runtime: config.RuntimeConfig, accounts: list[config.Account], *, request: bool = False):
+    from agents_router.model_catalog import aggregate
+
+    lookup = catalog.request if request else catalog.snapshot
+    return aggregate(lookup(runtime, account) for account in accounts)
+
+
+def _choices(loaded: config.Config, catalog=None):
     used: dict[str, set[str]] = {}
     for role in loaded.roles.values():
         for provider in role.providers:
@@ -913,15 +935,49 @@ def _choices(loaded: config.Config):
 
     def choices(entry: roles_grid.Entry) -> tuple[list[str | None], list[str | None]]:
         runtime = loaded.runtime(entry.runtime)
-        account = runtime.find(entry.account) if entry.account else None
+        accounts = _model_accounts(runtime, entry)
+        allowed = [model for account in accounts for model in plans.account_limits(runtime, account).models or []]
+        offered = _model_snapshot(catalog, runtime, accounts).models if catalog else ()
+        models = list(dict.fromkeys([*offered, *allowed, *sorted(used.get(entry.runtime, set())),
+                                    *([runtime.default_model] if runtime.default_model else []),
+                                    *([entry.model] if entry.model else [])]))
+        # Effort retains its existing single-account cap; only model resolution uses the worker pool.
+        account = runtime.find(entry.account) if entry.account else runtime.primary_account()
         limits = plans.account_limits(runtime, account or runtime.primary_account())
-        models = list(limits.models) if limits.models else sorted(
-            used.get(entry.runtime, set()) | ({runtime.default_model} if runtime.default_model else set()))
         top = limits.max_effort if limits.max_effort in roles.EFFORTS else roles.EFFORTS[-1]
         efforts = list(roles.EFFORTS[: roles.EFFORTS.index(top) + 1])
         return [None, *models], [None, *efforts]
 
     return choices
+
+
+def _model_choices(loaded: config.Config, catalog, choices):
+    """The model menu retains off-plan and configured entries without offering forbidden choices."""
+
+    configured = {(provider.runtime, provider.model) for role in loaded.roles.values() for provider in role.providers
+                  if provider.model}
+
+    def menu(entry: roles_grid.Entry, request: bool):
+        from agents_router.share.picker import Choice
+
+        runtime = loaded.runtime(entry.runtime)
+        accounts = _model_accounts(runtime, entry)
+        snapshot = _model_snapshot(catalog, runtime, accounts, request=request)
+        rows = []
+        for model in choices(entry)[0]:
+            text = model or f"default ({entry.runtime}'s own)"
+            if model and model not in snapshot.models and (
+                    model in (entry.model, runtime.default_model) or (entry.runtime, model) in configured):
+                text += "  (set, not offered)"
+            reason = None if _model_allowed(runtime, accounts, model) else "not in this account's plan"
+            rows.append(Choice(model or "", text, checked=model == entry.model, reason=reason))
+        if snapshot.status == "loading":
+            rows.append(Choice("status:loading", "loading models…", reason=""))
+        elif snapshot.status == "unavailable" or not snapshot.models:
+            rows.append(Choice("status:unavailable", f"no model list for {entry.runtime}", reason=""))
+        return rows, snapshot.status == "loading"
+
+    return menu
 
 
 def _table_json(loaded: config.Config) -> dict[str, Any]:
@@ -1057,10 +1113,14 @@ def _no_flags(args: argparse.Namespace) -> int:
 
 def _grid(args: argparse.Namespace, loaded: config.Config) -> int:
     from agents_router.share import picker
+    from agents_router.model_catalog import ModelCatalog
 
     workspace = levels.find_workspace()
     watched = {path: settings_write.read_text(path) for path in settings_write.files(workspace).values()}
-    grid = roles_grid.RoleGrid(roles.ordered(loaded.roles), _choices(loaded))
+    catalog = ModelCatalog()
+    choices = _choices(loaded, catalog)
+    grid = roles_grid.RoleGrid(roles.ordered(loaded.roles), choices,
+                              model_choices=_model_choices(loaded, catalog, choices))
     if picker.choose(grid) != roles_grid.DONE or not grid.tables():
         print("Nothing was changed.")
         return 0

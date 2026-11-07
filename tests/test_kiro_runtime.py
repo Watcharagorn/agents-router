@@ -400,10 +400,31 @@ class KiroUnitTests(unittest.TestCase):
         self.assertEqual(parser.events, [{"type": "text", "text": '{"type": "runStarted", "data": {}}'}])
 
     def test_login_status_is_read_only(self):
-        self.assertTrue(self.runtime.auth_status(self.config, self.account)["loggedIn"])
+        status = self.runtime.auth_status(self.config, self.account)
+        self.assertTrue(status["loggedIn"])
+        self.assertEqual(status["authMethod"], "IamIdentityCenter")
         with patch.dict(os.environ, {"FAKE_KIRO_LOGGED_OUT": "1"}):
             self.assertFalse(self.runtime.auth_status(self.config, self.account)["loggedIn"])
         self.assertEqual(self.runtime.version(self.config), "kiro-cli 2.30.0")
+
+    def test_login_status_rejects_whoami_errors_even_with_exit_zero(self):
+        for output in ('{"accountType":"IamIdentityCenter","errorMessage":"failure"}',
+                       '{"accountType":"IamIdentityCenter"}\nNot logged in'):
+            with self.subTest(output=output), patch.object(self.runtime, "_run_quiet", return_value=(0, output)):
+                self.assertFalse(self.runtime.auth_status(self.config, self.account)["loggedIn"])
+
+    def test_login_status_uses_strict_identity_and_auth_text_outside_json(self):
+        for data, before, after, logged_in in (
+                ({"accountType": "IamIdentityCenter", "email": "authentication@example.com"}, "", "\nProfile:\nFake", True),
+                ({"account": "", "accountType": "IamIdentityCenter"}, "", "", False),
+                ({"account": False, "email": "user@example.com"}, "", "", False),
+                ({"account": {}, "email": "user@example.com"}, "", "", False),
+                ({"accountType": "IamIdentityCenter"}, "Not logged in\n", "", False),
+                ({"accountType": "IamIdentityCenter"}, "", "\nNot logged in", False)):
+            output = before + json.dumps(data) + after
+            with self.subTest(data=data, before=before, after=after), \
+                    patch.object(self.runtime, "_run_quiet", return_value=(0, output)):
+                self.assertEqual(self.runtime.auth_status(self.config, self.account)["loggedIn"], logged_in)
 
     def test_one_account_only(self):
         from agents_router import setup
