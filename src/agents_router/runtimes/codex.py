@@ -510,6 +510,22 @@ class CodexParser:
 
 class CodexRuntime:
     name = "codex"
+
+    def discover_models(self, config: RuntimeConfig, account: Account, *, io=None) -> tuple[str, ...] | None:
+        from agents_router.runtimes.base import ModelDiscoveryIO
+
+        try:
+            data = json.loads((io or ModelDiscoveryIO()).read_text(account.home / "models_cache.json"))
+            models = data.get("models") if isinstance(data, dict) else None
+            if not isinstance(models, list):
+                return None
+            offered = [item for item in models if isinstance(item, dict) and item.get("visibility") == "list"
+                       and isinstance(item.get("slug"), str) and item["slug"].strip()]
+            offered.sort(key=lambda item: item["priority"] if isinstance(item.get("priority"), (int, float))
+                         else float("inf"))
+            return tuple(dict.fromkeys(item["slug"] for item in offered))
+        except (OSError, ValueError):
+            return None
     _attempt_account: str | None = None
     _attempt_home: Path | None = None
 

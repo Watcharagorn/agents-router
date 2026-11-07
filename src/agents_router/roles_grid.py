@@ -7,8 +7,8 @@ Several entries for one account share a cell. Off roles keep their providers,
 dimmed, so turning one back on restores it as it was.
 
 Keys in the grid: arrows (or h/j/k/l) move, Space ticks the account, `a`/`n`
-tick or clear the whole role row, `m`/`e` step the cell's last entry's model or
-effort, `+`/`-` move the account's entries as a block in the try order, `s`
+tick or clear the whole role row, `m` picks the cell's last entry's model,
+`e` steps its effort, `+`/`-` move the account's entries as a block in the try order, `s`
 splits a cell by appending a copy of its last entry, and `o` toggles the role.
 Enter saves; Esc or `q` quits with nothing changed.
 
@@ -32,6 +32,7 @@ HINT = "Read-only here: change roles with flags, e.g. agt roles config builder -
 ORDINALS = {1: "1st", 2: "2nd", 3: "3rd"}
 
 Choices = Callable[["Entry"], tuple[list[str | None], list[str | None]]]
+ModelChoices = Callable[["Entry", bool], tuple[list[picker.Choice], bool]]
 
 
 @dataclass(frozen=True)
@@ -95,9 +96,14 @@ def _default_choices(entry: Entry) -> tuple[list[str | None], list[str | None]]:
 class RoleGrid:
     """Role rows × account columns, sharing state and rendering for show and config."""
 
-    def __init__(self, found: list[roles.Role], choices: Choices | None = None, *, title: str = "agt roles config"):
+    def __init__(self, found: list[roles.Role], choices: Choices | None = None, *, title: str = "agt roles config",
+                 model_choices: ModelChoices | None = None):
         self.title = title
         self.choices = choices or _default_choices
+        self.model_choices = model_choices
+        self.model_picker: picker.ListState | None = None
+        self.model_entry: Entry | None = None
+        self.pending = False
         self.rows = [Row(role.name, role.access, role.enabled) for role in found]
         self.columns: list[Column] = []
         self.entries: list[Entry] = []
@@ -194,7 +200,38 @@ class RoleGrid:
             values = [*values, current]
         return values[(values.index(current) + 1) % len(values)]
 
+    def _models(self, entry: Entry, request: bool) -> tuple[list[picker.Choice], bool]:
+        if self.model_choices:
+            return self.model_choices(entry, request)
+        models = list(dict.fromkeys([*self.choices(entry)[0], entry.model]))
+        return [picker.Choice(model or "", model or f"default ({entry.runtime}'s own)", checked=model == entry.model)
+                for model in models], False
+
+    def _pick_model(self, entry: Entry) -> None:
+        choices, self.pending = self._models(entry, True)
+        self.model_entry = entry
+        self.model_picker = picker.ListState(f"model · {self._row().name} · {entry.label}", choices, single=True)
+
+    def poll(self) -> bool:
+        if not self.model_picker or not self.pending:
+            return False
+        choices, self.pending = self._models(self.model_entry, False)
+        if choices == self.model_picker.choices:
+            return False
+        self.model_picker.replace_choices(choices)
+        return True
+
     def press(self, key: str) -> str | None:
+        if self.model_picker is not None:
+            outcome = self.model_picker.press(key)
+            if outcome == DONE:
+                model = next(iter(self.model_picker.checked()))
+                self._set_entry(replace(self.model_entry, model=model or None))
+            if outcome:
+                self.model_picker = None
+                self.model_entry = None
+                self.pending = False
+            return None
         if key in ("q", "esc"):
             return QUIT
         if key == "enter":
@@ -229,7 +266,7 @@ class RoleGrid:
         elif key in ("+", "-") and entry is not None and row.access in roles.ONE_AT_A_TIME:
             self._move(row, column, key)
         elif key == "m" and entry is not None:
-            self._set_entry(replace(entry, model=self._step(self.choices(entry)[0], entry.model)))
+            self._pick_model(entry)
         elif key == "e" and entry is not None:
             self._set_entry(replace(entry, effort=self._step(self.choices(entry)[1], entry.effort)))
         elif key == "s" and entry is not None:
@@ -419,6 +456,8 @@ class RoleGrid:
         return lines
 
     def frame(self, width: int = 100, height: int = 40) -> list[ui.Line]:
+        if self.model_picker is not None:
+            return self.model_picker.frame(width, height)
         budget = max(height - 1, 1)
         if not self.rows:
             return [ui.bold(self.title), "  No roles yet: agt setup proposes them."][:budget]
@@ -435,7 +474,7 @@ class RoleGrid:
         if self.problem:
             bottom.append(("", ["  ", ui.Span("error", self.problem)]))
         bottom.append(("notes", picker._count(phrases, len(phrases), width, " · ")))
-        keys = [("↑↓←→", "move"), ("space", "tick"), ("a/n", "whole row"), ("m", "model"), ("e", "effort"),
+        keys = [("↑↓←→", "move"), ("space", "tick"), ("a/n", "whole row"), ("m", "pick model"), ("e", "effort"),
                 ("+/-", "order"), ("o", "role on/off"), ("s", "split cell"), ("enter", "save"), ("esc", "quit")]
         body = [(line, True) for line in rows[1:len(self.rows) + 1]]
         frame = picker._frame([("title", ui.bold(self.title)), ("blank", ""), ("", rows[0])], body, self.row,

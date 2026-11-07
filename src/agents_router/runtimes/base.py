@@ -4,9 +4,20 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import os
-from typing import Any, Protocol
+from pathlib import Path
+import subprocess
+from typing import Any, Callable, Protocol
 
 from agents_router.config import Account, RuntimeConfig
+
+
+@dataclass(frozen=True)
+class ModelDiscoveryIO:
+    """Injectable read-only inputs for model discovery; no login or refresh operations."""
+
+    read_text: Callable[[Path], str] = lambda path: path.read_text(encoding="utf-8")
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run
+
 
 ACCESS_LEVELS = ("read", "edit", "full")
 
@@ -151,6 +162,11 @@ class Parser(Protocol):
 
 class Runtime(Protocol):
     name: str
+
+    def discover_models(self, config: RuntimeConfig, account: Account, *,
+                        io: ModelDiscoveryIO | None = None) -> tuple[str, ...] | None:
+        """Account's offered model IDs, or None when no list is available."""
+        ...
 
     def find_binary(self, config: RuntimeConfig) -> list[str] | None:
         ...

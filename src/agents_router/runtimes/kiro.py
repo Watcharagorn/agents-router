@@ -324,8 +324,93 @@ class KiroParser:
                              error_text=details[-4000:], **common)
 
 
+def _json_parts(output: str) -> tuple[Any, str]:
+    """First JSON value and the text around it, keeping identity values out of auth-message checks."""
+
+    start = re.search(r"\{|\[", output)
+    if start is None:
+        raise ValueError("no JSON object or array in Kiro output")
+    data, end = json.JSONDecoder().raw_decode(output, start.start())
+    return data, output[:start.start()] + "\n" + output[end:]
+
+
+def _first_json(output: str) -> Any:
+    return _json_parts(output)[0]
+
+
+def _has_error_fields(data: Any) -> bool:
+    if isinstance(data, dict):
+        return any("error" in key.casefold() or _has_error_fields(value) for key, value in data.items())
+    if isinstance(data, list):
+        return any(_has_error_fields(value) for value in data)
+    return False
+
+
+def _has_identity(data: Any) -> bool:
+    """Malformed explicit accounts and error fields take precedence over positive identity fields."""
+
+    if not isinstance(data, dict) or _has_error_fields(data):
+        return False
+    if "account" in data:
+        account = data["account"]
+        if isinstance(account, dict):
+            return bool(account)
+        if not isinstance(account, str) or not account.strip():
+            return False
+    return any(isinstance(value, str) and value.strip()
+               for value in (data.get(key) for key in ("account", "accountType", "email", "startUrl", "authMethod")))
+
+
+def _auth_failed(outside_json: str, stderr: str = "") -> bool:
+    return bool(AUTH_RE.search(outside_json or "") or AUTH_RE.search(stderr or ""))
+
+
+def _model_ids(data: Any) -> tuple[str, ...] | None:
+    """Kiro's JSON list envelope (or a bare list), keeping model IDs rather than display labels."""
+
+    items = data.get("models") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return None
+    found = []
+    for item in items:
+        value = item
+        if isinstance(item, dict):
+            value = next((item[key] for key in ("model_id", "modelId", "id")
+                          if isinstance(item.get(key), str) and item[key].strip()), None)
+        if isinstance(value, str) and value.strip():
+            found.append(value)
+    return tuple(dict.fromkeys(found)) if found or not items else None
+
+
 class KiroRuntime:
     name = "kiro"
+
+    def discover_models(self, config: RuntimeConfig, account: Account, *, io=None) -> tuple[str, ...] | None:
+        """List-only, after a positive whoami guard. Never start an unauthenticated chat."""
+        from agents_router.runtimes.base import ModelDiscoveryIO
+
+        io = io or ModelDiscoveryIO()
+        command = self.find_binary(config)
+        if not command:
+            return None
+
+        def run(args):
+            return io.run([*command, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=10,
+                          env=self.account_env(config, account), **no_window_kwargs())
+
+        try:
+            whoami = run(["whoami", "--format", "json"])
+            if whoami.returncode != 0:
+                return None
+            identity, outside_json = _json_parts(whoami.stdout)
+            if not _has_identity(identity) or _auth_failed(outside_json, whoami.stderr):
+                return None
+            # --format is the list format; --output-format controls chat response streams.
+            result = run(["chat", "--list-models", "--no-interactive", "--format", "json"])
+            return _model_ids(_first_json(result.stdout)) if result.returncode == 0 else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
 
     def find_binary(self, config: RuntimeConfig) -> list[str] | None:
         override = os.environ.get("AGT_KIRO_COMMAND")
@@ -358,10 +443,10 @@ class KiroRuntime:
 
         code, output = self._run_quiet(config, ["whoami", "--format", "json"])
         try:
-            data = json.loads(output[output.index("{"):]) if "{" in output else {}
+            data, outside_json = _json_parts(output)
         except ValueError:
-            data = {}
-        logged_in = code == 0 and not AUTH_RE.search(output) if not data else code == 0
+            data, outside_json = {}, output
+        logged_in = code == 0 and not _auth_failed(outside_json) and _has_identity(data)
         method = data.get("authMethod") or data.get("accountType") or data.get("method") if isinstance(data, dict) else None
         if os.environ.get("KIRO_API_KEY"):
             method = method or "api_key"

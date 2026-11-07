@@ -60,7 +60,7 @@ Change roles with `agt roles config`, never by hand-editing, so every change is 
 | Command | Does |
 |---|---|
 | `agt roles` / `agt roles show [--json]` | the table, with roles that are off and providers that can't run |
-| `agt roles config` (at a terminal) | the grid: roles as rows, accounts as columns. Space ticks, `a`/`n` whole row, `m`/`e` cell model and effort, `+`/`-` account order, `s` splits a cell, `o` turns the role under the cursor on or off. Enter saves |
+| `agt roles config` (at a terminal) | the grid: roles as rows, accounts as columns. Space ticks, `a`/`n` whole row, `m` picks a model, `e` steps effort, `+`/`-` account order, `s` splits a cell, `o` turns the role under the cursor on or off. Enter saves |
 | `agt roles config <role> --only/--add/--remove <providers>` | a role's providers (a role keeps at least one) |
 | `agt roles config <role> --order <providers>` | an edit or full role's priority |
 | `agt roles config --set-model/--set-effort <provider>=<value>` | one provider in every role that uses it |
@@ -71,7 +71,13 @@ Change roles with `agt roles config`, never by hand-editing, so every change is 
 Both table views keep one column per account, even when its models or efforts differ between roles. Each row shows
 the role's access and on/off switch. Cells show `[model/][effort:]✓` for read access or the provider's try-order number
 for edit/full access. The footnote gives the shared effort; `def` means the runtime's default, and `·` means unused.
-Multiple entries for one account share a cell, separated by commas. `m`/`e` change its last entry; `s` appends a copy
+Multiple entries for one account share a cell, separated by commas. `m` opens a model list for its last entry;
+Space or Enter picks, and Esc cancels. The list starts on the current model. Default uses the runtime's own choice.
+Off-plan models stay visible, greyed out. Configured models absent from the offered list show `(set, not offered)`.
+Unpinned providers combine eligible worker accounts' model lists. A model is selectable when any worker's plan allows it.
+Lists load when opened: Claude aliases, Codex's account-local cache, and a guarded Kiro list cached for one hour.
+Antigravity has no model list yet; allowed and configured models remain selectable.
+`e` steps the last entry's effort; `s` appends a copy
 to the role so you can choose another model or effort. `+`/`-` move the account's entries as a block. Ticking an empty
 cell uses that account's most common model and effort in the other roles. Arrow keys (or `h`/`j`/`k`/`l`) scroll the
 accounts and roles while keeping the selected cell visible. Esc or `q` leaves without saving.
